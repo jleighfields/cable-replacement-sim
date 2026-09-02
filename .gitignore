@@ -1,0 +1,21 @@
+# Rust
+/target
+Cargo.lock
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+
+# marimo
+__marimo__/
+
+# outputs
+results/
+*.parquet
