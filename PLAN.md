@@ -317,6 +317,10 @@ cable-replacement-sim/
 │   ├── 03_three_phase.py
 │   ├── 04_policy_explorer.py
 │   └── 05_oracle_and_bench.py
+├── app/                        # Shiny for Python
+│   ├── app.py                  # UI + server
+│   ├── overrides.py            # UI controls -> config overrides
+│   └── requirements.txt
 ├── tests/
 │   ├── test_weibull.py
 │   ├── test_mle_recovery.py
@@ -431,7 +435,72 @@ they cannot silently rot.
 
 ---
 
-## 8. Phased roadmap
+## 8. Shiny application
+
+A small Shiny for Python app that lets a user configure inputs, run a
+simulation, and see the result. This is the shareable artifact; the notebooks
+are the working surface.
+
+| Surface | Audience | Role |
+|---------|----------|------|
+| marimo notebooks | engineers reading the repo | methodology, validation, benchmarks |
+| Shiny app | stakeholders and reviewers | configure inputs, run a simulation, read the reliability-vs-budget answer |
+
+Same rule as the notebooks: **the app imports from `cablesim` and contains no
+modeling logic.** UI controls produce a config override dict, which is merged
+onto `configs/base.yaml`, validated by the same pydantic model, and passed to
+the same kernel. One code path, three front ends.
+
+### Inputs to expose
+
+- **Scenario** — annual budget, budget escalation, policy, policy-specific
+  params (conditional panel: `threshold_years` for age-based, `rank_by` for
+  risk-ranked), horizon in years
+- **Population** — `n_segments`, class mix (preset or sliders), seed
+- **Consequence** — emergency outage hours, VOLL, emergency cost multiplier
+- **Run control** — replications, and an explicit **Run** button
+
+### Outputs
+
+- SAIDI / SAIFI trajectories over the horizon with Monte Carlo bands
+- Failures per year, split by segment class
+- Planned vs emergency spend against the budget line
+- Summary table: horizon totals, customer-minutes avoided, cost per
+  customer-minute avoided
+- **Policy comparison mode**: run two or more policies at the same budget and
+  overlay them. This is the question the app exists to answer.
+- Download results as CSV/parquet
+
+### Performance and UX
+
+- **Do not run on every input change.** An explicit Run button; reactivity on a
+  30-year Monte Carlo would make the app unusable.
+- Use Shiny's `ExtendedTask` so the run is async and the UI stays responsive,
+  with a progress indicator.
+- **Interactive defaults are smaller than batch defaults** (for example 5,000
+  segments and 100 replications versus 40,000 and 1,000). State the accuracy
+  tradeoff in the UI. Full-size runs belong in batch scripts and notebooks.
+- Precompute one budget sweep and cache it so the landing view renders
+  instantly rather than showing an empty plot.
+
+This is where the Rust kernel earns its place: interactive runs are only viable
+because the kernel is fast. Worth recording the Python-oracle and Rust timings
+in the app's About panel as concrete evidence.
+
+### Deployment
+
+Target Posit Connect or shinyapps.io, matching the deployment pattern of the
+other portfolio projects.
+
+⚠️ **Deployment constraint worth planning for early:** the Rust extension must
+install in the deploy environment. Build **abi3 wheels** (stable ABI, so one
+wheel covers multiple Python versions) and confirm the target platform can
+install them. Discovering this at deploy time is the most likely way this
+project stalls at the last step.
+
+---
+
+## 9. Phased roadmap
 
 Each phase ends in a working, committed state.
 
@@ -462,13 +531,19 @@ parity test and the deterministic parity test against the oracle.
 `py.allow_threads` + rayon over replications, per-rep seeding. Benchmark
 harness and notebook 05.
 
-**Phase 6 — package and publish**
+**Phase 6 — Shiny app**
+`app/` with config-override wiring, ExtendedTask + progress, cached default
+sweep, and policy comparison mode. Confirm a full interactive run completes in
+a few seconds at the reduced interactive defaults.
+
+**Phase 7 — package and publish**
 Version, docs, CI (build wheels, run tests, execute notebooks headless),
-abi3 wheels for portability. Optional: publish to PyPI and tag a release.
+abi3 wheels for portability, and deploy the Shiny app. Optional: publish to
+PyPI and tag a release.
 
 ---
 
-## 9. PyO3 / maturin practicalities
+## 10. PyO3 / maturin practicalities
 
 - **Pin the PyO3 version and read that version's guide.** PyO3 migrated to the
   `Bound<'py, T>` smart-pointer API; older tutorials and Stack Overflow answers
@@ -483,7 +558,7 @@ abi3 wheels for portability. Optional: publish to PyPI and tag a release.
 
 ---
 
-## 10. Open questions to confirm before Phase 3
+## 11. Open questions to confirm before Phase 3
 
 1. **Timestep** — annual assumed throughout. Monthly would sharpen outage
    timing but multiplies cost by 12. Annual is the right default; confirm.
@@ -498,10 +573,13 @@ abi3 wheels for portability. Optional: publish to PyPI and tag a release.
    Escalation is in the config; a discount rate is not yet.
 6. **Correlated conductor failure** — `iid` first, `shared_frailty` deferred.
    Confirm that is acceptable for a v1.
+7. **Shiny deployment target** — Posit Connect or shinyapps.io? This determines
+   how the Rust wheel gets installed and should be settled before Phase 6, not
+   during it.
 
 ---
 
-## 11. First actions in the next session
+## 12. First actions in the next session
 
 1. Verify `rustup` and `maturin` are installed.
 2. Phase 0 scaffold, ending with a trivial `add()` round-tripping through
