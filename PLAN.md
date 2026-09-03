@@ -259,7 +259,6 @@ population:
 failure:
   conductor_dependence: iid         # iid | shared_frailty (future)
 
-
 costs:
   emergency_multiplier: 2.5
   mobilization_per_segment: 3500.0
@@ -294,8 +293,30 @@ a driver script or notebook, not by editing the base file.
 cable-replacement-sim/
 ├── PLAN.md
 ├── README.md
+├── CLAUDE.md
+├── uv.lock                     # committed; every workflow runs --locked
+├── Cargo.lock                  # committed; deployed as a wheel, not published
+├── .secrets.baseline           # committed; security-scan is invalid without it
+├── .claude/
+│   ├── agents/                 # code-reviewer, simplify-auditor
+│   └── skills/                 # the slash commands, committed
+├── docs/
+│   └── lessons.md              # the rule after each correction
+├── tasks/                      # one plan per non-trivial change
+│   └── completed/
 ├── pyproject.toml              # maturin build backend
 ├── Cargo.toml
+├── .github/
+│   ├── workflows/
+│   │   ├── test.yml            # runs on PRs; required at end of Phase 0
+│   │   ├── notebooks.yml       # headless notebook run, main + weekly
+│   │   └── app.yml             # Playwright app tests, main + weekly
+│   ├── rulesets/
+│   │   ├── protect-main.json   # applied; matches the live ruleset
+│   │   └── protect-main-required-check.json  # applied at end of Phase 0
+│   ├── PULL_REQUEST_TEMPLATE.md
+│   └── ISSUE_TEMPLATE/
+│       └── report.md
 ├── configs/
 │   └── base.yaml
 ├── src/                        # Rust crate
@@ -310,7 +331,8 @@ cable-replacement-sim/
 │   ├── weibull.py              # censored MLE, min-of-n helpers
 │   ├── reference.py            # pure-Python oracle simulator
 │   ├── metrics.py              # SAIFI / SAIDI / CAIDI / CMI
-│   └── policies.py             # scoring functions (shared definitions)
+│   ├── policies.py             # scoring functions (shared definitions)
+│   └── constants.py            # fixed values; overriding one is a bug
 ├── notebooks/                  # marimo, all plain .py
 │   ├── 01_population.py
 │   ├── 02_weibull_fitting.py
@@ -322,11 +344,19 @@ cable-replacement-sim/
 │   ├── overrides.py            # UI controls -> config overrides
 │   └── requirements.txt
 ├── tests/
+│   ├── __init__.py             # required, and in every subdirectory
+│   ├── conftest.py
+│   ├── helpers.py
 │   ├── test_weibull.py
 │   ├── test_mle_recovery.py
 │   ├── test_min_of_n.py
 │   ├── test_policies.py
-│   └── test_oracle_parity.py
+│   ├── test_oracle_parity.py
+│   ├── test_notebooks.py       # marker: notebooks
+│   └── app/                    # marker: app (Playwright)
+│       ├── __init__.py
+│       ├── conftest.py         # ShinyAppProc fixture, interactive-scale config
+│       └── test_app.py
 └── benches/
     └── bench_sim.py
 ```
@@ -408,7 +438,9 @@ Three layers, in order of authority:
 - Report single-threaded Rust and rayon-parallel Rust separately, so the
   language win and the parallelism win are not conflated.
 - Always build with `maturin develop --release` before benchmarking; debug
-  builds run 10–50x slower and will produce meaningless numbers.
+  builds are slow enough to make timing numbers meaningless. Record the
+  measured ratio here once Phase 5 produces one — nothing has been measured
+  yet, so no number is quoted.
 
 ---
 
@@ -487,6 +519,13 @@ This is where the Rust kernel earns its place: interactive runs are only viable
 because the kernel is fast. Worth recording the Python-oracle and Rust timings
 in the app's About panel as concrete evidence.
 
+### Testing
+
+Driven through a real browser with Playwright, behind an `app` marker. Section
+9.3, Shiny app integration tests, has the approach and the reason it is worth
+a browser at all — the app's own failure mode is a control wired to the wrong
+config field, which every UI-free test passes.
+
 ### Deployment
 
 Target Posit Connect or shinyapps.io, matching the deployment pattern of the
@@ -500,7 +539,185 @@ project stalls at the last step.
 
 ---
 
-## 9. Phased roadmap
+## 9. Continuous integration and branch protection
+
+`main` is protected, and will only take merges whose tests passed once the
+required-check rule lands (§9.4, Branch protection on `main`). Set this up in
+Phase 0, before there is anything to protect — a rule added after the fact has
+to be applied to a history that never satisfied it.
+
+### 9.1 The workflow
+
+The workflow is `.github/workflows/test.yml`, on pull requests targeting
+`main` and on pushes to `main`. Read it there rather than from a copy here.
+The decisions behind it:
+
+- **`--release`, not debug.** The suite runs Monte Carlo parity tests over many
+  replications; a debug build is slow enough that they dominate the run. The
+  ratio belongs in Section 6, Validation strategy, once Phase 5 measures one.
+  `Swatinem/rust-cache` is what makes the release build affordable on repeat
+  runs — without it every push recompiles every dependency crate.
+- **`uv sync --locked` fails on a stale lockfile** instead of quietly
+  resolving something else, so CI tests the dependency set the repo claims.
+- **`cargo clippy --all-targets --no-default-features -- -D warnings`.**
+  Ruff does not read Rust; without clippy failing the build, half this repo
+  has no mechanical gate.
+- **No `paths:` filter.** See 9.4 — a required check that does not run on some
+  pull requests blocks those pull requests permanently.
+- **The `notebooks` and `app` markers stay out of this job.** Executing five
+  marimo notebooks end to end takes minutes, and driving the Shiny app through
+  a real browser takes minutes plus a browser download. Neither belongs on the
+  critical path of every pull request.
+
+### 9.2 Notebook execution, on a slower cadence
+
+The headless notebook run (`uv run pytest -m notebooks`) is what stops the
+notebooks silently rotting, so it has to run somewhere. Put it in a second
+workflow, `.github/workflows/notebooks.yml`, on pushes to `main` plus a weekly
+schedule, and leave it off pull requests. A notebook breaks when the package
+API it imports changes, which the merge to `main` surfaces within one run —
+fast enough, given the cost of running it on every push.
+
+**The notebooks double as integration tests, and cheaply.** Each one already
+builds a population, fits or simulates, and computes a result — an end-to-end
+exercise of the package that a test file would otherwise have to reconstruct.
+Where a notebook has computed something whose value is known, `assert` on it
+in the cell that computed it rather than duplicating the setup into `tests/`.
+Notebook 05 is the strongest case: it already runs the oracle and the kernel
+side by side, so asserting their agreement there costs one line.
+
+Keep the boundary honest, though — **an assertion belongs in `tests/` when it
+is about the package, and in a notebook when it is about the notebook.** A
+regression in `min_of_n` should fail a fast unit test, not a five-minute
+weekly notebook run.
+
+**This is not a required check.** A weekly schedule cannot report on a pull
+request, so requiring it would block every merge.
+
+### 9.3 Shiny app integration tests (Playwright)
+
+The app has one failure mode worth building a browser for, and it is not
+"does a plot appear". The app's job is to turn UI controls into a config
+override dict that is merged onto `configs/base.yaml` and validated by the
+same pydantic model the notebooks use. **The bug this catches is a control
+wired to the wrong field, or to nothing** — the run completes, a plot renders,
+and the number answers a question nobody asked.
+
+So the assertion that earns the browser is: **drive the UI, then call the
+package directly with the same overrides and the same seed, and require the
+two to agree.** A test that only checks a plot rendered would pass with every
+slider disconnected.
+
+Around that, assert what a user would notice:
+
+- The landing view renders the precomputed cached sweep without a run.
+- Changing the annual budget and pressing Run moves the SAIDI trajectory in
+  the direction more spending implies.
+- Policy comparison mode overlays two policies at one budget.
+- The CSV download is non-empty and its columns match what the package emits.
+- An out-of-range input surfaces as a validation message, not a traceback.
+  Pydantic is what rejects it; the test is that the app catches the rejection.
+
+Mechanics that decide whether this suite is usable or abandoned:
+
+- **Use Shiny's own pytest integration** rather than starting the server by
+  hand — `ShinyAppProc` for the app fixture and the `shiny.playwright`
+  controllers for typed access to inputs and outputs. Check the pinned Shiny
+  version's docs before copying an example; this API is younger than PyO3's
+  and moves the same way.
+- **Never sleep.** `ExtendedTask` makes the run async by design, so the result
+  arrives when it arrives. Use Playwright's auto-waiting assertions with a
+  generous timeout. A fixed sleep flakes when the run is slower than the sleep
+  and wastes the difference when it is faster.
+- **Give every asserted element a stable `id`** and select on it. Selecting on
+  rendered text or DOM position produces failures that are about the layout,
+  not about the app.
+- **Shrink the run for tests.** A 30-year, 1000-replication Monte Carlo does
+  not belong on the critical path of a browser test; point the fixture at
+  interactive-scale defaults (a few thousand segments, tens of replications)
+  and pin the seed. The parity and analytical suites are what establish the
+  numbers are right — this suite establishes the wiring is right.
+- **Chromium only.** Cross-browser rendering is not a risk this project
+  carries.
+
+`.github/workflows/app.yml` runs these behind an `app` marker, on pushes to
+`main` and weekly — off the pull-request path, because the browser download
+and install dominate the run. It runs pytest with
+`--tracing=retain-on-failure --screenshot=only-on-failure` and uploads what
+those produce — without the flags Playwright writes nothing
+and the upload step is a silent no-op.
+
+**Promote it to a required check once the app is the deliverable** and the run
+time is understood. Doing that means moving it onto `pull_request` first: a
+scheduled workflow cannot report on a pull request, so requiring it while it
+only runs on a schedule blocks every merge.
+
+### 9.4 Branch protection on `main`
+
+Two checked-in GitHub rulesets, so what is applied is reproducible and
+reviewable, and so the required-check rule can arrive separately:
+
+- **`.github/rulesets/protect-main.json`** — applied, and the file matches
+  what is live. It carries everything except the required check.
+- **`.github/rulesets/protect-main-required-check.json`** — not yet applied.
+  It is the last act of Phase 0, once `test` has reported green.
+
+```bash
+# first application of a ruleset
+gh api -X POST repos/{owner}/{repo}/rulesets --input <file>
+# updating one that exists — POST would create a second ruleset instead
+gh api -X PUT repos/{owner}/{repo}/rulesets/<id> --input <file>
+```
+
+Between them they set:
+
+| Rule | Setting |
+|---|---|
+| Require a pull request before merging | on, 0 approvals (solo repo) |
+| Require status checks to pass | added at the end of Phase 0, once `test` has reported green — `protect-main-required-check.json` |
+| Require branches to be up to date | on, inside the required-check rule — `protect-main-required-check.json` |
+| Block force pushes | on |
+| Restrict deletions | on |
+
+- **Zero required approvals still forces the pull request**, which is the part
+  that matters here: it routes every change through a run of `test`. Raise it
+  if anyone else starts contributing.
+- **Name the *job*, not the workflow.** The required check is `test`, the job
+  id in `.github/workflows/test.yml`. Renaming that job silently un-requires
+  the check — the ruleset then waits on a check name nothing reports, which
+  is the failure in the next bullet.
+- **A required check that never runs blocks the merge forever.** This is the
+  way branch protection usually goes wrong: a `paths:` filter, a `job.if`
+  condition, or a renamed job leaves the check permanently "expected", and the
+  pull request cannot merge and cannot fail. Keep the required job
+  unconditional, and if the workflow ever grows path filters, split the
+  required job out so it always runs.
+- **"Up to date" means a merge to `main` invalidates open pull requests**,
+  each needing a rebase and a fresh run. That is the right trade for one
+  person with few concurrent branches; revisit it if branches start queueing.
+- **Verify by breaking it, not by reading the settings page.** Open a pull
+  request with a deliberately failing test and confirm the merge button is
+  blocked, then confirm a direct `git push origin main` is rejected. A
+  protection rule nobody has watched refuse something is not known to work.
+
+### 9.5 What CI does not cover yet
+
+Wheel building across platforms and Python versions belongs to Phase 7, where
+abi3 wheels and the Shiny deployment target settle what actually has to be
+built. Until then CI proves the code works on one Linux runner at one Python
+version, which is what the phases before it need. Adding a build matrix
+earlier costs minutes per run and answers a question nobody is asking yet.
+
+**Only `test` will gate a merge.** The notebook and app suites run after the
+fact, so a pull request can land something that breaks either of them and the
+break surfaces on the next push to `main` rather than before it. That is the price
+of keeping the required check fast, and it is worth stating rather than
+discovering: when either suite goes red on `main`, the fix is a new pull
+request, not a revert-by-default.
+
+---
+
+## 10. Phased roadmap
 
 Each phase ends in a working, committed state.
 
@@ -508,6 +725,27 @@ Each phase ends in a working, committed state.
 `pyproject.toml` (maturin backend), `Cargo.toml`, config schema + loader,
 `configs/base.yaml`, `.gitignore`, README. Confirm `maturin develop` builds a
 trivial `add(a, b)` and imports in Python. *Do not skip this smoke test.*
+
+`main` is already protected against direct pushes and merges without a pull
+request, so this phase lands through one. The remaining half of Section 9.4,
+Branch protection on `main` — the `test` check being *required* — waits until
+this phase has produced a green run of it, because a required check that has
+never reported green blocks every merge including the one that would fix it.
+Add the rule as the last act of Phase 0, then confirm it by opening a pull
+request with a deliberately failing test and watching the merge button refuse.
+
+Phase 0 also has to create everything the workflows and the review skills
+assume, because none of it exists yet and each is a silent failure rather than
+a loud one:
+
+| What | Why it is required |
+|---|---|
+| `[features] extension-module = ["pyo3/extension-module"]` and `default = ["extension-module"]` in `Cargo.toml` | `cargo test --no-default-features` only drops the extension-module feature if it is *behind* a feature. The stock maturin template enables it directly, in which case the flag is a no-op and the test binary fails to link against the CPython symbols the interpreter would otherwise supply. |
+| dependency groups `dev`, `notebooks`, `app` in `pyproject.toml` | `notebooks.yml` and `app.yml` pass `--group notebooks` / `--group app`; `uv sync` fails on a group that does not exist. |
+| `pytest-xdist`, `maturin`, `ruff`, `detect-secrets`, `pytest-playwright` in `dev` | `test.yml` runs `pytest -n auto`; `security-scan` drives `detect-secrets`; `app.yml` runs `playwright install`. |
+| the `notebooks` and `app` markers plus `addopts` excluding them | `test.yml` asserts the default run excludes both. Without the markers, pytest warns and the exclusion silently does nothing. |
+| a committed `uv.lock` | every workflow runs `uv sync --locked`. |
+| a committed `.secrets.baseline` | `security-scan` treats a scan without an intact baseline as **invalid even when it exits cleanly**. Until it exists, every security phase is grep-only — which is fine if it is *said*, and misleading if it is not. |
 
 **Phase 1 — synthetic population**
 `population.py` generating the segment table from config. Notebook 01.
@@ -534,16 +772,22 @@ harness and notebook 05.
 **Phase 6 — Shiny app**
 `app/` with config-override wiring, ExtendedTask + progress, cached default
 sweep, and policy comparison mode. Confirm a full interactive run completes in
-a few seconds at the reduced interactive defaults.
+a few seconds at the reduced interactive defaults. Then `tests/app/` and
+`.github/workflows/app.yml` — the Playwright suite of Section 9.3, Shiny app
+integration tests, including the assertion that drives the UI and requires the
+result to match the package called directly with the same overrides and seed.
 
 **Phase 7 — package and publish**
-Version, docs, CI (build wheels, run tests, execute notebooks headless),
-abi3 wheels for portability, and deploy the Shiny app. Optional: publish to
-PyPI and tag a release.
+Version, docs, abi3 wheels for portability, and deploy the Shiny app.
+Optional: publish to PyPI and tag a release. CI already runs tests, notebooks
+and the app suite from earlier phases; what this phase adds is the
+wheel-building matrix across platforms and Python versions (Section 9.5, What
+CI does not cover yet), which only becomes answerable once the deployment
+target is settled.
 
 ---
 
-## 10. PyO3 / maturin practicalities
+## 11. PyO3 / maturin practicalities
 
 - **Pin the PyO3 version and read that version's guide.** PyO3 migrated to the
   `Bound<'py, T>` smart-pointer API; older tutorials and Stack Overflow answers
@@ -558,7 +802,7 @@ PyPI and tag a release.
 
 ---
 
-## 11. Open questions to confirm before Phase 3
+## 12. Open questions to confirm before implementation
 
 1. **Timestep** — annual assumed throughout. Monthly would sharpen outage
    timing but multiplies cost by 12. Annual is the right default; confirm.
@@ -579,10 +823,13 @@ PyPI and tag a release.
 
 ---
 
-## 12. First actions in the next session
+## 13. First actions in the next session
 
 1. Verify `rustup` and `maturin` are installed.
 2. Phase 0 scaffold, ending with a trivial `add()` round-tripping through
-   `maturin develop`.
-3. Answer the Section 10 questions, updating `configs/base.yaml` as needed.
+   `maturin develop`, then adding the required-check rule from Section 9.4,
+   Branch protection on `main` — watched refusing a failing pull request
+   before being trusted.
+3. Answer the Section 12 questions — Open questions to confirm before
+   implementation — updating `configs/base.yaml` as needed.
 4. Proceed to Phase 1.

@@ -1,0 +1,75 @@
+name: test
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# No paths: filter. The `test` job below is a required status check, and a
+# required check that does not run leaves a pull request permanently
+# "expected" — unable to merge and unable to fail.
+
+concurrency:
+  group: test-${{ github.ref }}
+  # Only cancel superseded pull-request runs. On main a second merge would
+  # otherwise cancel the first, and a cancelled required check has to be
+  # re-run by hand.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      # Caches the compiled dependency crates. Without it every run rebuilds
+      # them from scratch, which is what makes --release unaffordable.
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Rust format
+        run: cargo fmt --check
+
+      - name: Rust lint
+        run: cargo clippy --all-targets --no-default-features -- -D warnings
+
+      # --no-default-features drops pyo3/extension-module, which is on by
+      # default so maturin builds a loadable module. A test binary linked
+      # against it fails to resolve the CPython symbols the interpreter would
+      # otherwise supply, so this is a link error rather than a test failure.
+      - name: Rust tests
+        run: cargo test --no-default-features
+
+      # --locked fails when uv.lock does not match pyproject.toml, instead of
+      # resolving something else and testing a dependency set the repo does
+      # not claim.
+      - name: Install dependencies
+        run: uv sync --locked
+
+      # --release because the parity tests run many replications, and a debug
+      # build is slow enough that they dominate the job. Any timing measured
+      # off a debug build is meaningless besides. PLAN.md section 6 is where a
+      # measured ratio belongs, once Phase 5 produces one.
+      - name: Build the extension module
+        run: uv run maturin develop --release
+
+      - name: Python lint
+        run: uv run ruff check .
+
+      # The `notebooks` and `app` markers are excluded by addopts in
+      # pyproject.toml. Those run in notebooks.yml and app.yml, off the
+      # pull-request path.
+      - name: Python tests
+        run: uv run pytest -n auto
