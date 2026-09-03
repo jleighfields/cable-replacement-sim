@@ -14,10 +14,19 @@ but do NOT make edits — present findings for the user to approve.
 
 ## Arguments
 
-- **file-or-directory** (optional): Path to review. If omitted, review
-  all staged and unstaged changed files (`git diff --name-only HEAD`)
-  unioned with the untracked ones (`git ls-files --others
-  --exclude-standard`) — union, not fallback.
+- **file-or-directory** (optional): Path to review. If omitted, derive the
+  target set:
+
+  ```bash
+  git diff --name-only HEAD              # staged + unstaged
+  git ls-files --others --exclude-standard   # untracked
+  ```
+
+  **Union both lists — the second is not a fallback for the first.** A change
+  set that edits one tracked file and adds twenty untracked ones is ordinary,
+  and an "only if the first is empty" rule reviews the one and skips the
+  twenty. Review every file returned. The other review skills derive their
+  targets the same way and point here rather than restating it.
 
 ## Verify by running
 
@@ -46,81 +55,37 @@ read-only judgement as a verified one.
 
 You have `Bash`. Use it throughout the review, not only at the end.
 
-### Look for a harness before building one
+### Building and keeping verification
 
-Read `tests/` before hand-rolling a fixture. A repo that has needed one of
-these before usually has a builder for it already — something that assembles a
-throwaway project, a repo, a config — and reusing it keeps your fixture
-identical to the suite's. A hand-rolled one differs in ways you did not
-choose, so a finding proved against it may not reproduce against the tests.
+Settling a claim often means building a harness: a crafted input, a few lines
+that drive a function and print what came back.
 
-This is the Minimalism hierarchy applied to verification rather than to
-shipped code: use what is there, then extend it, and only then write your own.
-Extending is often the right answer — a builder that takes one more argument
-serves the next review too.
+- **Look for one before building one.** Read `tests/` first and reuse or extend
+  what is there — the Minimalism hierarchy applied to verification. A
+  hand-rolled fixture differs from the suite's in ways you did not choose, so a
+  finding proved against it may not reproduce against the tests. Say which you
+  did.
+- **Where a harness confirmed a defect, give it in the finding**, phrased as
+  the test it wants to become: which function, what input, what assertion. A
+  harness that is thrown away gets rebuilt by the next review, and nothing
+  stops the defect returning in between. Apply this where a test would be small
+  and durable — a one-off `grep` proving a doc names a real path is not one.
+- **Name the mutation that must make it fail** — "return the first span
+  instead of all of them", "drop the `strict=`". Without it the implementer can
+  substitute something weaker that passes either way; with it the proposal is
+  checkable in one command.
+- **Propose keeping a builder only when you can name a second use.** A builder
+  is reusable setup for the *next* test, so where the state you constructed is
+  one a reasonable next change would also need, propose it as an addition to
+  the suite's helpers rather than lines inside a single test. Otherwise keep it
+  local.
+- **A finding's rationale is a claim like any other.** If the conclusion was
+  proved by running but the explanation was not, say which part is unverified.
 
-Say which you did. "Reused the `segment_table` fixture from
-`tests/conftest.py`" and "the suite had no builder for a repo in this state,
-so I built one" are both acceptable; building a ninth bespoke fixture beside
-eight existing ones is not, because the next reviewer then has nine to choose
-from and no reason to prefer any.
-
-**If you did build one, say whether it should stay.** A builder is not the
-test — it is reusable setup for the *next* test, and it is the part most likely
-to be needed again, because the states worth constructing are few and keep
-recurring. When the state you had to construct is one a reasonable next change
-would also need, propose the builder as an addition to the suite's helpers
-rather than as lines inside a single test: which existing function it extends,
-or what it should be called if it is genuinely new.
-
-Do not propose one for a state that took two lines to reach, and do not
-propose one you only used once and cannot name a second use for. Propose it
-when the same state is likely to recur; otherwise keep it local.
-
-### Keep useful hand-built verification
-
-Settling a claim often means building a harness: a fixture repo, a crafted
-input, a few lines that drive a function and print what came back. When that
-harness confirms a real defect, **say so in the finding and give the harness
-alongside it**, phrased as the test it wants to become — which function, what
-input, what assertion.
-
-When a harness is thrown away, the next review rebuilds it from scratch, and
-nothing prevents the defect from returning in between. A harness turned into a
-test costs one more paragraph now and runs on every commit. Prioritize silent
-wrong behavior, a guard that does not guard, and an error path nobody
-exercises.
-
-Apply it where a test would be small and durable, not to everything. A
-one-off `grep` proving a doc names a real path is not a test. Skip it too when
-the repo has nowhere for the test to live and creating that home is a bigger
-change than the fix — say that, rather than omitting the harness.
-
-**Name the mutation that must make it fail.** Every proposed test includes one
-line saying what to break to see it go red — "revert the range to `,$p`",
-"return the first span instead of all of them", "drop the `strict=`". Without
-it a proposal is only a suggestion: the implementer can substitute something
-weaker that passes either way. A stated mutation makes the proposal checkable
-in one command — apply it, watch red, revert, watch green — and a weaker
-substitute fails that check immediately rather than at the next review.
-
-This is the repo's own rule about watching a check fail. The extra line proves
-the test rejects the defect rather than only confirming today's code.
-
-**The same question is asked of the tests already in the diff**, and settling
-it is not this skill's job. A test the change set adds or edits is a test
-nobody has watched fail either, and it stops being watched the moment it is
-written — file-by-file review does not recheck it.
-`.claude/skills/test-review/SKILL.md` is where that is settled, by breaking the
-code in a throwaway worktree and confirming the test reddens. **Its caller is
-`code-reviewer`'s Phase 4**; a direct invocation of this skill has no such
-phase, and wherever no mutation follows, name it among what was not run rather
-than leaving a reader to assume it happened.
-
-**A finding's rationale is a claim like any other.** Where it asserts something
-about behaviour and was written from reading, *Verify by running* covers it as
-it covers everything else. If the conclusion was proved by running but the
-explanation was not, say which part remains unverified.
+**The tests already in the diff are `test-review`'s subject, not this skill's.**
+A test the change set adds or edits is one nobody has watched fail either.
+Wherever no mutation pass follows this review, name it among what was not run
+rather than leaving a reader to assume it happened.
 
 This skill stays report-only: propose the test, do not write it.
 
@@ -134,7 +99,6 @@ rules, not because a reading pass is how they get caught:
 | Already mechanical | Rule |
 |---|---|
 | Unused imports, unused locals, undefined names | `F401`, `F841`, `F821` |
-| `X \| None` rather than `Optional[X]` | `UP045` |
 | Import order | `I001` |
 | Line length | `E501` |
 | Simplifiable constructs, likely bugs | `SIM`, `B` |
@@ -146,7 +110,9 @@ linter disagreeing with you is the more likely explanation.
 
 What no rule in that selection covers, and what the reading is therefore
 **for**: missing or wrong docstrings, missing type hints, whether a comment
-explains *why*, whether a name means anything, duplication across files,
+explains *why*, whether a name means anything, `Optional[X]` where the
+project requires `X | None` — `select` in `pyproject.toml` carries no `UP`
+rules, so nothing mechanical reports it — duplication across files,
 a value written in two places, and every correctness question below — the
 logic, the data shapes, the silent no-ops. Those are the manual checks a
 second reader can add.
@@ -174,15 +140,13 @@ inputs and ask "what input makes this do the wrong thing?"
   multiplies rows; a filter that drops or duplicates records; a group-by
   missing a dimension; a value that leaks across a partition it should
   have been scoped to.
-- **Resource / lifetime bugs** — using an object after it is closed or
-  garbage-collected; reading a result after the thing that produced it is
-  gone; a file/connection/handle not released.
+- **Concurrency** — under rayon, shared state mutated across threads, or an
+  RNG shared rather than seeded per replication, which makes a result depend
+  on scheduling order. There is no `async` code here; if some appears, it
+  arrived with a framework and its ordering assumptions are worth reading.
 - **Error handling** — an exception swallowed (`except: pass`) that hides a
   failure; catching too broad a type; the wrong exception type; a `finally`
   that masks the original error.
-- **Async / concurrency** — a missing `await`, a coroutine never awaited,
-  shared state mutated without protection, or ordering assumptions a
-  `gather`/thread pool breaks.
 - **State & mutation** — mutating a shared or input object as a side effect;
   a mutable default argument; aliasing that surprises the caller.
 - **Contract mismatch** — a call whose argument order/types don't match the
@@ -299,75 +263,58 @@ below.
 
 ### Single source of truth for parameter values
 
-Often the highest-priority class of finding. Parameter values (numbers,
-dicts, config entries) get ONE home; other modules read from it.
-Duplicate-source-of-truth bugs drift silently and affect every caller that
-uses the wrong copy. Flag every instance, with severity calibrated to blast
-radius:
+Often the highest-priority class of finding. Parameter values (numbers, dicts,
+config entries) get ONE home; other modules read from it. The copies drift
+silently, and every caller reading the wrong one is wrong with it. Flag every
+instance, with severity by blast radius: **Must Fix** in a code path that runs,
+or where the copies have already drifted; **Should Fix** in diagnostics, charts
+or tests where they still agree.
 
-- **Must Fix** when the duplication is in a production code path, or
-  when the two copies have already drifted to different values.
-- **Should Fix** when the duplication is in diagnostics, charts, or
-  tests and the values currently agree — drift is a matter of time.
+The shapes it takes here, most consequential first:
 
-- **A copy kept in sync by a step someone has to remember to run** — one
-  value plus a derived mirror somewhere else, regenerated by hand. Editing the
-  source without rerunning the step silently diverges runtime behavior from
-  what the editor expected: no warning, no error, just wrong output. Adding a
-  startup assertion that compares the two is **not** a fix — the duplicate is
-  still there, and the assertion only catches the drift later. **Must Fix; the
-  resolution is to delete the derived copy and read the one source.** If the
-  split was forced by a circular import, restructure the imports (move shared
-  constants into a leaf module) so the duplicate is not needed.
-- **Hardcoded scalar where a config constant exists** — a literal in a
-  runtime module that also lives as a named constant in the config
-  module. Two sources for one value drift apart on the next edit. Fix:
-  read the config constant and delete the literal. Watch especially for
-  rates, factors, fallbacks, and unit-conversion constants.
-- **Module-level constant imported directly when a config field wraps
-  it** — one caller does `from ...config import SOME_MAP` while the
-  runtime path reads `cfg.some_map`. Per-instance overrides then reach
-  the runtime path but not the direct importer, so a scenario override
-  silently applies in one place and not the other. Fix: route both
-  through the config object, or document why one deliberately ignores
-  overrides.
-- **Mismatched defaults across functions for the same logical value** —
-  e.g. a config field defaulting to a replication count while a function
-  signature defaults the same concept to `None`. A caller that omits
-  the argument gets a silent behavior split between tests and
-  production. Fix: align the defaults, or make the parameter required.
-- **A function reimplements logic a runtime function already has** — a
-  chart or notebook recomputing a value from raw inputs when the
-  simulation path already computed it with extra handling (censoring,
-  discounting, unit conversion). Even a tiny difference compounds. Fix:
-  delegate to the function that produced the canonical value, or read
-  its stored output, rather than recomputing.
-- **Two functions compute the same per-key value independently** — the
-  same derived quantity calculated in two places from *different* source
-  sets. Cache the canonical computation once and have both callers read
-  it. Whichever function wrote the canonical value stays the sole
-  computer.
+- **A default written in Python and again in Rust.** The FFI boundary is where
+  this is worst — the two sides diverge with nothing raising, and only the
+  parity test would notice, which CLAUDE.md's mirror section says is not
+  sensitive enough to rely on.
+- **A literal where a config field or a named constant already holds the
+  value.** Read the one source and delete the literal. Watch rates, factors,
+  fallbacks and unit conversions.
+- **A constant imported directly when a config field wraps it** — one caller
+  does `from ...config import SOME_MAP` while the runtime path reads
+  `cfg.some_map`. A per-run override then reaches one and not the other. Route
+  both through the config object, or say why one ignores overrides.
+- **Mismatched defaults for the same logical value** across a config field and
+  a function signature. A caller that omits the argument gets a silent split.
+  Align them, or make the parameter required.
+- **A derived copy kept in sync by hand.** Editing the source without rerunning
+  whatever regenerates the copy diverges behavior from what the editor
+  expected. A startup assertion comparing the two is not a fix — the duplicate
+  is still there and the assertion only catches drift later. Delete the derived
+  copy and read the one source; if a circular import forced the split,
+  restructure the imports instead.
+- **A chart or notebook recomputing what the simulation path already computed**
+  with extra handling. Delegate to the function that produced the canonical
+  value rather than recomputing it.
 
-When flagging a source-of-truth violation, include:
-- The two (or more) source locations
-- Whether they currently agree (same value, two copies) or already drift
-- Which one is canonical (the runtime/production source usually wins)
-- The signature change required to consolidate
+When flagging one, include: the source locations, whether they currently agree
+or have already drifted, which is canonical, and the change required to
+consolidate.
 
 ### On-boarding ease
 
-- **Would a new team member understand this?** — flag sections that
-  need context comments.
-- **Are error messages helpful?** — do assertions explain what went wrong?
-- **Are log messages informative?** — do they help debug a simulation run?
-- **Are READMEs up to date?** — do they reflect the current code?
+- **Does an error message say what went wrong and what to do?** An assertion
+  or exception carrying only the failed condition makes the reader reconstruct
+  the state; name the value and the expectation.
+- **Would a reader with no context need a comment here?** Flag the specific
+  passage, not the file. README drift belongs to `comment-docstring`'s README
+  sweep, which greps for it rather than asking.
 
 ### Simplification (per minimalism rules)
 
 Apply the **Minimalism (write less)** hierarchy from `CLAUDE.md` to the
 changed code: walk it top to bottom and flag where the diff skipped an
 earlier Minimalism step. This lens is about the *form* of the new code (is it
-minimal?), as distinct from **Code Duplication & Helper Functions** above
+minimal?), as distinct from **Code duplication & helper functions** above
 (is it repeated?) and the `simplify-audit` skill (is there dead/excess
 code across the *whole repo*?). Report only — do not edit.
 
@@ -382,7 +329,7 @@ code across the *whole repo*?). Report only — do not edit.
   group-and-sum call does in one line).
 - **Single-use abstraction** — a wrapper, helper, or class the diff
   introduces for exactly one call site. Recommend inlining. This is the
-  inverse of the **Code Duplication & Helper Functions** section above:
+  inverse of the **Code duplication & helper functions** section above:
   extract at 2–3 copies, inline at one.
 - **Premature generalization** — parameters, `**kwargs`, or branches that
   handle cases which do not occur in the codebase yet.
@@ -397,13 +344,10 @@ are an ordered hierarchy you walk until one solves the problem.
 ### Project-specific additions
 
 - **The Python oracle and the Rust kernel are a deliberate mirror, so
-  "duplication" here means *drift*, not repetition.**
-  `python/cablesim/policies.py` and `src/policy.rs` implement the same
-  scoring, and `python/cablesim/reference.py` and `src/sim.rs` the same annual
-  loop. Do not propose collapsing them — the parity tests are what validate
-  the kernel. Do report any place the two have diverged, and treat a numeric
-  literal appearing in both as a Must Fix: the copies drift, and the parity
-  test is the only thing that would notice.
+  "duplication" here means *drift*, not repetition** — CLAUDE.md, The
+  Python/Rust mirror, is the rule. Never propose collapsing a side. Do report
+  any place the two have diverged, and treat a numeric literal appearing in
+  both as a Must Fix: the parity test is the only thing that would notice.
 - **Every run knob lives on the pydantic config model.** A tunable read from
   a module-level global, or a default written in Python and again in Rust, is
   a source-of-truth finding. Fixed constants a caller overriding would be a
@@ -475,22 +419,12 @@ Example layout:
 
 ## Steps
 
-1. Identify files to review:
-   - If a file or directory argument is provided, review those files
-   - **If no argument is provided**, you MUST run this command to find
-     all changed files and review every one of them:
-     ```bash
-     git diff --name-only HEAD
-     git ls-files --others --exclude-standard
-     ```
-     **Union both lists — the second is not a fallback for the first.**
-     A change set that edits one tracked file and adds twenty untracked ones
-     is ordinary; an "only if the first is empty" rule reviews the one and
-     skips the twenty. Review ALL files returned — do not skip any.
+1. **Derive the target set** as the Arguments section above specifies, and
+   review every file in it.
 2. Run static checks on the changed files first — these surface
    issues mechanically before you start reading:
    - `uv run ruff check <changed-files>` — unused imports, undefined
-     names, style violations, marker for X | None vs Optional[X]
+     names, style violations
    - `cargo clippy` and `cargo fmt --check` — where the changed set holds
      `.rs` files. Ruff does not read Rust, so without these the kernel gets
      no mechanical pass. Cite the lint name in each finding the way ruff
@@ -498,15 +432,11 @@ Example layout:
      Fix**. `test.yml` fails the build on either, so a review that skips
      them cannot catch what CI rejects.
 
-   **This skill does not run the test suite.** Whether the change set passes
-   is a fact about the change, not a review finding, and its caller
-   establishes it — the `code-reviewer` agent's full pass does, after its
-   docstring pass, where one run also covers the edits that pass makes. What
-   belongs here is the targeted run that settles a particular claim, which
-   *Verify by running* above describes. **Its `commit` mode does not run the
-   suite**, and neither does a direct invocation; wherever no run follows,
-   name the suite among what was not run, rather than letting silence imply a
-   pass.
+   **This skill does not run the test suite** — the `code-reviewer` agent
+   composes that, and `.claude/README.md` says why the split falls there. What
+   belongs here is the targeted run that settles a particular claim, per
+   *Verify by running* above. Wherever no suite run follows, name it among
+   what was not run rather than letting silence imply a pass.
 
    Treat any ruff finding as **at least Should Fix**; F821 (undefined
    name) and most B-class rules are **Must Fix** since they're real
@@ -522,19 +452,20 @@ Example layout:
    enforce `ruff format`, so `ruff format --check` would report drift
    on files nobody intends to reformat. Do not run it or report it.
 
-   Note on marimo notebooks: ruff is configured to ignore B018,
-   E501, F401, F811, F821, I001 and S101 under `notebooks/**/*.py` because
-   marimo's reactive graph violates ruff's normal expectations
-   (bare expressions for output, cross-cell imports). Don't manually
-   re-flag these in notebook files.
+   Note on marimo notebooks: read `[tool.ruff.lint.per-file-ignores]` in
+   `pyproject.toml` before deciding what ruff covers there. Its only entry
+   today is `S101` under `tests/**`, so nothing is ignored for notebooks and
+   the rules marimo's reactive graph provokes — bare expressions for output,
+   cross-cell imports and names — all fire. Report that as a config gap
+   rather than as a defect in the cells.
 3. Read each file fully — do not skip any changed files. As you read, keep
    a running list of the claims the file makes — what a comment says a flag
    does, what a docstring says a function returns, what a doc says a command
    prints — and settle them per **Verify by running** before moving on.
 4. Apply the checklist to every changed file, checking for **correctness bugs
    first** (the **Correctness & Bugs** section — every confirmed bug is a
-   Must Fix), then paying special attention to the **Single Source of
-   Truth for Parameter Values**, **Code Duplication & Helper Functions**,
+   Must Fix), then paying special attention to the **Single source of
+   truth for parameter values**, **Code duplication & helper functions**,
    and **Simplification** sections. For each duplication finding, include
    a concrete helper signature so the fix is actionable; for each
    simplification finding, cite the Minimalism step (1–6) it maps to; for

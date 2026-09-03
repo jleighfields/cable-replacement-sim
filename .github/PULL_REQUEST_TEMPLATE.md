@@ -37,7 +37,8 @@
 - [ ] Rust clean (`cargo fmt --check`,
       `cargo clippy --all-targets --no-default-features -- -D warnings`,
       `cargo test --no-default-features`)
-- [ ] Rebuilt before testing where `src/` changed (`maturin develop --release`)
+- [ ] Rebuilt before testing where `src/` changed
+      (`uv run maturin develop --release`)
 
 <!-- The test check runs all of these, so tick them from a local run and let
      CI be the second opinion rather than the only one. "Tests pass" with

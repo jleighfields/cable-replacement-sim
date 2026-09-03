@@ -30,9 +30,8 @@ Security scan findings answer "does this leak a credential or open a hole?"
 ## Arguments
 
 - **file-or-directory** (optional): Path to scan for secret *content* /
-  insecure patterns. If omitted, scan the changed files
-  (`git diff --name-only HEAD` unioned with `git ls-files --others
-  --exclude-standard` — union, not fallback).
+  insecure patterns. If omitted, derive the target set as
+  `code-quality-review`'s Arguments section specifies — union, not fallback.
   The tracked-file checks always run against the whole repo regardless of
   the argument.
 
@@ -76,20 +75,31 @@ Primary: run `detect-secrets` against the baseline (see Steps). It catches
 token shapes AND high-entropy strings the regexes below would miss, and the
 baseline suppresses audited false positives.
 
-Fallback / supplement (also useful for explaining a finding): scan for
-assignments of a secret-looking name to a literal, and known token shapes.
-Pattern reference (ripgrep regex):
+Fallback / supplement, and the form to quote when explaining a finding.
+`detect-secrets`' own detector list already covers these shapes, so reach for
+the greps to show *why* something matched, not to find what the tools missed.
+They are in a code block rather than a table because a markdown table cell
+needs `|` escaped as `\|`, and a pattern pasted with the escapes intact matches
+a literal pipe and reports clean — the silent no-op these scans exist to avoid:
 
-| What | Pattern |
-|---|---|
-| Secret-named literal | `(?i)(pass(word|wd)?\|secret\|token\|api[_-]?key\|client[_-]?secret\|access[_-]?key\|auth[_-]?token\|private[_-]?key)\s*[:=]\s*["'][^"']{6,}["']` |
-| Private key block | `-----BEGIN (RSA \|EC \|OPENSSH \|DSA \|PGP )?PRIVATE KEY-----` |
-| AWS access key id | `AKIA[0-9A-Z]{16}` |
-| GitHub token | `gh[pousr]_[A-Za-z0-9]{36,}` or `github_pat_[A-Za-z0-9_]{60,}` |
-| Slack token | `xox[baprs]-[A-Za-z0-9-]{10,}` |
-| Bearer/JWT | `(?i)bearer\s+[A-Za-z0-9._\-]{20,}` / `eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}` |
-| URL with embedded creds | `[a-z][a-z0-9+.\-]*://[^/\s:@]+:[^/\s:@]+@` |
-| Connection-string password | `(?i)(password\|pwd)=[^;"'\s]{4,}` |
+```bash
+# Secret-named literal
+(?i)(pass(word|wd)?|secret|token|api[_-]?key|client[_-]?secret|access[_-]?key|auth[_-]?token|private[_-]?key)\s*[:=]\s*["'][^"']{6,}["']
+# Private key block
+-----BEGIN (RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----
+# Token shapes: AWS, GitHub, Slack, JWT
+AKIA[0-9A-Z]{16}
+gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{60,}
+xox[baprs]-[A-Za-z0-9-]{10,}
+(?i)bearer\s+[A-Za-z0-9._\-]{20,}|eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}
+# Credentials in a URL or a connection string
+[a-z][a-z0-9+.\-]*://[^/\s:@]+:[^/\s:@]+@
+(?i)(password|pwd)=[^;"'\s]{4,}
+```
+
+**Watch one of these match before trusting a clean run.** Point it at a file
+you have planted a fixture secret in; a pattern that finds nothing looks
+identical to a repo that holds nothing.
 
 For each hit, **redact the value in your report** — show the variable name
 and first few characters only, never the full secret.
@@ -192,10 +202,8 @@ suggested fix.
 
 ## Steps
 
-1. **Pick targets.** Path argument → that path. Otherwise
-   `git diff --name-only HEAD` unioned with `git ls-files --others
-   --exclude-standard`. Union, not fallback — see `code-quality-review`.
-   The tracked-file and `.gitignore` checks run whole-repo regardless.
+1. **Pick targets** as the Arguments section above specifies. The
+   tracked-file and `.gitignore` checks run whole-repo regardless.
 2. **Mechanical passes first** — reuse the configured tooling:
    - `uv run ruff check --select S <targets>` — insecure patterns. Cite
      each rule code.
@@ -237,12 +245,13 @@ suggested fix.
 
      Dropping the flag brings back findings that change on every deploy,
      and a value that changes every run is stale in the baseline by the
-     next commit — exclude the file instead. A Connect `manifest.json`,
-     whose per-file md5s all read as high-entropy hex, is the case the
-     pattern exists for — this repo grows one at Phase 7, when the Shiny app
-     deploys, and not before. Commit the result: the pattern is stored *in* the
-     baseline as a filter, so every later caller inherits it without
-     repeating the flag.
+     next commit — exclude the file instead. The pattern is stored *in* the
+     baseline as a filter, so committing the result lets every later caller
+     inherit it without repeating the flag. It is currently written for a
+     deployment `manifest.json` whose per-file md5s all read as high-entropy
+     hex; no such file exists here yet, and whether one ever does depends on
+     the deployment target, which `PLAN.md` §12, Open questions to confirm
+     before implementation, still lists as undecided.
 3. **Tracked-file check.** `git ls-files`, filtered for the credential-file
    patterns above, applying the `.env.example` exception. Confirm
    `.gitignore` coverage.
@@ -258,8 +267,9 @@ suggested fix.
 ## Note on marimo notebooks
 
 Scan notebook `.py` files for secrets the same as any source file — a
-hardcoded token in a marimo cell is just as committed. `S101` is the only
-`S` rule ignored for notebooks, so every other one — including the
-hardcoded-secret rules `S105-S107` — still fires there. Read
+hardcoded token in a marimo cell is just as committed. No `S` rule is ignored
+for notebooks — the repo's only per-file ignore is `S101` under `tests/**` —
+so every one of them fires there, the hardcoded-secret rules `S105-S107`
+included. Read
 `[tool.ruff.lint.per-file-ignores]` in `pyproject.toml` rather than trusting
 a list here; that file is the authority.

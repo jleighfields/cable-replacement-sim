@@ -69,3 +69,30 @@ caused it.
 `cargo test` needs `--no-default-features` because the default build enables
 PyO3's `extension-module`, and a test binary linked against it cannot resolve
 the CPython symbols the interpreter supplies at import time.
+
+Layout and fixture conventions for the suite are in
+[`tests/README.md`](tests/README.md).
+
+## Contributing
+
+`main` is protected and takes no direct pushes — every change arrives through a
+squash-merged pull request. Cut a feature branch from the latest `main`:
+
+```bash
+git checkout main && git pull origin main
+git checkout -b feature/<short-kebab-name>
+```
+
+Open the pull request with `gh pr create` and let the `test` check report
+before merging; `.github/PULL_REQUEST_TEMPLATE.md` has the checklist, including
+what to say when a change touches one side of the Python/Rust mirror. Read a
+red check rather than re-running it — `uv sync --locked` failing means the
+lockfile does not match `pyproject.toml`, and no number of re-runs fixes that.
+
+The branch protection ruleset is checked in at
+`.github/rulesets/protect-main.json`; `PLAN.md` §9.4, Branch protection on
+`main`, covers the setup and the ways it goes wrong.
+
+`CLAUDE.md` carries the conventions this project works to, and
+[`.claude/README.md`](.claude/README.md) documents the review skills and agents
+that check them.

@@ -57,17 +57,11 @@ tiers*; the words are interchangeable, and both appear below.
 suite in Phase 3, and skip Phases 4 and 5 entirely. That is the pass a single
 commit gets: the three skills over exactly what is being committed.
 
-**A defective test written at commit time is caught at the branch pass**,
-which is one review later, by which point other commits have built on it. That
-delay is intentional: mutation needs the suite, and keeping the suite out of
-the commit tier is the reason the tiers differ.
-
-**Why those two phases wait.** Both evaluate the branch rather than one commit.
-Whether the whole change passes is a fact about what gets merged, and a suite
-run per commit answers it once per commit for a diff that is merged once. Phase
-5 pins a confirmed defect with a failing test, and a test written against a
-defect that a later commit on the same branch removes is a test that has to be
-removed with it.
+**Why those two phases wait.** Both evaluate the branch rather than one
+commit. Mutation needs the suite, and Phase 5 pins a defect a later commit on
+the same branch may remove. The cost is that a defect the full pass would have
+caught can surface after other commits have built on it — acceptable over a few
+commits, so take a full pass partway through a branch longer than a day's work.
 
 **Say which mode ran, at the top of the report, naming every omission.** A
 commit-mode report that does not name itself can be mistaken for a full pass:
@@ -83,11 +77,6 @@ mergeable. Nothing here narrows it.
 seconds. Delaying it changes the remedy — a credential caught before the
 commit is a line to delete, and the same one caught afterwards has to be
 rotated, because working-tree removal is not enough once it is in history.
-
-**Risk of the split.** A defect the full pass would have caught may be found
-after later commits have built on it, so the fix is larger than it would have
-been. That holds while a branch is a few commits long; one past a day's work
-takes a full pass partway through as well.
 
 **Commit mode still requires targeted tests.** Whoever is committing still
 runs the tests the change can reach; what waits is this agent running them
@@ -162,7 +151,7 @@ step rather than directly.
 - **Skip the test suite only when the set holds no `.rs` either.** Phase 3 is
   where it runs. A suite that the change could not have affected tells you
   exactly what it told you at the last commit, at the same cost — but a
-  change under `src/` can affect it, so rebuild with `maturin develop
+  change under `src/` can affect it, so rebuild with `uv run maturin develop
   --release` and run it.
 - **Reduce Phase 3 to its README sweep.** It is a docstring, type-hint and
   inline-comment pass, and none of those exist to fix here — but prose in a
@@ -209,50 +198,34 @@ what one of them does, it is unsettled in the sense above.
 
 ## Run each mechanical check once, not once per phase
 
-Each skill is written to stand alone, so those that derive a target set derive
-their own, and each names the tooling it needs. Followed literally in
-sequence, that derives the set twice — `comment-docstring` takes a required
-path argument and derives nothing — and runs `ruff` twice over the same files.
-Composing them is your job: run each check once and carry the result, and own
-outright the one check none of them names:
+Each skill is written to stand alone and names the tooling it needs. Followed
+literally in sequence that runs `ruff` twice over the same files. Composing
+them is your job: run each check once, carry the result, and own the one check
+no skill claims.
 
-- **`ruff` once, with the full rule selection.** A single run yields both the
-  findings Phase 1 reports and the `S` findings Phase 2 owns. The split between
-  them is about who reports what, and the skills already encode it; it was
-  never a reason to invoke the tool twice.
+- **`ruff` once, with the full rule selection.** One run yields both the
+  findings Phase 1 reports and the `S` findings Phase 2 owns; the split is
+  about who reports what.
 - **The test suite once, in Phase 3 of the full pass, and it is yours rather
-  than a skill's.** No skill runs the *suite*: whether a change set passes is a
-  fact about the change, not a review finding, so it belongs to whatever is
-  making the pass over that change — here, you. One run answers four questions
-  the phases ask of it: whether the change set passes, whether Phase 3's own
-  edits broke anything, whether Phase 4's mutations start from green — a
-  mutation result cannot be interpreted over a suite that was already red —
-  and what baseline Phase 5 adds a failing test to.
-  Running it before Phase 3 and again after duplicates the first question, in
-  every review that touches a comment — which is nearly all of them.
-- **Re-run it only to attribute a failure, never to confirm a pass.** A red
-  suite after Phase 3 does not say which side caused it, and attribution is
-  the only purpose of a second run. Restore the tree to its pre-edit state,
-  run once more, and say which it was. A review that goes green does not need
-  this second run, which is the common case.
-- **Run it the way the workflow does.** CI passes `-n auto`; a review that
-  runs the same suite serially is slower than the CI check it mirrors,
-  for no result the parallel run does not give. Where a suite is short enough
-  that worker startup dominates, the difference is noise either way. Drop to
-  `-n0` for a re-run whose output you have to read: xdist interleaves workers,
-  and a traceback you are attributing is worth reading in order.
+  than a skill's.** Whether a change set passes is a fact about the change, not
+  a review finding. One run answers four questions the phases ask of it:
+  whether the change set passes, whether Phase 3's edits broke anything,
+  whether Phase 4's mutations start from green — a mutation result cannot be
+  read over an already-red suite — and what baseline Phase 5 adds a failing
+  test to.
+- **Re-run it only to attribute a failure, never to confirm a pass.** Restore
+  the tree to its pre-edit state, run once more, and say which side caused it.
+- **Run it the way the workflow does**, `-n auto`. Drop to `-n0` for a re-run
+  whose traceback you have to read, since xdist interleaves workers.
 - **`cargo clippy` and `cargo fmt --check` once, where the set holds Rust.**
-  `ruff` does not read `.rs`, so without these the Rust half of a change gets
-  no mechanical pass at all. Run clippy with the same rule selection every
-  time, and treat a `clippy::correctness` lint the way Phase 1 treats an
-  `F821`. `test.yml` fails the build on both.
-- **Build once, before the suite.** `maturin develop --release` where the set
-  touches `src/`; a suite run against a stale extension module reports on code
-  that is no longer in the diff. Release mode matters for any finding about
-  timing — a debug build is slow enough that a benchmark claim measured
-  against one is not evidence of anything.
-- **The target set once**, above. Where a skill's own Steps re-derive it, use
-  the set you already have.
+  Without them the Rust half gets no mechanical pass at all; `test.yml` fails
+  the build on both. Treat a `clippy::correctness` lint the way Phase 1 treats
+  an `F821`.
+- **Build once, before the suite.** `uv run maturin develop --release` where
+  the set touches `src/`. A stale extension module reports on code that is no
+  longer in the diff, and a debug build makes any timing finding meaningless.
+- **The target set once**, above. Where a skill's Steps re-derive it, use the
+  set you already have.
 
 **Phases 4 and 5 run tests, and neither is a repeat of the suite.** Phase 4
 runs one targeted test per mutation, in a worktree, to see a test that should
@@ -309,14 +282,6 @@ failing test to. Skipping it because this phase found nothing to edit leaves
 the first of those three unanswered with nothing reporting it. Run it the way
 the workflow does:
 `uv run pytest -n auto`.
-
-**It is this file's run, and the two skills you might look in for it say so.**
-`code-quality-review` and `comment-docstring` each state that the suite is not
-theirs, so finding no command in their Steps sections means the split is
-intact rather than that a step is missing. `comment-docstring` is the one that
-matters here: its edits are what this run exists to check, so it states the
-absence explicitly. `security-scan` says nothing either way, having never had a
-claim on the suite.
 
 Two cases skip it: `commit` mode, decided under *Modes*, and a target set
 holding no Python, decided by the scoping section above. Neither is decided

@@ -164,11 +164,13 @@ git worktree list
 ```
 
 **`cd "$ROOT"` first, and require a zero exit status.** Steps 2 and 3 leave the
-shell inside the worktree, and `worktree remove` run from in there fails with
-`Permission denied` — but it deregisters the worktree *before* it fails to
-delete the directory. Every later confirmation then reports clean while an
-empty directory survives that neither `list` nor `prune` nor a second `remove`
-can reach, because all three read a record that is already gone.
+shell inside the worktree. Whether `worktree remove` tolerates that is
+platform-dependent: on Linux with git 2.43 it succeeds and removes the
+directory, and elsewhere it can fail to delete a directory it has *already*
+deregistered — after which `list`, `prune` and a second `remove` all read a
+record that is gone and report clean over a checkout that survives. Leaving the
+worktree first costs one line and makes the outcome the same everywhere.
+Believe the exit status either way rather than the absence of an error.
 
 **`prune` is not a substitute for `remove`.** Prune only discards the record of
 a worktree whose directory is already gone. It is the follow-up for a directory
@@ -178,8 +180,7 @@ worktree list` names what is still registered, `remove --force` each, then
 
 **Use `git worktree list` for recovery, never the directory's presence.**
 `remove` deletes the leaf and nothing above it, so `.test-review/<repo>/`
-survives every successful teardown as an empty skeleton. The directory's
-presence says only that runs have happened here.
+outlives every successful teardown.
 
 Confirm the reviewed branch's `git status` is unchanged and `git worktree list`
 shows only the branch itself before reporting. **A run without both
@@ -221,14 +222,14 @@ the mutation could not be constructed goes in the scope statement.
   leave it green by design.
 - **A mutation to Rust costs a rebuild, and the numbers only mean something
   in release mode.** Editing anything under `src/` means
-  `maturin develop --release` before the test can run — tens of seconds per
+  `uv run maturin develop --release` before the test can run — tens of seconds per
   mutation, against about a second for a pure-Python one. Say so in the scope
   statement, and mutate the Python side where the same logic exists on both
   (it exists on both by design — see `simplify-audit`'s scope section).
-- **A mutation inside the statistical parity test may not be detectable, and
-  that is itself the finding.** `test_oracle_parity.py` compares Rust against
-  the Python oracle within Monte Carlo error, so a mutation smaller than that
-  tolerance passes. Where that happens, report it: the deterministic parity
+- **A mutation inside a statistical parity test may not be detectable, and
+  that is itself the finding.** Any test comparing Rust against the Python
+  oracle within Monte Carlo error passes on a mutation smaller than its
+  tolerance. Where that happens, report it: the deterministic parity
   test — hazard forced to 0 or 1 — is the one that pins policy and budget
   logic exactly, and a mutation it cannot catch either means the tolerance is
   too loose or the deterministic case is missing.

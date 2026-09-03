@@ -57,15 +57,11 @@ For the file body:
 
 ## Style rules
 
-Follow the project's CLAUDE.md conventions:
-
-- Google-style docstrings with summary, Args, and Returns
-- Use `X | None` syntax (not `Optional[X]`)
-- Import modules directly for type hints (no forward references)
-- Prioritize simplicity and readability
-- Add comments that help someone on-boarding to the project
-- Do not prepend function names with `_` — internal helpers still get
-  real names
+CLAUDE.md's **Code style** section is the authority — docstring format, type
+hints, import style, and the no-`_`-prefix rule all live there, and nothing
+mechanical enforces the last two. Read it rather than a copy of it: `select` in
+`pyproject.toml` carries no `UP` rules, so `Optional[X]` where the project
+requires `X | None` reaches you unreported.
 
 ## Example output
 
@@ -277,40 +273,30 @@ it, where a human decides.
 ## Examples in docstrings
 
 Google style has an `Examples:` section, and most functions should not have
-one. Include an example where the signature leaves the contract open.
-Everywhere else it is prose that can drift, with a trap the rest of a
-docstring does not have: it looks executable, so readers treat it as
-tested.
+one. It is prose that can drift, with a trap the rest of a docstring does not
+have: it looks executable, so readers treat it as tested.
 
-**Add one when:**
+**Add one where the signature leaves the contract open** — and nowhere else:
 
-- **The types do not say what is in them.** A parameter or return annotated
-  `pl.DataFrame`, `dict`, or a nested container — the annotation names the
-  container and nothing about its contents. Show the columns or keys, with
-  units.
-- **A plausible wrong call exists.** Two parameters of the same type that
-  can be swapped, a value in MW where MWh is meant, a ratio that reads as a
-  percentage. The example is what rules the wrong reading out.
-- **The calling convention is not obvious.** A parameter that only does
-  anything when another is set, an ordering requirement, a resource the
-  caller is expected to hold open.
-- **It is an entry point.** Something callers reach for directly, rather
-  than a helper with its one call site a screen away.
+- **The types do not say what is in them.** `pl.DataFrame`, `dict`, or a nested
+  container names the container and nothing about its contents. Show the
+  columns or keys, with units.
+- **A plausible wrong call exists.** Two parameters of the same type that can
+  be swapped, a value in MW where MWh is meant, a ratio that reads as a
+  percentage.
+- **The calling convention is not obvious** — a parameter that only does
+  anything when another is set, an ordering requirement, a resource the caller
+  must hold open.
+- **It is an entry point** callers reach for directly.
 
-**Do not add one when** the signature already says everything, or when the
-example would restate the call it documents. `add(a: int, b: int) -> int`
-needs no example, and one showing `add(1, 2)` adds no contract information.
+`add(a: int, b: int) -> int` needs none, and one showing `add(1, 2)` adds no
+contract information.
 
-**Write it as a real call with real shapes.** Invented column names document
-names the code does not produce. Use values the code actually produces,
-name the units where a number has any, and show enough of the return to
-answer the question the example exists to answer — not the whole frame.
-
-**Run it before leaving it in.** An example is a claim about behaviour, so
-CLAUDE.md's *Verify by running* covers it like any other: paste it against
-the current code and compare. This is also the reason to keep them scarce.
-Each one is a claim someone has to re-check when the function changes, and
-an example that has gone stale misleads because it still looks tested.
+**Write it as a real call with real shapes, and run it before leaving it in.**
+Invented column names document names the code does not produce. An example is a
+claim about behaviour, so *Verify by running* covers it — and that cost is the
+reason to keep them scarce: each one is a claim someone must re-check when the
+function changes, and a stale one misleads because it still looks tested.
 
 ## README sweep
 
@@ -394,9 +380,7 @@ track a refactor — that belongs in `tasks/`.
 
 **This skill does not run the test suite**, though its edits are the kind that
 can break one — a docstring is inert, but a type hint corrected in passing is
-not. Whether the tree still passes is a fact about the tree rather than a
-result of this procedure, and its caller establishes it: the `code-reviewer`
-agent's full pass runs the suite once after this skill's edits, which is the
-run that covers them. **Its `commit` mode does not**, and neither does a
-direct invocation. Wherever no run follows, name the suite among what you did
-not run, so the summary does not imply the edits were checked.
+not. The `code-reviewer` agent's full pass runs the suite once after these
+edits, which is the run that covers them; nothing else does. Wherever no run
+follows, name the suite among what you did not run, so the summary does not
+imply the edits were checked.

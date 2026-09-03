@@ -21,10 +21,10 @@ readability and documentation:
 | Output | readability findings | a delete-list (LOC removable) |
 
 For **duplication** specifically, defer to `code-quality-review`'s
-**Code Duplication & Helper Functions** section — do not restate that
+**Code duplication & helper functions** section — do not restate that
 checklist here. Point the user at it when you spot repeated patterns.
 Likewise, repeated *parameter values* belong to that skill's **Single
-Source of Truth for Parameter Values** section.
+source of truth for parameter values** section.
 
 ## Arguments
 
@@ -46,16 +46,16 @@ Source of Truth for Parameter Values** section.
   `[dependencies]` is compiled into the extension module. Check both against
   what is actually imported and `use`d.
 - **The Python oracle and the Rust kernel duplicate each other on purpose,
-  and neither side is a finding.** `python/cablesim/reference.py` reimplements
-  what `src/sim.rs` computes, and `python/cablesim/policies.py` mirrors the
-  scoring in `src/policy.rs`. The parity tests are the only thing that
-  validates the kernel, so deleting either side deletes the validation.
-  Report a *divergence* between the two — the parity test is what catches it
-  — but never propose collapsing them.
-- **`benches/` holds three implementations of one calculation, also on
-  purpose.** A naive Python loop, a vectorized NumPy oracle, and the Rust
-  kernel exist so the benchmark reports an honest baseline rather than a
-  speedup measured against bad Python. Do not report the slow ones as dead.
+  and neither side is a finding.** Every module under `python/cablesim/` that
+  computes part of the model has a counterpart in `src/` — `PLAN.md` §4, Repo
+  layout, is the pairing. The parity tests are the only thing validating the
+  kernel, so deleting either side deletes the validation. Report a
+  *divergence* between the two, but never propose collapsing them.
+- **If `benches/` is present, it holds three implementations of one
+  calculation, also on purpose.** A naive Python loop, a vectorized NumPy
+  oracle, and the Rust kernel exist so the benchmark reports an honest
+  baseline rather than a speedup measured against bad Python. Do not report
+  the slow ones as dead.
 - **An unreferenced `cablesim` helper is still a finding here.** This repo is
   an application and a portfolio artifact, not a library other repos install,
   so nothing outside this tree calls in. Grep `notebooks/`, `app/`, `benches/`
@@ -84,9 +84,10 @@ Source of Truth for Parameter Values** section.
 - **Repo-wide dead exports** — public symbols (functions, classes,
   constants) with no references anywhere in live code. This is broader
   than `code-quality-review`, which only sees the diff.
-- **Size signals** — files > ~800 lines or functions > ~80 lines,
-  reported as bloat candidates. Cite them; do NOT prescribe the split here
-  (defer the "how" to `code-quality-review`'s function-length guidance).
+- **Size signals** — files over ~800 lines, and functions over the length
+  `code-quality-review`'s **Function length** item sets. Cite them; do NOT
+  prescribe the split here, and do not carry a second copy of the threshold —
+  two numbers for one concept drift apart.
 - **Dead scaffolding** — commented-out code blocks and stale TODO stubs
   that were never finished.
 
@@ -125,9 +126,9 @@ Each: `file:line`, what to verify.
    - **Dependency cross-check:** for each runtime dep in `pyproject.toml`
      (`[project].dependencies`), grep its import name across live code. A
      dep with no live `import` is a removal candidate. Two traps: the
-     **import name often differs from the package name** (e.g.
-     `python-dotenv` → `dotenv`), and some dependencies are **never
-     imported directly at all** — an engine or backend that another
+     **import name often differs from the package name** (`pyyaml` → `yaml`
+     is the one in this project's dependencies), and some dependencies are
+     **never imported directly at all** — a build backend or an engine another
      library loads under the hood is required despite having no `import`
      anywhere. Verify these cases before recommending removal.
 3. **Grep-confirm dead symbols.** For every candidate from the checklist,
@@ -147,7 +148,12 @@ Each: `file:line`, what to verify.
 
 ## Note on marimo notebooks
 
-`ruff` is configured to ignore `F401`, `F811`, `F821`, `B018`, `E501`, `I001`
-and `S101` under `notebooks/**/*.py` because marimo's reactive graph relies on
-bare expressions and cross-cell imports. Do not flag those as bloat in
-notebook files — they are required by the framework.
+Read `[tool.ruff.lint.per-file-ignores]` in `pyproject.toml` before deciding
+what ruff covers in a notebook; that file is the authority. Today its only
+entry is `S101` under `tests/**`, so every rule fires in a notebook file —
+including the ones marimo's reactive graph provokes by design (`F401` and
+`F811` from cross-cell imports, `F821` from cross-cell names, `B018` from the
+bare expressions that produce cell output). Where they fire and the config has
+not yet been given a `notebooks/` entry, that is a gap in the config rather
+than bloat in the notebook: report it as one and do not propose deleting the
+cells.

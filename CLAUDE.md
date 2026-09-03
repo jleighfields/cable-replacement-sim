@@ -9,11 +9,9 @@ wins on *how work is done here*.
 
 ## Orientation
 
-- **What this is:** a simulation of underground cable failure and replacement
-  policy for an electric distribution utility, with a Rust compute kernel
-  exposed to Python via PyO3/maturin. Two goals weighted equally — learn
-  PyO3/maturin on a workload that justifies Rust, and produce a publishable
-  portfolio artifact.
+- **What this is:** `README.md` — the model, the layout, and the project's two
+  goals. It also carries the two goals' consequence: this is an application and
+  a portfolio artifact, not a library other repos install.
 - **The population is fully synthetic.** No original utility data is used, and
   none should enter this repo. A file that appears to hold observed failure
   records is a problem, not an input.
@@ -21,13 +19,11 @@ wins on *how work is done here*.
   Simulation logic lives in `python/cablesim/` and the Rust crate in `src/`.
   Notebooks and the Shiny app import from the package and define no modeling
   logic of their own.
-- **How to verify a change:** `uv run pytest -n auto`, then `uv run ruff
-  check .`, then `cargo fmt --check`, `cargo clippy --all-targets
-  --no-default-features -- -D warnings` and `cargo test --no-default-features`
-  where Rust changed — the commands `.github/workflows/test.yml` runs.
-  Anything touching `src/` needs `maturin develop --release` first — a stale extension module makes the suite
-  report on code that is no longer in the diff, and a debug build makes every
-  timing number meaningless.
+- **How to verify a change:** the commands in `README.md` §Testing, which are
+  the steps `.github/workflows/test.yml` runs. Rebuild first with `uv run
+  maturin develop --release` wherever `src/` changed — a stale extension module
+  makes the suite report on code that is no longer in the diff, and a debug
+  build makes every timing number meaningless.
 
 ## Core principles
 
@@ -71,13 +67,10 @@ wins on *how work is done here*.
 ## The Python/Rust mirror
 
 The Python oracle and the Rust kernel implement the same model twice, and that
-is the validation strategy rather than an accident:
-
-| Python | Rust | What it computes |
-|---|---|---|
-| `cablesim/reference.py` | `src/sim.rs` | the annual replication loop |
-| `cablesim/policies.py` | `src/policy.rs` | candidate scoring |
-| `cablesim/weibull.py` | `src/weibull.rs` | hazard and conditional `p(t)` |
+is the validation strategy rather than an accident. Each module under
+`python/cablesim/` computing part of the model has a counterpart in `src/` —
+the annual replication loop, candidate scoring, and the Weibull hazard — and
+`PLAN.md` §4, Repo layout, is the file-by-file pairing, kept current per phase.
 
 - **Never collapse the two sides.** Deleting the oracle deletes the only thing
   that validates the kernel. `simplify-audit` is told this explicitly so it
@@ -86,14 +79,10 @@ is the validation strategy rather than an accident:
   fix divergence; the parity test may not be sensitive enough to catch it.
 - **A numeric literal appearing in both is a defect.** The copies drift, and
   drift here is silent — see *Configuration and parameters* below.
-- **The FFI boundary is crossed once per policy per sweep point.** Arrays in,
-  arrays out, `py.allow_threads` around the compute. Never call back into
-  Python inside the loop; that erases the speedup this project exists to
-  demonstrate.
-- **Benchmarks compare against a properly vectorized NumPy oracle**, not a
-  naive Python loop, and report single-threaded Rust and rayon-parallel Rust
-  separately. A 200x speedup over bad Python when NumPy gives 40x for free is
-  the self-deception to avoid.
+- **What crosses the boundary, and what the benchmarks must compare against,
+  are `PLAN.md` §5, Rust kernel contract, and §6, Validation strategy.** Both
+  bear on review: an FFI call inside a loop and a speedup measured against a
+  naive Python baseline are findings, not style preferences.
 
 ## Code style
 
@@ -115,8 +104,8 @@ is the validation strategy rather than an accident:
 - **Never silently skip a missing file or directory.** Raise or warn, so the
   problem surfaces at its source rather than three steps downstream.
 - **Prefer polars over pandas** for result tables and analysis. NumPy is what
-  crosses the FFI boundary — `PyReadonlyArray1` in, `PyArray` out, zero copy —
-  so per-segment arrays stay NumPy on the Python side of that call.
+  crosses the FFI boundary, so per-segment arrays stay NumPy on the Python side
+  of that call.
 
 ### Rust
 
@@ -124,12 +113,12 @@ is the validation strategy rather than an accident:
   what its arguments mean. A `#[pyfunction]` is a contract two languages read:
   it gets a doc comment on the Rust side and a docstring on the Python
   wrapper, and they must not say different things.
-- **Pin the PyO3 version and read that version's guide.** PyO3 migrated to the
-  `Bound<'py, T>` smart-pointer API; older tutorials and answers found online
-  will not compile against a current pin.
-- **Seed per replication** (`seed + rep_index`) via `StdRng::seed_from_u64`, so
-  results are reproducible and order-independent under rayon. Never share one
-  RNG across threads.
+- **Read the pinned PyO3 version's own guide, not the web.** PyO3 migrated to
+  the `Bound<'py, T>` smart-pointer API, so older tutorials and answers will
+  not compile against the pin. The rest of the PyO3 and maturin practicalities
+  — zero-copy array passing, per-replication seeding so results are
+  order-independent under rayon — are `PLAN.md` §11, PyO3 / maturin
+  practicalities.
 - **`unsafe` belongs in PyO3 bindings and nowhere else.** One outside a
   binding needs a comment naming the invariant it upholds.
 - `cargo clippy` is the mechanical pass for Rust — ruff does not read `.rs`,
@@ -137,16 +126,16 @@ is the validation strategy rather than an accident:
 
 ## Configuration and parameters
 
-- **One config model is the single source of truth for run knobs.** Every
-  tunable lives on the pydantic model in `cablesim/config.py`, loaded from
+- **One config model is the single source of truth for run knobs**
+  (`PLAN.md` §3, Configuration schema, is the schema itself). Every tunable
+  lives on the pydantic model in `python/cablesim/config.py`, loaded from
   `configs/base.yaml`. Construct it with overrides at the entry point and pass
   the instance down — never read module-level globals for values that belong
-  on it.
-- **Sweeps override config values from a driver script or notebook**, never by
-  editing `configs/base.yaml`. The base file is the documented default.
-- **The same validated object feeds the oracle, the kernel, and the app.** One
-  code path, three front ends. A knob the Shiny UI sets and the notebooks
-  cannot is a knob that has escaped the model.
+  on it, and never edit `configs/base.yaml` to run a sweep; the base file is
+  the documented default.
+- **A knob the Shiny UI sets and the notebooks cannot is a knob that has
+  escaped the model.** One validated object feeds the oracle, the kernel and
+  the app.
 - **Fixed constants go in the package's constants module.** The test: a value
   belongs there if a caller overriding it would be a *bug*, and on the config
   model if a caller legitimately overrides it for one run.
@@ -177,58 +166,27 @@ is the validation strategy rather than an accident:
 ## Tests
 
 - **Run unit tests whenever code changes**, and add tests when behavior
-  changes. Rebuild with `maturin develop --release` first when `src/` changed.
-- **`tests/` mirrors the package.** Every test directory needs an
-  `__init__.py`, subdirectories included, and helpers import as
-  `from tests.helpers import ...` — under pytest's `prepend` import mode the
-  two styles are mutually exclusive, and duplicate basenames across
-  subdirectories collide outright.
-- **Pytest machinery in `conftest.py`, plain functions in `helpers.py`** — a
-  helper should be readable without knowing pytest.
-- **Generate fixtures in code.** The whole population is synthetic and
-  reproducible from a seed, so a committed data blob has no reason to exist
-  here. The suite reaches no network.
-- **The three validation layers, in order of authority** (`PLAN.md` §6,
-  Validation strategy):
-  analytical checks against the closed form, oracle parity, then benchmarks.
-  An analytical check is worth more than a parity check, because it can be
-  wrong in only one way.
-  - **MLE recovery is the test that earns its keep.** Simulate lifetimes from
-    known `(k, lambda)`, censor, refit, confirm recovery within CI.
-  - **Do not chase bit-exact RNG parity between Python and Rust.** Matching
-    random streams across languages proves little and costs a great deal.
-    Compare statistically, with a tolerance derived from replication standard
-    error rather than a fixed epsilon.
-- **Two opt-in marker groups, both excluded from a default run** because each
-  costs minutes: `notebooks` (`uv run pytest -m notebooks`) executes every
-  marimo notebook headless so they cannot silently rot, and `app`
-  (`uv run pytest -m app`) drives the Shiny app through Playwright. Neither
-  is required — nor is `test` yet, see *Git and tooling* below — so a break
-  in either surfaces on the next push to `main`.
-- **A notebook may carry its own assertions.** Where a notebook has already
-  computed something whose value is known, `assert` on it in the cell that
-  computed it rather than rebuilding the setup under `tests/`. The boundary:
-  an assertion about the *package* belongs in `tests/` where it runs in
-  seconds; one about the *notebook* belongs in the notebook.
-- **The app suite tests wiring, not numbers.** Its one assertion worth the
-  browser drives the UI and then calls the package directly with the same
-  overrides and seed, requiring the two to agree — that is what catches a
-  control bound to the wrong config field, which every UI-free test passes.
-  Run it at interactive-scale defaults with a pinned seed.
-- **Never sleep in a browser test.** The app runs its simulation through
-  `ExtendedTask`, so results arrive asynchronously; use Playwright's
-  auto-waiting assertions with a generous timeout. Select on stable element
-  `id`s, never on rendered text or DOM position.
+  changes. Rebuild with `uv run maturin develop --release` first when `src/`
+  changed.
+- **`tests/README.md` owns the rest**: layout and import style, why every test
+  directory needs an `__init__.py`, fixtures generated in code, the three
+  validation layers and what each is worth, and the two opt-in marker groups.
+- **MLE recovery is the test that earns its keep.** Simulate lifetimes from
+  known `(k, lambda)`, censor, refit, confirm recovery within CI. An
+  analytical check like this one can be wrong in only one way, which is why
+  `PLAN.md` §6, Validation strategy, ranks it above parity.
+- **A statistical comparison passes on a divergence smaller than its
+  tolerance.** So no claim of Python/Rust agreement stands on the parity test
+  alone — the deterministic case, hazard forced to 0 or 1, is what pins policy
+  and budget logic exactly.
 
 ## Notebooks and the app
 
 - **marimo, not Jupyter.** Notebooks are plain `.py` files, and both run modes
-  — headless and interactive — must keep working. Both need the notebooks
-  dependency group installed first; a plain `uv sync` leaves marimo out, and
-  the headless run then fails on `import marimo`.
-- **Notebooks import from `cablesim` and define no modeling logic.** If a
-  notebook needs a function, it belongs in the package. The same rule governs
-  `app/`.
+  — headless and interactive — must keep working. `README.md` §Testing has the
+  dependency group each needs.
+- **If a notebook needs a function, it belongs in the package.** The same rule
+  governs `app/`; the Orientation bullet above states it.
 - **Number sparsely** so a step can be inserted without renumbering
   everything downstream.
 - Notebooks and the app are entry points, so they may configure logging and
@@ -256,23 +214,22 @@ is the validation strategy rather than an accident:
   through a squash-merged pull request. The ruleset is checked in at
   `.github/rulesets/protect-main.json`, and `PLAN.md` §9.4, Branch protection
   on `main`, has the setup and the ways branch protection goes wrong.
-- **The `test` check is not yet *required*, and that is temporary.** The
-  applied ruleset is `.github/rulesets/protect-main.json`, which carries
-  everything but the required-status-check rule — a check that has never
-  reported green blocks every merge including the one that would fix it. The
-  rule waits in `.github/rulesets/protect-main-required-check.json` and is
-  applied at the end of Phase 0. Until then a red check does not physically
-  stop a merge — treat it as though it did.
+- **While `.github/rulesets/protect-main.json` is the applied ruleset, a red
+  `test` check does not physically stop a merge. Treat it as though it did.**
+  That ruleset carries everything but the required-status-check rule, which
+  waits in `.github/rulesets/protect-main-required-check.json`; the bootstrap
+  problem it avoids is that a check which has never reported green blocks every
+  merge including the one that would fix it. `gh api repos/:owner/:repo/rulesets`
+  says which is applied, so this sentence stops being true on its own.
 - **A red check is a finding, not a flake.** Read the failure before re-running
   it. `uv sync --locked` failing means the lockfile does not match
   `pyproject.toml`, and no number of re-runs fixes that.
 - **Use the GitHub CLI (`gh`)** for pull requests and repository settings. An
   agent may cut a branch, push, open the PR with `gh pr create`, and confirm
   the `test` check is green — then it stops. Never run `gh pr merge`; merging
-  is a human action.
-- Review all commits for quality and style before pushing.
+  is a human action. `README.md` §Contributing carries the same flow for a
+  human contributor.
 - **Check for README updates** after changes affecting usage or the public API.
-- **Don't assume.** Verify against the codebase and ask rather than guessing.
 - **Each phase in `PLAN.md` §10, Phased roadmap, ends in a working,
   committed state.** A phase that does not build and does not pass its own
   tests is not finished.
@@ -303,14 +260,16 @@ backend, ruff rules and per-file ignores, pytest settings, dependency groups),
 ## Plans and lessons
 
 - **Write a plan first** for non-trivial work, to
-  `tasks/<description>-<YYYY>-<MM>-<DD>.md` — short, kebab-case, meaningful
+  `tasks/<description>-<YYYY>-<MM>-<DD>.md` (create the directory if it is not
+  there yet) — short, kebab-case, meaningful
   (not "todo"). Check it in with the user before implementing, mark items
   complete as you go, and add a review section when finished. `PLAN.md` is the
   standing project plan and is not one of these; it is updated, not replaced.
 - **Move finished plans to `tasks/completed/`.** Several can coexist.
 - **After any correction from the user, add the pattern to
-  `docs/lessons.md`** — the rule that prevents the same mistake next time.
-  Review it when starting related work.
+  `docs/lessons.md`** — the rule that prevents the same mistake next time,
+  creating the file if it does not exist yet. Review it when starting related
+  work; if it is absent, no correction has been recorded.
 
 ## Minimalism (write less)
 
@@ -389,18 +348,8 @@ while a number plus a title shows the mismatch on sight.
 
 ## Skills and agents
 
-- **Where they live.** Slash commands in `.claude/skills/`, subagents in
-  `.claude/agents/`. All are committed, and their names and descriptions are
-  injected at session start — so none is listed here, and a new agent needs a
-  session restart to be seen.
-- **Agents read their skill's `SKILL.md` at runtime** rather than copying the
-  checklist, so it stays in step as skills evolve. Given no path,
-  `code-reviewer commit` defaults to the changed files (`git diff --name-only
-  HEAD` plus untracked) and its full pass to the branch diff against
-  `origin/main`; `simplify-auditor` defaults to the whole repo.
-- **A rule belongs to whichever file owns the activity.** What to look for,
-  what counts as a finding, and what else to update when a given file changes
-  belong to the skill running that phase, where they also apply when someone
-  invokes the skill directly. How a pass is ordered and what it escalates
-  belongs to the agent. Only what everyone needs before starting work belongs
-  here — this file loads on every session.
+Slash commands live in `.claude/skills/` and subagents in `.claude/agents/`.
+`.claude/README.md` lists them, gives each agent's default target, and sets out
+which file owns which kind of rule. The half of that split which matters here:
+only what everyone needs *before starting work* belongs in this file, because
+this file loads on every session and the others are read when they are used.

@@ -34,17 +34,9 @@ because *an agent in its own context* is running it.
 1. If the user gave a file-or-directory argument, audit that path.
 2. Otherwise, audit the whole repo (the skill's default).
 
-Never audit gitignored/untracked files — run `git ls-files` if unsure
-whether a path is tracked. The skill's Steps already say how to treat a
-symbol that looks unused but may have a caller outside this repo; use that
-rule rather than duplicating it here.
-
-## What to do
-
-Follow the skill's Steps: run the mechanical passes first (`ruff` +
-dependency cross-check), grep-confirm each candidate is actually dead
-before listing it under **Delete**, read the suspicious files to confirm
-context, then assemble the report. Make no edits at any point.
+Never audit gitignored or untracked files — run `git ls-files` if unsure
+whether a path is tracked. Everything else about how the audit runs is the
+skill's Steps section; follow it there rather than a summary of it here.
 
 ## Final output
 
