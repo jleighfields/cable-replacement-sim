@@ -6,6 +6,11 @@
 
 # Python
 __pycache__/
+# the extension module maturin builds into the package — platform-specific,
+# rebuilt by `maturin develop`, and a stale committed copy would shadow the
+# one a build just produced.
+*.so
+*.pyd
 *.py[cod]
 .venv/
 venv/

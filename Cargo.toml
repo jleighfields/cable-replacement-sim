@@ -1,0 +1,30 @@
+[package]
+name = "cablesim"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# The Python extension module and the Rust crate name must match the module
+# name registered in lib.rs, or the import fails with a missing-symbol error
+# that says nothing about the mismatch.
+name = "_cablesim"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# `cargo test --no-default-features` only drops pyo3/extension-module if the
+# feature sits behind one. Enabling it directly on the dependency — as the
+# stock maturin template does — makes that flag a no-op, and the test binary
+# then fails to link against the CPython symbols the interpreter supplies at
+# import time. This indirection is what makes `cargo test` work at all.
+default = ["extension-module"]
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+pyo3 = { version = "0.27", features = ["abi3-py311"] }
+
+[profile.release]
+# The parity tests run many replications, so the kernel is only worth
+# measuring with these on. `lto = true` and a single codegen unit cost compile
+# time on a cold build, which the CI cache absorbs.
+lto = true
+codegen-units = 1

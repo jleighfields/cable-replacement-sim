@@ -742,7 +742,7 @@ a loud one:
 |---|---|
 | `[features] extension-module = ["pyo3/extension-module"]` and `default = ["extension-module"]` in `Cargo.toml` | `cargo test --no-default-features` only drops the extension-module feature if it is *behind* a feature. The stock maturin template enables it directly, in which case the flag is a no-op and the test binary fails to link against the CPython symbols the interpreter would otherwise supply. |
 | dependency groups `dev`, `notebooks`, `app` in `pyproject.toml` | `notebooks.yml` and `app.yml` pass `--group notebooks` / `--group app`; `uv sync` fails on a group that does not exist. |
-| `pytest-xdist`, `maturin`, `ruff`, `detect-secrets`, `pytest-playwright` in `dev` | `test.yml` runs `pytest -n auto`; `security-scan` drives `detect-secrets`; `app.yml` runs `playwright install`. |
+| `pytest-xdist`, `maturin`, `ruff`, `detect-secrets`, `pytest-playwright` in `dev` | `test.yml` runs `pytest -n auto`; `security-scan` drives `detect-secrets`; `app.yml` runs `playwright install`. | <!-- pragma: allowlist secret — the tool name trips the keyword detector; there is no credential on this line -->
 | the `notebooks` and `app` markers plus `addopts` excluding them | `test.yml` asserts the default run excludes both. Without the markers, pytest warns and the exclusion silently does nothing. |
 | a committed `uv.lock` | every workflow runs `uv sync --locked`. |
 | a committed `.secrets.baseline` | `security-scan` treats a scan without an intact baseline as **invalid even when it exits cleanly**. Until it exists, every security phase is grep-only — which is fine if it is *said*, and misleading if it is not. |

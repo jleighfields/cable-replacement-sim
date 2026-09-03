@@ -39,6 +39,17 @@ jobs:
         with:
           enable-cache: true
 
+      # The Rust steps below build PyO3, which resolves an interpreter to
+      # build against and refuses one older than the `abi3-py311` feature
+      # allows. Without this it silently takes whatever `python3` the runner
+      # image happens to ship — 3.12 today, and a failure the day that
+      # changes or the job moves to a different image. `.python-version` is
+      # what names the interpreter, for uv and for PyO3 alike.
+      - name: Provision the interpreter PyO3 builds against
+        run: |
+          uv python install
+          echo "PYO3_PYTHON=$(uv python find)" >> "$GITHUB_ENV"
+
       - name: Rust format
         run: cargo fmt --check
 
