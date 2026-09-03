@@ -114,7 +114,7 @@ cd "$WT"
 uv run python - "$WT/python/cablesim/reference.py" <<'PY'
 import pathlib, sys
 p = pathlib.Path(sys.argv[1])
-t = p.read_text(encoding="utf-8", newline="")
+t = p.read_text(encoding="utf-8")
 old = "    return compute(value)"
 assert t.count(old) == 1, f"mutation site not unique: {t.count(old)}"
 p.write_text(t.replace(old, "    return None"), encoding="utf-8", newline="")
@@ -125,10 +125,11 @@ PY
 untouched, the test passes, and the run reports a test as checked without
 changing the code it covers.
 
-**`newline=""` on both the read and the write.** Without it Python normalizes
-line endings on the way in and rewrites them on the way out, so a one-line edit
-can rewrite every line in the file — turning a targeted mutation into a
-whole-file rewrite whose effect nobody can attribute.
+**`newline=""` on the write only.** It stops Python translating `\n` on the way
+out, so a one-line edit stays a one-line edit rather than rewriting every line
+in the file. Do not pass it to `read_text` — that parameter arrived in Python
+3.13, and this project pins 3.12, so the read raises `TypeError`, the mutation
+never lands, and the targeted test passes while reporting itself as checked.
 
 **If the canary does not fail, the run is invalid.** Report that and stop.
 
