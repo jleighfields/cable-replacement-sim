@@ -60,10 +60,9 @@ worktree inside the repo and names it after that subdirectory.
 a second copy of `tests/` where any `rglob` walk finds it, and shows up as `??`
 in `git status`.
 
-**`--detach`, so there is no branch.** Nothing here is committed or pushed, no
-ruleset covers `test/*`, and detaching sidesteps git's refusal to check out one
-branch in two worktrees — which would otherwise block reviewing the branch you
-are on.
+**`--detach`, so there is no branch.** Nothing here is committed or pushed, and
+detaching sidesteps git's refusal to check out one branch in two worktrees —
+which would otherwise block reviewing the branch you are on.
 
 **The path names the repo, branch and commit**, so a stray checkout identifies
 the run that created it, and a second run on the same commit fails at
@@ -80,11 +79,12 @@ This step is required.
 An editable install resolves to the path it was installed from, so a worktree
 that inherited its environment can import the **original, unmutated source**.
 Mutations then affect no imported code, every test passes, and the run reports
-a clean suite without testing the changed file. The layout determines whether
-this happens: with the package at the repo root the worktree's copy shadows
-the installed one and mutations arrive; with a `src/` layout they do not.
-`uv sync` inside the worktree points the environment at the worktree in both
-cases.
+a clean suite without testing the changed file. This repo is exposed to it:
+`pyproject.toml` sets `python-source = "python"`, so
+`cablesim` is never picked up from the worktree's own directory by accident and
+an inherited environment keeps resolving the original checkout. `uv sync` inside
+the worktree points the environment at the worktree, and rebuilds the extension
+module against the worktree's `src/`.
 
 ```bash
 WT=<the worktree path step 1 printed>
@@ -111,7 +111,7 @@ red. Pick a canary whose failure is unambiguous — for example, an early
 WT=<the worktree path step 1 printed>
 [ -f "$WT/.git" ] || { echo "not a linked worktree — refusing to run"; exit 1; }
 cd "$WT"
-uv run python - "$WT/src/pkg/module.py" <<'PY'
+uv run python - "$WT/python/cablesim/reference.py" <<'PY'
 import pathlib, sys
 p = pathlib.Path(sys.argv[1])
 t = p.read_text(encoding="utf-8", newline="")
@@ -125,9 +125,10 @@ PY
 untouched, the test passes, and the run reports a test as checked without
 changing the code it covers.
 
-**`newline=""` on both the read and the write.** Without it Python translates
-line endings, so on Windows a one-line edit rewrites every line — and a hash or
-manifest test then fails for a reason unrelated to the mutation.
+**`newline=""` on both the read and the write.** Without it Python normalizes
+line endings on the way in and rewrites them on the way out, so a one-line edit
+can rewrite every line in the file — turning a targeted mutation into a
+whole-file rewrite whose effect nobody can attribute.
 
 **If the canary does not fail, the run is invalid.** Report that and stop.
 
@@ -146,8 +147,9 @@ uv run pytest -q -k "<test name>"
 
 ### 4. Report the mutation with the finding
 
-"Deleted the `.cast()` on line 40 and `test_prices_stay_decimal` still passed"
-is checkable by the next reader in one command. "This test looks weak" is not.
+"Forced the hazard to 0 in `weibull.py:40` and `test_no_failures_when_hazard_zero`
+still passed" is checkable by the next reader in one command. "This test looks
+weak" is not.
 Every finding includes the test, the mutation applied, and what happened.
 
 ### 5. Tear down

@@ -52,8 +52,10 @@ Security scan findings answer "does this leak a credential or open a hole?"
 
 Run `git ls-files` and flag any tracked file that should never be committed:
 
-- `.env`, `.env.local`, `.env.*` **except** `.env.example` / `.env.template`
-  / `.env.sample` (those are intended templates — see the caveat below).
+- `.env`, `.env.local`, `.env.*`. `.gitignore` whitelists `.env.example`,
+  `.env.template` and `.env.sample` defensively; none exists here, and one
+  appearing is worth opening to confirm every value is a placeholder rather
+  than flagging as a tracked secret file.
 - Private keys / certs: `*.pem`, `*.key`, `*.pfx`, `*.p12`, `*.keytab`,
   `id_rsa`, `id_dsa`.
 - Credential dumps: `credentials.json`, `service-account*.json`,
@@ -124,7 +126,7 @@ configured ignores below.
 `pyproject.toml` encodes the legitimate exceptions and `.secrets.baseline`
 records audited non-secrets — respect both. **Read the actual per-file
 ignores in `pyproject.toml` rather than assuming**; they are the authority,
-and this section describes only the fleet default.
+and this section only describes what they currently say.
 
 - **`tests/**` ignores `S101` only.** pytest tests use `assert`, so
   `S101` is expected there. **The hardcoded-secret rules `S105-S107` stay
@@ -132,13 +134,6 @@ and this section describes only the fleet default.
   exactly as leaked as one in production code. Never suppress an
   `S105-S107` hit under `tests/` as a configured exception — it is a
   **Must Fix**.
-
-## The `.env.example` caveat
-
-- **`.env.example` is supposed to be committed.** Do NOT flag it as a
-  tracked secret file. Instead, **open it and confirm every value is a
-  placeholder** — a real value leaked into the template IS a finding, and a
-  Must Fix.
 
 ## Repo-specific caveats
 
@@ -176,9 +171,9 @@ at 1, so a closing list of open items is unambiguous about which section
 each belongs to.
 
 ### Must Fix
-- Confirmed live secret in code, a tracked `.env`/key file, a real value
-  in `.env.example`, or an `S105-S107` hit. **Always include the
-  remediation:** remove it, move it to an environment variable / `.env`,
+- Confirmed live secret in code, a tracked `.env`/key file, or an
+  `S105-S107` hit. **Always include the remediation:** remove it, move it to
+  an environment variable read at run time,
   and **rotate the exposed credential** — state explicitly that
   working-tree removal is not enough if it was ever committed, since it
   persists in git history; scrub with `git filter-repo` / BFG if needed.

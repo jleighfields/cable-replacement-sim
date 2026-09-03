@@ -394,11 +394,6 @@ Skip a finding when Phase 1 said a test was not worth it, when the repo has
 nowhere for one to live, or when the finding is about prose. Say which, and
 why, rather than passing over it.
 
-Watch what you are writing into. A test file that is upstream-owned ships to
-every repo, so it must contain nothing a repo-level gate rewrites or rejects
-— placeholder tokens and the template package name most of all. Assemble such
-strings from parts, the way the file being edited already does.
-
 **Put the fixture where the next test can reach it.** If Phase 1 proposed
 keeping a builder you constructed, write it as a helper beside the suite's
 existing ones rather than inline in the one test that needed it — extending
