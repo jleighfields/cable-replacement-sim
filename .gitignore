@@ -1,9 +1,16 @@
 # Rust
 /target
-Cargo.lock
+# Cargo.lock IS committed: this crate is deployed as a wheel rather than
+# published, so a reproducible Rust dependency set matters the same way
+# uv.lock's does for Python.
 
 # Python
 __pycache__/
+# the extension module maturin builds into the package — platform-specific,
+# rebuilt by `maturin develop`, and a stale committed copy would shadow the
+# one a build just produced.
+*.so
+*.pyd
 *.py[cod]
 .venv/
 venv/
@@ -16,6 +23,18 @@ build/
 # marimo
 __marimo__/
 
+# Playwright, written by a local `pytest -m app` run
+test-results/
+
 # outputs
 results/
 *.parquet
+
+# secrets — nothing here authenticates to anything today, so this is
+# defensive: it stops a .env being committed by `git add -A` before anyone
+# notices the project grew a credential surface.
+.env
+.env.*
+!.env.example
+!.env.template
+!.env.sample

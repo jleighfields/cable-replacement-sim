@@ -1,0 +1,70 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "cablesim"
+version = "0.1.0"
+description = "Simulation of underground cable failure and replacement policy"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.0",
+    "polars>=1.0",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+]
+
+[tool.maturin]
+# The Rust extension is built into the `cablesim` package rather than sitting
+# beside it, so `python/` holds the whole importable package and the crate
+# name in Cargo.toml matches the submodule imported in __init__.py.
+python-source = "python"
+module-name = "cablesim._cablesim"
+features = ["pyo3/extension-module"]
+
+[dependency-groups]
+# The workflows pass --group notebooks and --group app by name; `uv sync`
+# fails on a group that does not exist, so all three are declared here even
+# while the directories they serve are still empty.
+dev = [
+    "maturin>=1.7",
+    "pytest>=8.0",
+    "pytest-xdist>=3.6",
+    "ruff>=0.6",
+    "detect-secrets>=1.5",
+]
+notebooks = [
+    "marimo>=0.9",
+    "matplotlib>=3.9",
+]
+app = [
+    "shiny>=1.0",
+    "pytest-playwright>=0.5",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Both suites cost minutes: the notebook run executes every marimo notebook
+# headless, and the app run drives a real browser. They run on pushes to the
+# default branch and weekly rather than gating a merge. An explicit -m on the
+# command line overrides this, so `pytest -m notebooks` still works.
+markers = [
+    "notebooks: executes marimo notebooks headless; deselect with '-m \"not notebooks\"'",
+    "app: drives the Shiny app through Playwright (needs 'playwright install chromium')",
+]
+addopts = "-m 'not notebooks and not app'"
+
+[tool.ruff]
+line-length = 88
+# The Rust build output and the virtual environment hold no source of ours.
+extend-exclude = ["target"]
+
+[tool.ruff.lint]
+# E/F pyflakes+pycodestyle, I import-sort, B bugbear, SIM simplify, S bandit.
+select = ["E", "F", "I", "B", "SIM", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+# pytest's whole model is `assert`; the fixtures here are generated in code,
+# never real credentials.
+"tests/**" = ["S101"]
