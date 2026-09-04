@@ -48,5 +48,17 @@ jobs:
       - name: Build the extension module
         run: uv run maturin develop --release
 
+      # `pytest -m notebooks` exits 5 when the marker selects nothing, which
+      # fails the job. Until the notebooks exist there is genuinely nothing to
+      # execute, and a red check nobody can act on is a check people learn to
+      # ignore. The guard is on the notebooks themselves rather than on the
+      # job, so this job always runs and reports: once a notebook exists the
+      # suite runs for real, and an empty selection then is a break rather
+      # than the expected state.
       - name: Execute notebooks
-        run: uv run pytest -m notebooks
+        run: |
+          if ! compgen -G 'notebooks/*.py' > /dev/null; then
+            echo "::notice::No notebooks yet — nothing to execute."
+            exit 0
+          fi
+          uv run pytest -m notebooks
