@@ -832,8 +832,18 @@ avoids that, and passing an array is the simplest way to be indexed.
   `(chunk_reps, n_segments, n_years + 1)` array 5.2 receives — C order
   throughout, so one segment's draws are contiguous.
 
-  **One `SeedSequence` child per replication is what makes a chunk
-  addressable.** Chunk `c` builds replications `c * chunk_reps` onwards from
+  **Spawn by purpose first, then by replication.** A fresh `SeedSequence(seed)`
+  has spawned nothing, so calling `.spawn(n_reps)` on two separate ones returns
+  *identical* children — asking for "its own child" without saying where from
+  produces the correlation this scheme exists to avoid. Take one root spawn per
+  independent stream:
+
+  ```python
+  lifetimes, policies, population, records = SeedSequence(seed).spawn(4)
+  children = lifetimes.spawn(n_reps)          # and policies.spawn(n_reps)
+  ```
+
+  **One child per replication per stream is what makes a chunk addressable.** Chunk `c` builds replications `c * chunk_reps` onwards from
   their own children without consuming the ones before, so replication `r`
   holds the same draws at any chunk size — which is what lets 6.5, Benchmarks,
   sweep chunk size and still claim it changes no result. Advancing a single
@@ -861,15 +871,17 @@ avoids that, and passing an array is the simplest way to be indexed.
   regardless, so it would buy a guarantee that holds in exactly one place.
 - **The `random` policy takes a second array**, `policy_uniforms[r, i]` — one
   fixed priority per segment per replication rather than a fresh permutation
-  every year. **It comes from its own `SeedSequence` child, not from further
-  along the lifetime stream.** Reusing that stream would make the random
+  every year. **It comes from the `policies` root above, spawned per
+  replication the same way, not from further along the lifetime stream.** Reusing that stream would make the random
   policy's priorities a deterministic function of the same segments' lifetime
   draws, and `random` exists to isolate the value of ranking from the value of
   spending (2.8) — a control correlated with what it controls for has stopped
   being one, and no parity test would notice, because every implementation
-  reads the same array. The population and record generators take their own
-  sequences on the same principle: streams that must be independent are
-  derived independently, never by reading further along one. A priority that holds across years also makes it a better
+  reads the same array. `policy_uniforms` is chunked `(chunk, segments)` like
+  the lifetimes and takes its per-replication child the same way, so chunk size
+  changes no result there either. The population and record generators use the
+  remaining two roots on the same principle: streams that must be independent
+  are derived independently, never by reading further along one. A priority that holds across years also makes it a better
   control, since `age_threshold` is consistent year to year and this way the
   random comparison is too.
 
@@ -1383,8 +1395,9 @@ Implementation notes:
 ## 6. Validation strategy
 
 Three layers, in order of authority: analytical checks (6.1), parity between
-implementations (6.4), and benchmarks (6.5). The recovery ladder is part of the
-first layer and is set out separately only because it is long.
+implementations (6.4), and benchmarks (6.5). The recovery ladder (6.2) is part of the
+first layer and is set out separately only because it is long; 6.3 is the
+shared-fixture rule the parity layer rests on.
 
 ### 6.1 Analytical checks
 
@@ -1518,7 +1531,10 @@ library's `(mu, sigma)` and this model's `(k, lambda)`.
 
 **One fixture builds the population, the draw array and the config, and every
 implementation under test reads that one set of objects.** The fixture lives in
-`conftest.py`; no test constructs a bit generator itself. That is what makes
+`conftest.py`, and no *parity* test constructs a bit generator itself. The
+analytical checks of 6.1 do build their own draws, at their own sizes and
+seeds, because they compare against a closed form rather than against another
+implementation and so have nothing to share. That is what makes
 "the same draws" true by construction rather than by coincidence, and it is the
 only mechanism that does — a stored draw file would be bypassed by a test that
 built its own inputs exactly as easily as a fixture would.
@@ -1547,7 +1563,7 @@ Which comparisons share random draws, and which do not:
 |---|---|---|
 | One policy against another, same implementation | Yes, by construction (2.11) | Paired difference — this is what common random numbers buy |
 | Rust single-threaded against rayon | Yes | Exact equality of every returned array |
-| Scalar reference against batched NumPy against batched polars | Yes; all three call the same uniform function | Exact equality, at a handful of replications |
+| Scalar reference against batched NumPy against batched polars | Yes; all three read the same array | Exact on discrete outcomes, `1e-12` relative on money and minutes — see below for why the two differ |
 | Any Python implementation against the Rust kernel | Uniforms match; the arithmetic does not | Statistical, plus the exact tests below |
 
 - **The draws are identical by construction, not by test.** Every
@@ -1563,11 +1579,13 @@ Which comparisons share random draws, and which do not:
   replication.** Because both sides consume the same draws, replication `r` in
   Python and replication `r` in Rust see identical lifetimes, so their results
   should differ only where a last-place floating-point difference in a score
-  flipped a sort and changed which candidate was funded last. Run it against the batched NumPy
-  implementation rather than the scalar reference, at 1000 replications and a
-  reduced population of 2,000 segments — the scalar reference at full size is
-  1.2 billion segment-years of Python and does not belong on a check that gates
-  a merge. Assert that fewer than one percent of replications differ by more
+  flipped a sort and changed which candidate was funded last. It runs in two forms, because `batched.py` does not
+  exist until Phase 5. In Phase 4, against the scalar reference at 50
+  replications and 2,000 segments, where the deterministic test carries most of
+  the weight; from Phase 5, against batched NumPy at 1000 replications and
+  2,000 segments, which is where the statistical claim is actually made. Never
+  against the scalar reference at full size — that is 1.2 billion segment-years
+  of Python on a check that gates a merge. Assert that fewer than one percent of replications differ by more
   than `1e-9` relative on any reported quantity, and that the mean paired difference is within three
   standard errors of zero **or** the differences are identically zero. The
   second clause matters because exact agreement is the expected case — same
@@ -2206,7 +2224,7 @@ why they are listed with the mechanism rather than as a checklist:
 | `pytest-xdist`, `maturin`, `ruff`, `detect-secrets`, `pytest-playwright` in `dev` | `test.yml` runs `pytest -n auto`; `security-scan` drives `detect-secrets`; `app.yml` runs `playwright install`. | <!-- pragma: allowlist secret — the tool name trips the keyword detector; there is no credential on this line -->
 | the `notebooks` and `app` markers plus `addopts` excluding them | `test.yml` asserts the default run excludes both. Without the markers, pytest warns and the exclusion silently does nothing. |
 | a committed `uv.lock` | every workflow runs `uv sync --locked`. |
-| `constants.py` and `tests/test_plan_document.py` | the project-root constant is what makes paths resolve the same from a notebook and from the repo root; the citation check is what catches a section reference left behind by a renumber, which this document has had twice. |
+| `constants.py` and `tests/test_plan_document.py` | the project-root constant is what makes paths resolve the same from a notebook and from the repo root; the citation check is what catches a section number left behind by a renumber, which this document has had twice. It checks that a cited number exists, not that it points at the right subsection, so it is a floor rather than a guarantee. |
 | a committed `.secrets.baseline` | `security-scan` treats a scan without an intact baseline as **invalid even when it exits cleanly**. Until it exists, every security phase is grep-only — which is fine if it is *said*, and misleading if it is not. |
 
 **Phase 1 — synthetic population**
@@ -2245,7 +2263,8 @@ easier to diagnose against two saved runs than against two in-memory arrays.
 **Phase 4 — Rust kernel, single-threaded**
 Port the loop to `sim.rs` / `policy.rs` / `weibull.rs`. Bind with PyO3, build
 with maturin, use `rust-numpy` for zero-copy array passing. Pass the
-statistical parity test and the deterministic parity test against the reference.
+deterministic parity test and the Phase 4 form of the statistical one — scalar
+reference, 50 replications, 2,000 segments (6.4).
 
 The draw array of 2.11 arrives with Phase 3, not here — `reference.py` cannot
 run without it — so this phase consumes it rather than deciding it.
@@ -2302,10 +2321,12 @@ the release process (Section 10.5, What CI does not cover yet).
   `PartialOrd` and not `Ord`, so the tie-break of 2.9 —
   `(score descending, segment_id ascending)` — must be written as an explicit
   comparator, and it must define where NaN goes rather than leaving it to
-  whatever `partial_cmp` returns. NaN is reachable: `score_per_dollar` divides
-  by a planned cost, and a score of zero over a cost of zero produces one. Sort
-  NaN last and assert none is produced, so the condition surfaces as a failure
-  rather than as a segment that quietly never gets funded.
+  whatever `partial_cmp` returns. NaN should be unreachable — `planned_cost`
+  carries `mobilization_per_segment` so it is strictly positive, and `p(t)` is
+  never exactly zero at any age the model reaches — which is why the rule is to
+  sort NaN last **and assert none is produced**. An unreachable value that
+  turns up is a defect upstream, and without the assertion it surfaces as a
+  segment that quietly never gets funded.
 - **Thread count comes from the rayon pool the caller configures**, not from an
   argument. Phase 5 measures single-threaded and parallel separately by
   building a pool of the requested size around the call, and 7.1's manifest
@@ -2358,7 +2379,7 @@ the argument belongs beside the model it constrains.
 
 ### 13.2 Still open
 
-2. **The size of the record table.** `records.n_segments` is a placeholder
+1. **The size of the record table.** `records.n_segments` is a placeholder
    with no reasoning recorded beside it, which 2.10 requires. It is also coupled
    to the calibration of the technology scales and the budget below: under the current short effective
    lifetimes the newest technology accumulates plenty of observed failures,

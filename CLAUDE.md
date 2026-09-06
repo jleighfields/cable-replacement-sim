@@ -186,8 +186,8 @@ here.
   reproducible from a seed, so a committed data blob has no reason to exist
   here. The suite reaches no network.
 - **One fixture builds the inputs every parity test shares**, and no test
-  constructs a generator of its own (`PLAN.md` §6, Validation strategy, under
-  where a parity test's inputs come from).
+  constructs a generator of its own (`PLAN.md` §6.3, Where a parity
+  test's inputs come from).
 - **An analytical check is worth more than a parity check**, because it can be
   wrong in only one way. `PLAN.md` §6 has the three layers in order of
   authority, with the assertions, tolerances and sample sizes; do not restate
