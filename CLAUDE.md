@@ -20,11 +20,11 @@ wins on *how work is done here*.
   validates.** Simulation logic lives in `python/cablesim/` and the Rust crate
   in `src/`. Notebooks and the Shiny app import from the package and define no
   modeling logic of their own.
-- **Two things about the verification commands** — they are in `README.md`,
-  under Testing — that are easy to skip and expensive to skip: anything
-  touching `src/` needs `maturin develop --release` first, or the suite reports
-  on the extension module already installed rather than the one in the diff;
-  and `--release` is not optional for anything timed.
+- **Two things about the verification commands**, which are in `README.md`
+  under Getting started and Testing, that are easy to skip and expensive to
+  skip: anything touching `src/` needs `maturin develop --release` first, or
+  the suite reports on the extension module already installed rather than the
+  one in the diff; and `--release` is not optional for anything timed.
 - **Where each kind of rule is written down.** `README.md` is how a person runs
   this. `PLAN.md` is what the project is and why. This file is how work is done
   here. A rule belongs in exactly one of the three; restated in a second, the
@@ -51,7 +51,7 @@ wins on *how work is done here*.
 - **A statistical test is the easiest kind to fool yourself with.** A real
   divergence smaller than the tolerance passes. Every claim that two
   implementations agree needs the deterministic test behind it — `PLAN.md`
-  §6.B, Implementation parity, has which comparisons are exact, which are
+  §6.4, Implementation parity, has which comparisons are exact, which are
   statistical, and why.
 - **Plan non-trivial work.** Plan mode for anything spanning 3+ steps or an
   architectural decision. If work goes sideways, stop and re-plan.
@@ -85,7 +85,7 @@ here.
   generates.
 - **The reference implementation is not the benchmark baseline.** They are
   different programs with different jobs, and comparing the kernel against the
-  scalar reference overstates the speedup. `PLAN.md` §6.C, Benchmarks, has the
+  scalar reference overstates the speedup. `PLAN.md` §6.5, Benchmarks, has the
   four implementations and which one the claim is made against.
 
 ## Code style
