@@ -1053,11 +1053,42 @@ library's `(mu, sigma)` and this model's `(k, lambda)`.
 
 ### B. Implementation parity (reference vs kernel)
 
-- Do **not** chase bit-exact RNG parity between Python and Rust. Matching
-  random streams across languages costs a great deal and proves little.
-- Compare **statistically**: over many replications, failure counts, SAIDI,
-  SAIFI, spend, and survival curves must agree within Monte Carlo error. Use a
-  tolerance derived from replication standard error, not a fixed epsilon.
+Which comparisons share random draws, and which do not:
+
+| Comparison | Same draws | Assertion |
+|---|---|---|
+| One policy against another, same implementation | Yes, by construction (2.11) | Paired difference — this is what common random numbers buy |
+| Rust single-threaded against rayon | Yes | Exact equality of every returned array |
+| Scalar reference against batched NumPy against batched polars | Yes; all three call the same uniform function | Exact equality, at a handful of replications |
+| Any Python implementation against the Rust kernel | Uniforms match; the arithmetic does not | Statistical, plus the exact tests below |
+
+- **The uniform generator is a named function, and it is tested across
+  languages directly.** Because 2.11 makes draws addressable,
+  `uniform(seed, replication, segment, installation)` is a pure function of
+  four integers rather than a position in a stream, so it can be compared
+  bit-exactly between Python and Rust over a grid of indices for almost
+  nothing. The familiar advice against chasing bit-exact RNG parity was written
+  for stream-based generators, where matching consumption order across
+  languages costs a great deal and returns little. It does not apply to a
+  function of four integers, and choosing an addressable scheme is what changed
+  that.
+- **The lifetime draw is compared to a tight floating-point tolerance**, not
+  bit-exactly: `ln` and `powf` differ in their last bits between the two
+  languages' standard libraries.
+- **The whole-simulation comparison stays statistical**, for a specific reason
+  rather than as a hedge. Even given identical uniforms, a one-unit-in-the-last-
+  place difference in a score can flip a sort order, which changes which
+  candidate is funded last, which moves the answer by a whole segment. Compare
+  over many replications with a tolerance derived from replication standard
+  error rather than a fixed epsilon, and state whether the two runs are treated
+  as paired or independent — that choice moves the tolerance by a factor of
+  root two.
+- **The three Python implementations are compared exactly**, because they share
+  both the uniform function and the arithmetic, so there is no reason to accept
+  a tolerance. That makes those parity tests fast enough to run at five
+  replications instead of five thousand, and sharp enough to catch an
+  off-by-one in the vectorized greedy fill that a statistical test would miss
+  at any replication count.
 - Add one **deterministic** parity test with lifetimes forced to zero or to
   beyond the horizon, which removes randomness entirely and checks the policy
   and budget logic exactly. This is where greedy-allocation bugs actually
@@ -1260,6 +1291,31 @@ notebook needs a function, it belongs in the package.
 | `03_effective_scale.py` | The effective-scale reduction made visual (2.3). Sliders for `k`, `lambda`, `n` and length; overlay conductor-level and segment-level survival curves against the empirical minimum of sampled draws, and against draws for a longer segment. Shows scale shrinking by `(n * L/L_ref)^(-1/k)` while shape holds, which is the claim the recovery ladder's rung 3 tests numerically. |
 | `04_policy_explorer.py` | The headline demo. Sliders for annual budget, policy, and policy params; plot SAIDI/SAIFI trajectories over 30 years, spend, and failures by class. **This is the reliability-vs-budget curve** — the deliverable the original work produced. |
 | `05_parity_and_bench.py` | Reference-vs-Rust agreement plots plus the benchmark table (naive Python / vectorized NumPy / Rust single-threaded / Rust rayon). |
+
+**Each notebook walks the API layer by layer rather than making the top-level
+call.** A notebook that calls one function and plots what comes back teaches
+nothing about how the package is built, and it never reveals that the top-level
+function is the only thing anyone can call. Stepping through instead — load the
+config, generate the population and show the frame, apply the effective-scale
+reduction and show what moved, draw lifetimes and show the distribution, score
+candidates and show the ranking, allocate the budget and show what was funded —
+requires every layer to be callable on its own with plain arguments.
+
+This is a constraint on the package rather than a style for the notebooks. If a
+step is awkward to show, the API is awkward, and that surfaces in Phase 1
+instead of Phase 6. Because the notebooks execute headless in continuous
+integration (10.2, Notebook execution on a slower cadence), the walkthrough is
+also an executable check that the package has seams at all.
+
+It stays inside the rule above: the notebook *calls* each layer and never
+reimplements one.
+
+**Close the walkthrough by calling the top-level function and asserting it
+matches what the steps produced.** That pins the convenience wrapper against
+the composed pieces — a test nobody writes otherwise — and it is exactly the
+kind of assertion 10.2 says belongs in a notebook rather than in `tests/`,
+because it is about the notebook's own claim that the steps add up to the
+whole.
 
 Result figures come from `plots.py` (Section 7, Results, metrics, and
 reporting), so a notebook and the app render the same figure from the same

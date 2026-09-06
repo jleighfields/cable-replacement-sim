@@ -200,10 +200,14 @@ is the validation strategy rather than an accident:
     truncation, then length, then technology indicators, then per-technology
     shape. A single test of the whole model says something is broken; the
     ladder says what.
-  - **Do not chase bit-exact RNG parity between Python and Rust.** Matching
-    random streams across languages proves little and costs a great deal.
-    Compare statistically, with a tolerance derived from replication standard
-    error rather than a fixed epsilon.
+  - **Know which comparisons are exact and which are statistical** (`PLAN.md`
+    §6, Validation strategy). Draws are addressable, so the uniform generator
+    is a pure function of four integers and is compared bit-exactly across
+    languages. The three Python implementations are compared exactly too, since
+    they share the draws and the arithmetic. Only Python against Rust is
+    statistical, because a last-place floating-point difference in a score
+    flips a sort and changes which candidate is funded last — use a tolerance
+    derived from replication standard error, never a fixed epsilon.
 - **Two opt-in marker groups, both excluded from a default run** because each
   costs minutes: `notebooks` (`uv run pytest -m notebooks`) executes every
   marimo notebook headless so they cannot silently rot, and `app`
