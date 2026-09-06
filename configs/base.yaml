@@ -43,6 +43,11 @@ population:
       n_conductors: 3
       length_ft:   {dist: lognormal, median: 1200, sigma: 0.45}
       cost_per_ft: 185.0
+      # Feeder cable is a larger conductor and a different product from the
+      # lateral and distribution cable of the same vintage: longer runs, more
+      # accessories and heavier thermal loading spread its failures out, so it
+      # takes a lower shape than the technology default rather than sharing it.
+      weibull_shape: 5.5
       customer_mix:
         residential: {dist: lognormal, median: 700, sigma: 0.70}
         commercial:  {dist: lognormal, median: 120, sigma: 0.90}
@@ -76,7 +81,7 @@ population:
     # distribution over integer years.
     install_volume:
       1965: 0.002
-      1975: 0.078
+      1975: 0.077
       1985: 0.214
       1995: 0.395
       2005: 0.613

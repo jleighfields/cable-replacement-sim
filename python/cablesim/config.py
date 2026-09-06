@@ -108,6 +108,13 @@ class SegmentClass(pydantic.BaseModel):
         cost_per_ft: Planned replacement cost per foot, in dollars. Keyed on
             class rather than technology because it is the cost of installing
             new cable and does not depend on what is being removed.
+        weibull_shape: Weibull shape for this class's cable, where it differs
+            from the technology default. Technology carries the parameters
+            because failure behaviour follows insulation compound and vintage,
+            but conductor size is a second axis the technology does not
+            capture: large-conductor feeder cable is a different product from
+            residential lateral cable of the same vintage. Left unset, the
+            class takes the technology's shape.
         customer_mix: Customers served downstream, per customer type.
     """
 
@@ -116,6 +123,7 @@ class SegmentClass(pydantic.BaseModel):
     n_conductors: int = pydantic.Field(ge=1)
     length_ft: LogNormalSpec
     cost_per_ft: float = pydantic.Field(gt=0)
+    weibull_shape: float | None = pydantic.Field(default=None, gt=0)
     customer_mix: dict[str, LogNormalSpec]
 
 

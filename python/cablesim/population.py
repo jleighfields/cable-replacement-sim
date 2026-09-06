@@ -119,6 +119,7 @@ def generate(config: config_module.Config) -> pl.DataFrame:
     length_ft = np.zeros(n)
     cost_per_ft = np.zeros(n)
     n_conductors = np.zeros(n, dtype=np.int64)
+    shape_override = np.full(n, np.nan)
     outage_hours_emergency = np.zeros(n)
     outage_hours_planned = np.zeros(n)
     counts = {name: np.zeros(n) for name in types}
@@ -128,6 +129,8 @@ def generate(config: config_module.Config) -> pl.DataFrame:
         length_ft[rows] = drawn_length[rows]
         cost_per_ft[rows] = segment_class.cost_per_ft
         n_conductors[rows] = segment_class.n_conductors
+        if segment_class.weibull_shape is not None:
+            shape_override[rows] = segment_class.weibull_shape
         outage_hours_emergency[rows] = config.reliability.outage_hours_emergency[
             segment_class.name
         ]
@@ -142,7 +145,10 @@ def generate(config: config_module.Config) -> pl.DataFrame:
 
     shapes = np.array([t.weibull.shape for t in population.technologies])
     scales = np.array([t.weibull.scale for t in population.technologies])
-    shape = shapes[technology_index]
+    # Technology sets the shape unless the class names its own, which is how
+    # a larger-conductor feeder cable differs from a lateral of the same
+    # vintage.
+    shape = np.where(np.isnan(shape_override), shapes[technology_index], shape_override)
     scale = scales[technology_index]
     replacement = next(
         t
@@ -153,10 +159,11 @@ def generate(config: config_module.Config) -> pl.DataFrame:
     geometry = (n_conductors, length_ft, population.length_ref_ft,
                 population.length_exponent)
     effective = weibull.effective_scale(scale, shape, *geometry)
+    replacement_shape = np.where(
+        np.isnan(shape_override), replacement.weibull.shape, shape_override
+    )
     replacement_effective = weibull.effective_scale(
-        np.full(n, replacement.weibull.scale),
-        np.full(n, replacement.weibull.shape),
-        *geometry,
+        np.full(n, replacement.weibull.scale), replacement_shape, *geometry
     )
 
     customers = sum(counts.values())
@@ -187,7 +194,7 @@ def generate(config: config_module.Config) -> pl.DataFrame:
             "outage_cost_per_failure": value_per_hour * outage_hours_emergency,
             "shape": shape,
             "scale": effective,
-            "replacement_shape": np.full(n, replacement.weibull.shape),
+            "replacement_shape": replacement_shape,
             "replacement_scale": replacement_effective,
         }
     )
