@@ -65,8 +65,12 @@ def effective_scale(
     Returns:
         The segment's effective Weibull scale, in years.
     """
-    pieces = n_conductors * (length_ft / length_ref_ft) ** length_exponent
-    return scale * pieces ** (-1.0 / shape)
+    # Multiplies the cumulative hazard, which is equivalent to dividing the
+    # scale by its `shape`-th root. Under a linear length term this would be a
+    # count of unit-length pieces in series; the sub-linear exponent is what
+    # stops it being a count of anything.
+    hazard_multiplier = n_conductors * (length_ft / length_ref_ft) ** length_exponent
+    return scale * hazard_multiplier ** (-1.0 / shape)
 
 
 def conditional_failure_probability(
