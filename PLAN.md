@@ -759,14 +759,33 @@ avoids that, and passing an array is the simplest way to be indexed.
   50 makes it about 500 MB. Twenty crossings per policy costs nothing — the
   rule that matters is never calling back into Python *inside* the loop, and
   that still holds.
+- **The draws come from the bit generator's raw stream, not from a
+  distribution method**, and the conversion is written down here:
+
+  ```python
+  raw = numpy.random.PCG64(seed).random_raw(n)     # uint64
+  uniforms = (raw >> numpy.uint64(11)) * 2.0**-53  # [0, 1)
+  ```
+
+  NumPy guarantees version-to-version stream compatibility for `BitGenerator`
+  classes, calling them "a firmer building block for downstream users that need
+  it", and explicitly permits `Generator` methods to break stream
+  compatibility on feature releases. `Generator(PCG64(seed)).random()` produces
+  exactly the expression above today, so nothing is given up by writing it out
+  — and writing it out is what keeps a NumPy upgrade from silently changing
+  every archived result. A test pins a handful of values from a fixed seed, so
+  a stream change fails loudly rather than moving the numbers.
+
 - **The draws are not written to disk.** They regenerate from
   `simulation.seed`, which 7.1 already records beside every run, so the seed
-  *is* the persistence and it is four bytes rather than nine gigabytes.
-  Uniform random doubles have maximal entropy, so parquet would compress them
-  by almost nothing, and reading them back would be slower than making them
-  again — `numpy.random.Generator` produces this array in seconds. Storing
-  synthetic data that a recorded seed reproduces exactly is the case the "no
-  committed data blobs" rule exists for.
+  *is* the persistence at four bytes rather than nine gigabytes. Persisting
+  them would not remove any discrepancy between implementations either, because
+  all four already read one array in memory within a run. What persistence
+  could protect — an archived result surviving a library upgrade — is what the
+  raw-stream rule above protects instead, and it protects it on every machine
+  rather than only where the file happens to still exist. A nine-gigabyte
+  artifact cannot be committed and would be regenerated on any other machine
+  regardless, so it would buy a guarantee that holds in exactly one place.
 - **The `random` policy takes a second array**, `policy_uniforms[r, i]` — one
   fixed priority per segment per replication rather than a fresh permutation
   every year. A priority that holds across years also makes it a better
@@ -966,6 +985,11 @@ baseline the results are compared against.
 
 ## 4. Repo layout
 
+**This is the finished layout, not what exists today.** The status line at the
+top of this document says which phase the repository has actually reached;
+anything below that phase's deliverables is where a file will go, not where one
+is.
+
 ```
 cable-replacement-sim/
 ├── PLAN.md
@@ -1036,6 +1060,8 @@ cable-replacement-sim/
 │   ├── test_mle_recovery.py
 │   ├── test_effective_scale.py
 │   ├── test_policies.py
+│   ├── test_metrics.py
+│   ├── test_records.py
 │   ├── test_reference_parity.py
 │   ├── test_batched_parity.py
 │   ├── test_results.py
@@ -1281,6 +1307,9 @@ pass for the wrong reason, so each one fixes its own:
 - **`p(t)` against the survivor function is deterministic**, so it is asserted
   exactly rather than statistically: the product of `(1 - p(t))` over the
   horizon equals `S(30)` to `1e-12` relative.
+- **The uniform stream is pinned to golden values.** A fixed seed and a
+  handful of expected doubles, so a NumPy upgrade that changes the stream fails
+  here rather than quietly moving every result (2.11).
 - **The left-truncated draw is checked at three entry ages** spanning the
   range — young, middle-aged, and nearly worn out. The correction's error grows
   with entry age, so a single young cohort passes even with the correction
@@ -1999,8 +2028,8 @@ Port the loop to `sim.rs` / `policy.rs` / `weibull.rs`. Bind with PyO3, build
 with maturin, use `rust-numpy` for zero-copy array passing. Pass the
 statistical parity test and the deterministic parity test against the reference.
 
-The indexed random-number scheme of 2.11 is decided here, not in Phase 5. It
-cannot be retrofitted once the loop is written.
+The draw array of 2.11 arrives with Phase 3, not here — `reference.py` cannot
+run without it — so this phase consumes it rather than deciding it.
 
 **Phase 5 — parallel, batched baselines, and benchmarks**
 `py.allow_threads` + rayon over replications. `batched.py`: the batched NumPy
