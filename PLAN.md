@@ -799,9 +799,15 @@ population:
    no episode is kept with zero exposure after entry, which contributes
    nothing to the likelihood and would silently inflate the sample size.
 
+   The dropped episodes are not recovered by anything downstream — they left
+   no trace, and nothing can reconstruct a row from its own absence. What the
+   likelihood corrects is the bias in the episodes that *remain*: each is in
+   the table partly because it lasted long enough to still be running when
+   records began, so the surviving sample over-represents long lives.
+
    Simulating the truth first and hiding part of it is what makes this a valid
-   test of the correction: the parameters that generated the whole history are
-   known, so fitting only the visible subset either recovers them or does not.
+   test of that correction: the parameters behind the whole history are known,
+   so fitting only the visible subset either recovers them or does not.
 5. Censor every surviving episode at `study_end`.
 
 The censoring fraction is not configured directly. It falls out of

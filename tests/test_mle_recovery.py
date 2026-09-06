@@ -163,6 +163,82 @@ def test_the_truncation_correction_matters_when_entry_ages_are_late() -> None:
     assert abs(ignored.scale / corrected.scale - 1.0) < 0.01
 
 
+def test_rung_3_recovers_the_geometry_coefficients() -> None:
+    """The weakest-link law, tested by fitting rather than assumed.
+
+    This is the rung the phase exists for. The effective-scale reduction is
+    derived, not fitted, so both geometry coefficients have predicted values:
+    `log(n)` must come back at `-1/shape`, which follows from the minimum of n
+    conductor lifetimes and cannot be tuned, and `log(L/L_ref)` at
+    `-length_exponent/shape`, which checks that the generator and the estimator
+    agree about the exponent the configuration sets.
+
+    Failing here means the reduction or the regression specification is wrong,
+    and every rung above inherits it — so this is where to stop rather than
+    press on.
+    """
+    settings = one_technology_config()
+    technology = settings.population.technologies[0]
+    shape, scale = technology.weibull.shape, technology.weibull.scale
+    exponent = settings.population.length_exponent
+
+    table = records.episode_table(
+        settings,
+        technologies=[technology],
+        n_conductors=[1, 3],
+        n_segments=20_000,
+    )
+    end, entry, observed = records.lifetimes(table, settings.records.study_end)
+    design, names = records.geometry_covariates(
+        table, settings.population.length_ref_ft
+    )
+    assert observed.sum() > 1000, "too few failures to separate two coefficients"
+
+    fit = weibull.fit_regression(end, entry, observed, design, names)
+
+    assert contains(fit.shape_interval, shape)
+    assert contains(fit.reference_scale_interval, scale)
+    assert contains(fit.coefficient_intervals["log_n_conductors"], -1.0 / shape)
+    assert contains(
+        fit.coefficient_intervals["log_length_ratio"], -exponent / shape
+    )
+
+
+def test_one_composite_covariate_recovers_neither_effect() -> None:
+    """Why the design matrix carries two columns rather than one.
+
+    Conductor count enters the reduction exactly and length raised to the
+    configured exponent, so a single column combining them forces one
+    coefficient onto two effects at different strengths. The fitted value lands
+    between them and matches neither, which is a plausible-looking number and
+    the reason this is pinned rather than left as a comment.
+    """
+    settings = one_technology_config()
+    technology = settings.population.technologies[0]
+    shape = technology.weibull.shape
+    exponent = settings.population.length_exponent
+
+    table = records.episode_table(
+        settings,
+        technologies=[technology],
+        n_conductors=[1, 3],
+        n_segments=20_000,
+    )
+    end, entry, observed = records.lifetimes(table, settings.records.study_end)
+    design, _ = records.geometry_covariates(
+        table, settings.population.length_ref_ft
+    )
+
+    composite = (design[:, 0] + design[:, 1]).reshape(-1, 1)
+    fit = weibull.fit_regression(
+        end, entry, observed, composite, ["log_composite"]
+    )
+    interval = fit.coefficient_intervals["log_composite"]
+
+    assert not contains(interval, -1.0 / shape)
+    assert not contains(interval, -exponent / shape)
+
+
 def test_a_table_with_no_failures_is_rejected() -> None:
     """Without a failure the shape is unidentified, and the fit says so."""
     ages = np.full(50, 10.0)

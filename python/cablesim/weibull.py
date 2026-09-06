@@ -183,9 +183,11 @@ def log_likelihood(
     ``+ H(a_i)`` divides its contribution by ``S(a_i)`` and conditions on that.
 
     Put the other way round: a censored episode is one you have but cannot see
-    the end of; a truncated one is an episode you never had. The likelihood can
-    only correct for the second because the asset register records install
-    dates, which is what makes an entry age computable at all.
+    the end of; a truncated one is an episode you never had. The correction
+    does not recover the ones you never had — it adjusts for the fact that the
+    ones you do have were selected for lasting long enough to be recorded. All
+    it needs is each surviving episode's age when observation began, which the
+    asset register supplies through the install date.
 
     Charging each episode for hazard accumulated before anyone was watching
     counts exposure that could never have produced an observation, and biases
@@ -301,5 +303,133 @@ def fit_censored(
         scale=float(scale),
         shape_interval=(float(low[0]), float(high[0])),
         scale_interval=(float(low[1]), float(high[1])),
+        log_likelihood=float(-result.fun),
+    )
+
+
+class RegressionFit(NamedTuple):
+    """A fitted accelerated-failure-time model with covariates on the scale.
+
+    Attributes:
+        shape: Fitted shape, common to every episode.
+        reference_scale: `exp(mu)`, the scale where every covariate is zero —
+            with the covariates used here, a single conductor at the reference
+            length.
+        coefficients: Fitted coefficient per covariate, in the order given.
+        shape_interval: Confidence interval for the shape.
+        reference_scale_interval: Confidence interval for `exp(mu)`.
+        coefficient_intervals: Confidence interval per covariate.
+        log_likelihood: Value at the optimum.
+    """
+
+    shape: float
+    reference_scale: float
+    coefficients: dict[str, float]
+    shape_interval: tuple[float, float]
+    reference_scale_interval: tuple[float, float]
+    coefficient_intervals: dict[str, tuple[float, float]]
+    log_likelihood: float
+
+
+def fit_regression(
+    age_at_end: np.ndarray,
+    entry_age: np.ndarray,
+    observed: np.ndarray,
+    covariates: np.ndarray,
+    names: list[str],
+    level: float = 0.95,
+) -> RegressionFit:
+    """Fits a Weibull whose scale depends on covariates.
+
+    The accelerated-failure-time form, in which covariates scale `lambda` and
+    the shape is common::
+
+        log(T) = mu + beta' x + sigma * W        k = 1 / sigma
+        lambda_i = exp(mu + beta' x_i)
+
+    Each episode therefore has its own scale and they share a shape, which is
+    what makes a single fit over a mixed population possible at all.
+
+    Only the scale is regressed. Letting the shape vary with a covariate too is
+    a different model, and the ladder reaches it in a later rung by adding
+    indicators to an ancillary term rather than by changing this function.
+
+    Args:
+        age_at_end: Age at failure, or at the study end for a censored episode.
+        entry_age: Age when observation began, zero where none.
+        observed: 1 where the episode ended in a failure, 0 where censored.
+        covariates: Design matrix, one row per episode and one column per name.
+            No intercept column: `mu` is fitted separately, so a column of ones
+            would make the two unidentifiable.
+        names: Column names, used to label the fitted coefficients.
+        level: Confidence level for the intervals.
+
+    Returns:
+        The fitted shape, reference scale and coefficients, with intervals.
+
+    Raises:
+        ValueError: If no episode ended in a failure, if the design matrix does
+            not match the names or the episode count, or if the fit does not
+            converge.
+    """
+    if not np.any(observed):
+        raise ValueError("no observed failures: the shape is not identified")
+    if covariates.shape != (len(age_at_end), len(names)):
+        raise ValueError(
+            f"design matrix is {covariates.shape}, expected "
+            f"({len(age_at_end)}, {len(names)})"
+        )
+
+    def unpack(parameters: np.ndarray) -> tuple[float, np.ndarray]:
+        shape = float(np.exp(parameters[0]))
+        scale = np.exp(parameters[1] + covariates @ parameters[2:])
+        return shape, scale
+
+    def negative(parameters: np.ndarray) -> float:
+        shape, scale = unpack(parameters)
+        return -log_likelihood(shape, scale, age_at_end, entry_age, observed)
+
+    def gradient(parameters: np.ndarray) -> np.ndarray:
+        shape, scale = unpack(parameters)
+        end_ratio = age_at_end / scale
+        entry_ratio = entry_age / scale
+        end_hazard = end_ratio**shape
+        entry_hazard = entry_ratio**shape
+        safe_entry = np.where(entry_age > 0.0, entry_ratio, 1.0)
+        entry_term = np.where(entry_age > 0.0, entry_hazard * np.log(safe_entry), 0.0)
+
+        d_shape = np.sum(observed * (1.0 / shape + np.log(end_ratio))) - np.sum(
+            end_hazard * np.log(end_ratio) - entry_term
+        )
+        # Every scale parameter acts through the same per-episode quantity,
+        # because mu and each coefficient shift log(lambda_i) identically.
+        per_episode = shape * ((end_hazard - entry_hazard) - observed)
+        return -np.concatenate(
+            [[shape * d_shape], [np.sum(per_episode)], covariates.T @ per_episode]
+        )
+
+    start = np.concatenate(
+        [[0.0, np.log(float(np.mean(age_at_end)))], np.zeros(len(names))]
+    )
+    result = optimize.minimize(negative, start, jac=gradient, method="BFGS")
+    if not result.success:
+        raise ValueError(f"the fit did not converge: {result.message}")
+
+    errors = np.sqrt(np.diag(result.hess_inv))
+    width = stats.norm.ppf(0.5 + level / 2.0)
+    low, high = result.x - width * errors, result.x + width * errors
+
+    return RegressionFit(
+        shape=float(np.exp(result.x[0])),
+        reference_scale=float(np.exp(result.x[1])),
+        coefficients=dict(zip(names, result.x[2:], strict=True)),
+        shape_interval=(float(np.exp(low[0])), float(np.exp(high[0]))),
+        reference_scale_interval=(float(np.exp(low[1])), float(np.exp(high[1]))),
+        # Coefficients are already on the log-scale the model is linear in, so
+        # their intervals are not exponentiated the way the two scales are.
+        coefficient_intervals={
+            name: (float(low[2 + i]), float(high[2 + i]))
+            for i, name in enumerate(names)
+        },
         log_likelihood=float(-result.fun),
     )

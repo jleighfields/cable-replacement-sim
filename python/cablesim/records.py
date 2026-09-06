@@ -26,19 +26,23 @@ is no row. The episodes you do have are in the sample partly *because* they
 lasted long enough to be seen, so the likelihood conditions on that survival by
 dividing by ``S(entry age)``.
 
-The generator produces both, in different places. It simulates the complete
-history first, from installation to the study end, so every segment's real
-lifetime is drawn whether or not anyone would have recorded it. The record
-window is then applied as a filter: episodes ending at or before
-``monitoring_start`` are dropped, which creates the truncation, and the
-survivors keep an entry age measured from that date. Nothing about the
-underlying lifetimes changes — the cable really did fail, there is simply no
-record of it, which is what the correction in the likelihood exists to undo.
+The generator makes them in different places. It simulates each segment's
+complete history first, so every lifetime is drawn whether or not a record
+system would have caught it. Applying the record window then deletes the
+episodes that ended before records began.
 
-Whether the entry age is knowable at all rests on the asset register: install
-dates are recorded even where failures are not, so an episode's age when
-observation began can be computed. Without that, the episode would be in the
-sample with no way to say what it had already survived.
+**Those deleted episodes are gone, and the correction does not bring them
+back.** Nothing could: they left no trace, and a row cannot be reconstructed
+from its own absence. What the correction fixes is the bias in what *remains*.
+An episode is in the table partly because it lasted long enough to still be
+running when records began, so the surviving sample over-represents long lives.
+Conditioning each retained episode on having reached its entry age removes
+exactly that much and no more.
+
+The entry age is computable because the asset register records install dates
+even where failures are not recorded. That is the whole of what the correction
+needs — not knowledge of the missing episodes, only the age each surviving one
+had already reached when someone started watching.
 """
 
 import numpy as np
@@ -270,3 +274,35 @@ def lifetimes(
     observed = np.where(np.isnan(failure), 0.0, 1.0)
     end = np.where(np.isnan(failure), float(study_end), failure)
     return end - install, table["entry_year"].to_numpy() - install, observed
+
+
+def geometry_covariates(
+    table: pl.DataFrame, length_ref_ft: float
+) -> tuple[np.ndarray, list[str]]:
+    """Builds the design matrix the effective-scale reduction predicts.
+
+    Two columns, never one composite. Conductor count and length enter the
+    reduction at different strengths — the first exactly, the second raised to
+    the configured exponent — so a single column would force one coefficient
+    onto two effects and recover neither.
+
+    Length enters as a ratio to the reference rather than as raw feet, which
+    makes the fitted intercept the scale of a single conductor at that
+    reference, directly comparable to what the configuration sets.
+
+    Args:
+        table: The episode table.
+        length_ref_ft: The reference length the configured scales describe.
+
+    Returns:
+        The design matrix and its column names.
+    """
+    return (
+        np.column_stack(
+            [
+                np.log(table["n_conductors"].to_numpy().astype(float)),
+                np.log(table["length_ft"].to_numpy() / length_ref_ft),
+            ]
+        ),
+        ["log_n_conductors", "log_length_ratio"],
+    )
