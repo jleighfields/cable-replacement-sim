@@ -1388,6 +1388,31 @@ estimator: two implementations disagree loudly where one is silently wrong, and
 the failure it is aimed at is a parameterization transposed between an AFT
 library's `(mu, sigma)` and this model's `(k, lambda)`.
 
+### Where a parity test's inputs come from
+
+**One fixture builds the population, the draw array and the config, and every
+implementation under test reads that one set of objects.** The fixture lives in
+`conftest.py`; no test constructs a bit generator itself. That is what makes
+"the same draws" true by construction rather than by coincidence, and it is the
+only mechanism that does — a stored draw file would be bypassed by a test that
+built its own inputs exactly as easily as a fixture would.
+
+Two things follow, and they are worth separating because they are often
+conflated:
+
+- **Across test functions the draws need not match.** A parity test asserts
+  that two implementations agree with *each other* on whatever inputs they were
+  handed, not that a number equals a literal. Different tests may use different
+  sizes and different seeds without weakening anything, and a test that needs
+  5 replications should not pay for 1000.
+- **Within one run of one test they must match exactly**, which the shared
+  fixture guarantees, and **across runs of the same test they must not move**,
+  which the pinned seed guarantees.
+
+The exception is the golden-values check of 6.A, which does compare against
+literals — a handful of doubles from a fixed seed, so that a change in the
+underlying stream fails there rather than shifting every other test at once.
+
 ### B. Implementation parity (reference vs kernel)
 
 Which comparisons share random draws, and which do not:
