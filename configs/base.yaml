@@ -1,59 +1,129 @@
 # Documented defaults for a full-size run. Sweeps override these from a driver
 # script or notebook rather than by editing this file, so what is written here
 # stays the one reproducible baseline.
+#
+# The coupled values below — the technology scales, the install-volume curve,
+# the population size, the lateral customer mix and the annual budget — were
+# calibrated together against the target in PLAN.md §13.2, Still open, by
+# running the population generator: about 2% of segments fail in the first year
+# under run-to-failure, the budget funds roughly 60% of that, and the customers
+# on terminal laterals reconcile with the system total. The value-of-lost-load
+# figures are still placeholders needing a published source.
 
 simulation:
   n_years: 30
   n_reps: 1000
   seed: 20260902
+  start_year: 2026      # year 0. Age is start_year - install_year, and every
+                        # present value is measured at this year.
+  chunk_reps: 50        # replications per kernel call, sized so the draw array
+                        # stays around 500 MB
 
 population:
-  n_segments: 40000
+  n_segments: 12000
   total_customers: 95000        # system-level denominator for SAIFI/SAIDI
+  customer_types: [residential, commercial, industrial]
+  length_ref_ft: 500.0    # the length the technology scales below describe
+  length_exponent: 0.5    # sub-linear: faults concentrate at accessories, not
+                          # along the run. 1.0 would be spatial-Poisson.
+
+  # Weibull parameters key on technology, not on class. Each pair is the scale
+  # of a SINGLE CONDUCTOR; the min-of-n reduction turns it into the per-segment
+  # value, so a three-phase segment lives n^(-1/shape) as long. Vintage ranges
+  # partition initial_age.install_year_range with no gap and no overlap.
+  technologies:
+    - {name: hmwpe,   vintage: [1965, 1985], weibull: {shape: 6.2, scale: 50.0}}
+    - {name: xlpe,    vintage: [1986, 2004], weibull: {shape: 6.5, scale: 57.0}}
+    - {name: tr_xlpe, vintage: [2005, 2020], weibull: {shape: 6.8, scale: 65.0}}
+  replacement_technology: tr_xlpe   # what a replacement installs
+
   classes:
     - name: main_feeder
       share: 0.12
       n_conductors: 3
       length_ft:   {dist: lognormal, median: 1200, sigma: 0.45}
-      customers:   {dist: lognormal, median: 850,  sigma: 0.70}
       cost_per_ft: 185.0
-      weibull:     {shape: 2.4, scale: 55.0}     # conductor-level
+      customer_mix:
+        residential: {dist: lognormal, median: 700, sigma: 0.70}
+        commercial:  {dist: lognormal, median: 120, sigma: 0.90}
+        industrial:  {dist: lognormal, median: 4,   sigma: 1.10}
     - name: distribution_3ph
       share: 0.33
       n_conductors: 3
       length_ft:   {dist: lognormal, median: 600, sigma: 0.50}
-      customers:   {dist: lognormal, median: 95,  sigma: 0.80}
       cost_per_ft: 140.0
-      weibull:     {shape: 2.2, scale: 50.0}
+      customer_mix:
+        residential: {dist: lognormal, median: 85, sigma: 0.80}
+        commercial:  {dist: lognormal, median: 9,  sigma: 1.00}
+        industrial:  {dist: lognormal, median: 1,  sigma: 1.20}
     - name: lateral_1ph
       share: 0.55
       n_conductors: 1
       length_ft:   {dist: lognormal, median: 350, sigma: 0.60}
-      customers:   {dist: lognormal, median: 12,  sigma: 0.85}
       cost_per_ft: 95.0
-      weibull:     {shape: 2.0, scale: 45.0}
+      customer_mix:
+        residential: {dist: lognormal, median: 8,   sigma: 0.85}
+        commercial:  {dist: lognormal, median: 1,   sigma: 1.10}
+        industrial:  {dist: lognormal, median: 0.4, sigma: 1.30}
+
   initial_age:
     dist: empirical_install_years
     install_year_range: [1965, 2020]
-    weights: build_out_curve      # more cable installed in growth decades
+    # Relative volume of cable STILL IN THE GROUND at each breakpoint, not of
+    # cable ever installed: the oldest vintages have been progressively
+    # replaced already, so the surviving profile rises toward the present.
+    # Linearly interpolated between breakpoints and normalized to a
+    # distribution over integer years.
+    install_volume:
+      1965: 0.002
+      1975: 0.078
+      1985: 0.214
+      1995: 0.395
+      2005: 0.613
+      2020: 1.0
+
+# The censored failure history the MLE fits. Separate from the population
+# above: this table is sized by how many observed failures the recovery test
+# needs, not by how large a system is being modeled.
+records:
+  n_segments: 20000
+  monitoring_start: 1998    # left-truncation point; no record exists before it
+  study_end: 2026           # right-censoring point
 
 failure:
-  conductor_dependence: iid       # iid | shared_frailty (future)
+  conductor_dependence: iid         # iid | shared_frailty (not implemented)
 
 costs:
   emergency_multiplier: 2.5
   mobilization_per_segment: 3500.0
   escalation_rate: 0.03
+  discount_rate: 0.06               # for present-value reporting
 
 budget:
-  annual: 4.0e6
+  annual: 12.0e6
   escalation: 0.03
   emergency_charged_to_budget: false
 
 reliability:
-  outage_hours_emergency: 4.5
-  outage_hours_planned: 0.0
-  voll_per_customer_hour: 8.0
+  # Customer restoration time by class, in hours — time until the customer is
+  # back on, not time until the cable is repaired. A looped feeder is restored
+  # by switching and repaired afterwards; a radial lateral's customers are out
+  # for the whole job, so the ordering runs opposite to repair difficulty.
+  outage_hours_emergency:
+    main_feeder: 1.8
+    distribution_3ph: 3.0
+    lateral_1ph: 5.0
+  outage_hours_planned:
+    main_feeder: 0.0        # back-fed, no interruption
+    distribution_3ph: 0.5   # brief switching
+    lateral_1ph: 4.0        # radial: customers out for the work
+  # Value of lost load, dollars per customer-hour, by customer type.
+  # PLACEHOLDERS needing sourcing to published interruption-cost estimates,
+  # with the source and the outage duration they were read at beside them.
+  voll_per_customer_hour:
+    residential: 8.0
+    commercial: 180.0
+    industrial: 1400.0
 
 policies:
   - {name: run_to_failure}
@@ -61,3 +131,6 @@ policies:
   - {name: risk_ranked,   params: {rank_by: score_per_dollar}}
   - {name: worst_first}
   - {name: random}
+
+reporting:
+  baseline_policy: run_to_failure   # what "avoided" is measured against

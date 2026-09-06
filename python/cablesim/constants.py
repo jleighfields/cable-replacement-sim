@@ -22,5 +22,10 @@ CONFIG_DIR: pathlib.Path = PROJECT_ROOT / "configs"
 DEFAULT_CONFIG_PATH: pathlib.Path = CONFIG_DIR / "base.yaml"
 """The documented default configuration."""
 
-HOURS_PER_YEAR: float = 8760.0
-"""Hours in a non-leap year, used to convert outage durations to rates."""
+MINUTES_PER_HOUR: float = 60.0
+"""Converts configured restoration hours to the customer-minutes the
+reliability indices are defined in.
+
+The conversion happens once, where the per-segment outage columns are built,
+so every name downstream says which unit it carries.
+"""
