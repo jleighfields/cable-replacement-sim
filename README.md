@@ -11,7 +11,7 @@ policies evaluated against customer reliability (SAIFI / SAIDI / CMI) over a
 is fully synthetic.
 
 **Status: the population layer is built.** The configuration schema and its
-validators, the purpose-spawned random streams, the Weibull forms and the
+validators, the purpose-spawned sources of randomness, the Weibull forms and the
 synthetic population generator exist, with a marimo notebook that walks them.
 The continuous integration workflows run, and the extension module has been
 built and imports under Python — though see `PLAN.md` §14, First actions in the
@@ -25,7 +25,7 @@ phased roadmap.
 | Path | What it holds |
 |---|---|
 | `src/` | the Rust crate: the compute kernel, built as a Python extension module |
-| `python/cablesim/` | the Python package: configuration, random streams, the Weibull forms, the population generator, and the pure-Python reference implementation that will mirror the kernel |
+| `python/cablesim/` | the Python package: configuration, the sources of randomness, the Weibull forms, the population generator, and the pure-Python reference implementation that will mirror the kernel |
 | `configs/base.yaml` | the documented default run configuration |
 | `notebooks/` | marimo notebooks that walk the package interface layer by layer |
 | `tests/` | the test suite |

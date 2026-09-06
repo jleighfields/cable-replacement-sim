@@ -1,4 +1,4 @@
-"""Checks that the four random streams are independent and stable.
+"""Checks that the four sources of randomness are independent and stable.
 
 Both properties fail silently. Correlated streams still produce plausible
 numbers, and a stream that moves under a library upgrade still produces
@@ -6,7 +6,7 @@ plausible numbers — they are just different ones from the archived run.
 """
 
 import numpy as np
-from cablesim import streams
+from cablesim import random_draws
 
 DRAWS: int = 20_000
 
@@ -36,8 +36,8 @@ def test_the_four_roots_are_independent() -> None:
     draws — the control stops controlling, and every parity test still passes,
     because every implementation reads the same array.
     """
-    roots = streams.spawn_roots(20260902)
-    drawn = [streams.uniforms(root, DRAWS) for root in roots]
+    sources = random_draws.spawn_sources(20260902)
+    drawn = [random_draws.uniforms(source, DRAWS) for source in sources]
 
     for index, left in enumerate(drawn):
         for right in drawn[index + 1 :]:
@@ -47,7 +47,7 @@ def test_the_four_roots_are_independent() -> None:
 
 def test_the_uniform_stream_is_pinned() -> None:
     """The draws are the ones every archived result was computed against."""
-    drawn = streams.uniforms(streams.spawn_roots(0).population, 4)
+    drawn = random_draws.uniforms(random_draws.spawn_sources(0).population, 4)
 
     assert [float(value) for value in drawn] == PINNED_POPULATION_DRAWS
 
@@ -59,7 +59,7 @@ def test_uniforms_are_on_the_unit_interval() -> None:
     error in it would show up as a distribution that is uniform on the wrong
     interval, which nothing downstream would raise on.
     """
-    drawn = streams.uniforms(streams.spawn_roots(7).lifetimes, DRAWS)
+    drawn = random_draws.uniforms(random_draws.spawn_sources(7).lifetimes, DRAWS)
 
     assert drawn.min() >= 0.0
     assert drawn.max() < 1.0
@@ -68,10 +68,10 @@ def test_uniforms_are_on_the_unit_interval() -> None:
 
 def test_the_same_seed_gives_the_same_roots() -> None:
     """Reproducibility, which is the reason the seed is recorded with a run."""
-    first = streams.uniforms(streams.spawn_roots(11).records, DRAWS)
-    second = streams.uniforms(streams.spawn_roots(11).records, DRAWS)
+    first = random_draws.uniforms(random_draws.spawn_sources(11).records, DRAWS)
+    second = random_draws.uniforms(random_draws.spawn_sources(11).records, DRAWS)
 
     assert np.array_equal(first, second)
     assert not np.array_equal(
-        first, streams.uniforms(streams.spawn_roots(12).records, DRAWS)
+        first, random_draws.uniforms(random_draws.spawn_sources(12).records, DRAWS)
     )

@@ -7,7 +7,7 @@ in only one way.
 """
 
 import numpy as np
-from cablesim import streams, weibull
+from cablesim import random_draws, weibull
 from numpy.random import SeedSequence
 from scipy import stats
 
@@ -36,7 +36,7 @@ def weibull_draws(
     Returns:
         Ages at failure, in years.
     """
-    return weibull.draw_lifetime(streams.uniforms(source, n), shape, scale)
+    return weibull.draw_lifetime(random_draws.uniforms(source, n), shape, scale)
 
 
 def test_min_of_n_matches_the_reduced_scale() -> None:
@@ -46,9 +46,9 @@ def test_min_of_n_matches_the_reduced_scale() -> None:
     checked against sampled minima rather than assumed.
     """
     shape, scale, n = 2.4, 55.0, KS_DRAWS
-    source = streams.spawn_roots(11).population
+    source = random_draws.spawn_sources(11).population
     draws = weibull.draw_lifetime(
-        streams.uniforms(source, 3 * n).reshape(3, n), shape, scale
+        random_draws.uniforms(source, 3 * n).reshape(3, n), shape, scale
     )
 
     reduced = weibull.effective_scale(
@@ -80,7 +80,8 @@ def test_length_enters_through_the_exponent() -> None:
     expected = scale * ((length / reference) ** exponent) ** (-1.0 / shape)
     assert reduced == np.float64(expected)
 
-    draws = weibull_draws(streams.spawn_roots(12).population, shape, float(reduced), n)
+    source = random_draws.spawn_sources(12).population
+    draws = weibull_draws(source, shape, float(reduced), n)
     result = stats.kstest(draws, "weibull_min", args=(shape, 0.0, float(reduced)))
     assert result.pvalue > KS_ALPHA
 
@@ -113,9 +114,9 @@ def test_left_truncated_draw_matches_conditional_survival() -> None:
     """
     shape, scale, n = 2.2, 50.0, KS_DRAWS
     for index, entry_age in enumerate((5.0, 30.0, 70.0)):
-        source = streams.spawn_roots(20 + index).population
+        source = random_draws.spawn_sources(20 + index).population
         remaining = weibull.draw_remaining_life(
-            streams.uniforms(source, n), entry_age, shape, scale
+            random_draws.uniforms(source, n), entry_age, shape, scale
         )
         total = entry_age + remaining
 

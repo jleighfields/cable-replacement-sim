@@ -41,11 +41,11 @@ def _(mo):
 def _():
     import numpy as np
     import polars as pl
-    from cablesim import config, population, streams, weibull
+    from cablesim import config, population, random_draws, weibull
 
     settings = config.load_config()
     settings.population.n_segments, settings.simulation.seed
-    return np, pl, population, settings, streams, weibull
+    return np, pl, population, random_draws, settings, weibull
 
 
 @app.cell
@@ -324,13 +324,13 @@ def _(mo):
 
 
 @app.cell
-def _(np, population, scenario, segments, streams, weibull):
+def _(np, population, random_draws, scenario, segments, weibull):
     _n = scenario.population.n_segments
     _types = scenario.population.customer_types
 
-    _source = streams.spawn_roots(scenario.simulation.seed).population
+    _source = random_draws.spawn_sources(scenario.simulation.seed).population
     _wide = 3 + len(_types)
-    _draws = streams.uniforms(_source, _n * _wide).reshape(_wide, _n)
+    _draws = random_draws.uniforms(_source, _n * _wide).reshape(_wide, _n)
 
     _class_index = population.draw_categories(
         _draws[0], np.array([c.share for c in scenario.population.classes])

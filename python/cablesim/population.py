@@ -16,7 +16,7 @@ import polars as pl
 from scipy.special import ndtri
 
 from cablesim import config as config_module
-from cablesim import constants, streams, weibull
+from cablesim import constants, random_draws, weibull
 
 # ndtri(0) is negative infinity, which would give a segment zero length and
 # then an infinite effective scale. The raw stream produces exactly zero with
@@ -30,7 +30,7 @@ def lognormal_from_uniforms(
     """Maps uniforms to a lognormal by inverting its distribution function.
 
     Inverse transform rather than a generator method, so the values rest on the
-    bit-stream guarantee described in :mod:`cablesim.streams`.
+    bit-stream guarantee described in :mod:`cablesim.random_draws`.
 
     Args:
         u: Uniforms on [0, 1).
@@ -100,8 +100,9 @@ def generate(config: config_module.Config) -> pl.DataFrame:
     n = population.n_segments
     types = population.customer_types
 
-    source = streams.spawn_roots(config.simulation.seed).population
-    draws = streams.uniforms(source, n * (3 + len(types))).reshape(3 + len(types), n)
+    source = random_draws.spawn_sources(config.simulation.seed).population
+    wide = 3 + len(types)
+    draws = random_draws.uniforms(source, n * wide).reshape(wide, n)
 
     class_index = draw_categories(
         draws[0], np.array([c.share for c in population.classes])

@@ -1233,7 +1233,7 @@ cable-replacement-sim/
 │   ├── __init__.py
 │   ├── config.py               # pydantic schema + loader
 │   ├── constants.py            # project paths, MINUTES_PER_HOUR
-│   ├── streams.py              # random streams, spawned by purpose
+│   ├── random_draws.py         # the four sources, spawned by purpose
 │   ├── population.py           # synthetic segment table (simulation input)
 │   ├── records.py              # synthetic censored failure records (fit input)
 │   ├── weibull.py              # censored MLE, effective-scale reduction
