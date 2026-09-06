@@ -76,18 +76,48 @@ baseline suppresses audited false positives.
 
 Fallback / supplement (also useful for explaining a finding): scan for
 assignments of a secret-looking name to a literal, and known token shapes.
-Pattern reference (ripgrep regex):
 
-| What | Pattern |
-|---|---|
-| Secret-named literal | `(?i)(pass(word|wd)?\|secret\|token\|api[_-]?key\|client[_-]?secret\|access[_-]?key\|auth[_-]?token\|private[_-]?key)\s*[:=]\s*["'][^"']{6,}["']` |
-| Private key block | `-----BEGIN (RSA \|EC \|OPENSSH \|DSA \|PGP )?PRIVATE KEY-----` |
-| AWS access key id | `AKIA[0-9A-Z]{16}` |
-| GitHub token | `gh[pousr]_[A-Za-z0-9]{36,}` or `github_pat_[A-Za-z0-9_]{60,}` |
-| Slack token | `xox[baprs]-[A-Za-z0-9-]{10,}` |
-| Bearer/JWT | `(?i)bearer\s+[A-Za-z0-9._\-]{20,}` / `eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}` |
-| URL with embedded creds | `[a-z][a-z0-9+.\-]*://[^/\s:@]+:[^/\s:@]+@` |
-| Connection-string password | `(?i)(password\|pwd)=[^;"'\s]{4,}` |
+**These are in a fenced block, not a table, and that is not cosmetic.** A
+markdown table cell has to escape `|` as `\|`, and `\|` in a regex is a
+*literal pipe* rather than alternation — so a pattern copied out of a table
+matches the pipe character and nothing else, reports clean, and has checked
+nothing. That is the silent no-op this whole phase exists to catch, and it is
+invisible precisely because a clean result is what you expect. Copy from here,
+where the patterns are unescaped and run as written.
+
+```
+# secret-named literal assigned to a string
+(?i)(pass(word|wd)?|secret|token|api[_-]?key|client[_-]?secret|access[_-]?key|auth[_-]?token|private[_-]?key)\s*[:=]\s*["'][^"']{6,}["']
+
+# private key block
+-----BEGIN (RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----
+
+# AWS access key id
+AKIA[0-9A-Z]{16}
+
+# GitHub token
+gh[pousr]_[A-Za-z0-9]{36,}
+github_pat_[A-Za-z0-9_]{60,}
+
+# Slack token
+xox[baprs]-[A-Za-z0-9-]{10,}
+
+# bearer token and JWT
+(?i)bearer\s+[A-Za-z0-9._\-]{20,}
+eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}
+
+# URL with embedded credentials
+[a-z][a-z0-9+.\-]*://[^/\s:@]+:[^/\s:@]+@
+
+# connection-string password
+(?i)(password|pwd)=[^;"'\s]{4,}
+```
+
+**Watch one of these match before trusting a clean run.** Plant a fixture — a
+line like `api_key = "sk-live-0123456789abcdef"` in a scratch file — and
+confirm the scan reports it. A regex that cannot match is indistinguishable
+from a repository with no secrets in it, and this one already shipped broken
+once.
 
 For each hit, **redact the value in your report** — show the variable name
 and first few characters only, never the full secret.

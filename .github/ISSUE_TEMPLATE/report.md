@@ -16,6 +16,6 @@ labels: ''
 
 ## Environment
 <!-- OS, Python version, Rust toolchain version, package or commit version.
-     Say whether the extension was built with `maturin develop` or
-     `maturin develop --release`; a debug build is far slower and is the usual
+     Say whether the extension was built with `uv run maturin develop` or
+     `uv run maturin develop --release`; a debug build is far slower and is the usual
      explanation for a "this is slow" report. -->

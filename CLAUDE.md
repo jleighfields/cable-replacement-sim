@@ -22,7 +22,7 @@ wins on *how work is done here*.
   modeling logic of their own.
 - **Two things about the verification commands**, which are in `README.md`
   under Getting started and Testing, that are easy to skip and expensive to
-  skip: anything touching `src/` needs `maturin develop --release` first, or
+  skip: anything touching `src/` needs `uv run maturin develop --release` first, or
   the suite reports on the extension module already installed rather than the
   one in the diff; and `--release` is not optional for anything timed.
 - **Where each kind of rule is written down.** `README.md` is how a person runs
@@ -174,7 +174,7 @@ here.
 ## Tests
 
 - **Run unit tests whenever code changes**, and add tests when behavior
-  changes. Rebuild with `maturin develop --release` first when `src/` changed.
+  changes. Rebuild with `uv run maturin develop --release` first when `src/` changed.
 - **`tests/` mirrors the package.** Every test directory needs an
   `__init__.py`, subdirectories included, and helpers import as
   `from tests.helpers import ...` — under pytest's `prepend` import mode the

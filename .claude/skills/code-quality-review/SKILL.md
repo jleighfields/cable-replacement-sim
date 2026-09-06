@@ -133,7 +133,6 @@ rules, not because a reading pass is how they get caught:
 | Already mechanical | Rule |
 |---|---|
 | Unused imports, unused locals, undefined names | `F401`, `F841`, `F821` |
-| `X \| None` rather than `Optional[X]` | `UP045` |
 | Import order | `I001` |
 | Line length | `E501` |
 | Simplifiable constructs, likely bugs | `SIM`, `B` |
@@ -143,12 +142,19 @@ If `ruff` passed, those are settled — do not spend a reading pass confirming
 them, and do not report one as a finding without a rule code, because the
 linter disagreeing with you is the more likely explanation.
 
+**Check the selection in `pyproject.toml` rather than trusting this table.**
+It is a summary of a configured list, and a summary is wrong the moment the
+list changes. `UP045` was in this table until it turned out the selection
+carries no `UP` rules at all, so `Optional[X]` — which this project forbids in
+favour of `X | None` — reached readers unreported while the table told them not
+to look.
+
 What no rule in that selection covers, and what the reading is therefore
-**for**: missing or wrong docstrings, missing type hints, whether a comment
-explains *why*, whether a name means anything, duplication across files,
-a value written in two places, and every correctness question below — the
-logic, the data shapes, the silent no-ops. Those are the manual checks a
-second reader can add.
+**for**: `X | None` rather than `Optional[X]`, missing or wrong docstrings,
+missing type hints, whether a comment explains *why*, whether a name means
+anything, duplication across files, a value written in two places, and every
+correctness question below — the logic, the data shapes, the silent no-ops.
+Those are the manual checks a second reader can add.
 
 ## Review checklist
 

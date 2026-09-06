@@ -219,7 +219,7 @@ the mutation could not be constructed goes in the scope statement.
   leave it green by design.
 - **A mutation to Rust costs a rebuild, and the numbers only mean something
   in release mode.** Editing anything under `src/` means
-  `maturin develop --release` before the test can run — tens of seconds per
+  `uv run maturin develop --release` before the test can run — tens of seconds per
   mutation, against about a second for a pure-Python one. Say so in the scope
   statement, and mutate the Python side where the same logic exists on both
   (it exists on both by design — see `simplify-audit`'s scope section).
