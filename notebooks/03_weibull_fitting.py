@@ -740,5 +740,226 @@ def _(config, np, plt, records, settings, truth_scale, weibull):
     return
 
 
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+    ## 60 · The surface the fit is standing on
+
+    Everything above reports where the search stopped. The surface it searched
+    is worth looking at directly, because its shape is what decides whether the
+    answer is well determined and whether the search can be trusted to find it.
+
+    Two things to read off the contours. The valley is a single basin rather
+    than a ridge with several floors, which is why the starting values do not
+    matter here. And it is tilted: shape and scale are not separately
+    determined, so a fit that reads the shape a little high reads the scale
+    high to match, and neither parameter's interval means much without the
+    other.
+    """
+    )
+    return
+
+
+@app.cell
+def _(correct, end, entry, np, observed, plt, truth_scale, truth_shape, weibull):
+    _shapes = np.linspace(correct.shape * 0.85, correct.shape * 1.15, 80)
+    _scales = np.linspace(correct.scale * 0.95, correct.scale * 1.05, 80)
+    _surface = np.array(
+        [
+            [weibull.log_likelihood(k, s, end, entry, observed) for s in _scales]
+            for k in _shapes
+        ]
+    )
+
+    # Contours at fixed drops from the maximum rather than evenly spaced
+    # values. A drop of about 3 is the edge of a joint 95% region for two
+    # parameters, so the innermost rings are the interval, drawn rather than
+    # summarised.
+    _peak = _surface.max()
+    _figure, _axis = plt.subplots(figsize=(6.5, 4.2))
+    _filled = _axis.contourf(
+        _scales,
+        _shapes,
+        _peak - _surface,
+        levels=[0, 1, 3, 6, 10, 20, 40],
+        cmap="Blues_r",
+        extend="max",
+    )
+    _axis.contour(
+        _scales,
+        _shapes,
+        _peak - _surface,
+        levels=[3],
+        colors="black",
+        linewidths=1.0,
+    )
+    _axis.plot(correct.scale, correct.shape, "o", color="black", label="the fit")
+    _axis.plot(
+        truth_scale, truth_shape, "*", color="crimson", markersize=14, label="truth"
+    )
+    _axis.set(
+        xlabel="scale (years)", ylabel="shape", title="log-likelihood below its maximum"
+    )
+    _figure.colorbar(_filled, ax=_axis, label="drop from the maximum")
+    _axis.legend(fontsize=8, loc="lower right")
+    _figure.tight_layout()
+    _figure
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+    ## 70 · The same three fits, drawn as survival curves
+
+    Section 40 gave the three fits as numbers. The same fits as curves say what
+    those numbers mean for the quantity the simulation actually uses, which is
+    the chance a segment of a given age is still in service.
+
+    The censoring row is the one to look at. Its parameters are not slightly
+    off, they describe a different population: treating every episode as a
+    failure invents a failure at the study end for every cable that had not
+    failed yet, and the fit reads that as cable dying steadily from year one.
+    """
+    )
+    return
+
+
+@app.cell
+def _(correct, no_censoring, no_truncation, np, plt, truth_scale, truth_shape):
+    _age = np.linspace(0.0, 80.0, 400)
+
+    def survival(shape: float, scale: float) -> np.ndarray:
+        """Weibull survival at each age in the plotted range.
+
+        Args:
+            shape: Weibull shape.
+            scale: Weibull scale, in years.
+
+        Returns:
+            The share still in service at each age.
+        """
+        return np.exp(-((_age / scale) ** shape))
+
+    _figure, _axis = plt.subplots(figsize=(6.5, 3.8))
+    _axis.plot(
+        _age,
+        survival(truth_shape, truth_scale),
+        color="black",
+        lw=2.0,
+        label=f"truth: shape {truth_shape:.2f}, scale {truth_scale:.0f}",
+    )
+    for _label, _fit, _style in (
+        ("the likelihood as written", correct, "-"),
+        ("dropping the truncation term", no_truncation, "--"),
+        ("ignoring censoring", no_censoring, ":"),
+    ):
+        _axis.plot(
+            _age,
+            survival(_fit.shape, _fit.scale),
+            _style,
+            label=f"{_label}: shape {_fit.shape:.2f}, scale {_fit.scale:.0f}",
+        )
+    _axis.set(
+        xlabel="age (years)",
+        ylabel="still in service",
+        title="what each reading of the data claims about the cable",
+    )
+    _axis.legend(fontsize=8)
+    _figure.tight_layout()
+    _figure
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+    ## 80 · Do the intervals mean what they say?
+
+    Every check in the test suite asserts that the truth falls inside a fitted
+    95% interval. That is only a test if the intervals are honest, and nothing
+    so far has shown they are — a fit could report intervals twice as wide as
+    they should be and pass every one of those checks more comfortably.
+
+    The way to find out is to refit many times and count. An interval built
+    correctly contains the truth in about 95 draws out of 100; the count below
+    is a sample, so it carries its own error, and the interval printed beside
+    each figure is that.
+    """
+    )
+    return
+
+
+@app.cell
+def _(config, np, records, settings, truth_scale, truth_shape, weibull):
+    def covers(seed: int) -> tuple[bool, bool]:
+        """Whether one draw's intervals contain the true shape and scale.
+
+        Args:
+            seed: Replaces the configured seed, giving an independent draw.
+
+        Returns:
+            Whether the shape interval contains the true shape, and whether the
+            scale interval contains the true scale.
+        """
+        table = records.episode_table(
+            config.Config.model_validate(
+                {
+                    **settings.model_dump(),
+                    "simulation": {**settings.simulation.model_dump(), "seed": seed},
+                }
+            ),
+            technologies=[settings.population.technologies[0]],
+            length_ft=settings.population.length_ref_ft,
+            n_conductors=[1],
+            n_segments=4000,
+        )
+        fitted = weibull.fit_censored(
+            *records.lifetimes(table, settings.records.study_end)
+        )
+        return (
+            fitted.shape_interval[0] <= truth_shape <= fitted.shape_interval[1],
+            fitted.scale_interval[0] <= truth_scale <= fitted.scale_interval[1],
+        )
+
+    COVERAGE_DRAWS = 200
+    _hits = np.array(
+        [covers(seed) for seed in range(20260902, 20260902 + COVERAGE_DRAWS)]
+    )
+    coverage = {
+        "shape": _hits[:, 0].mean(),
+        "scale": _hits[:, 1].mean(),
+        # Stricter than either alone, and what the recovery ladder asserts:
+        # two 95% intervals both containing their truth is a rarer event than
+        # one doing so, however correct each is on its own.
+        "both at once": (_hits[:, 0] & _hits[:, 1]).mean(),
+    }
+    for _label, _share in coverage.items():
+        _half = 1.96 * np.sqrt(_share * (1 - _share) / COVERAGE_DRAWS)
+        print(f"  {_label:14} {_share:6.1%}  +/- {_half:.1%}")
+    return COVERAGE_DRAWS, coverage
+
+
+@app.cell
+def _(COVERAGE_DRAWS, coverage, np):
+    # Wide bounds on purpose. The question is whether the intervals are roughly
+    # honest, not whether this many draws can pin the figure to a point: at 200
+    # draws the sampling error on a 95% share is already about three points, so
+    # a tighter assertion here would fail on nothing but its own noise.
+    for _name in ("shape", "scale"):
+        assert 0.90 <= coverage[_name] <= 0.99, (
+            f"{_name} intervals cover {coverage[_name]:.1%}, not about 95%"
+        )
+    assert coverage["both at once"] < min(coverage["shape"], coverage["scale"]), (
+        "requiring both cannot be easier than requiring either"
+    )
+    _half = 1.96 * np.sqrt(0.95 * 0.05 / COVERAGE_DRAWS)
+    f"sampling error on a true 95% at {COVERAGE_DRAWS} draws is +/- {_half:.1%}"
+    return
+
+
 if __name__ == "__main__":
     app.run()

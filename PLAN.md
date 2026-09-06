@@ -355,12 +355,24 @@ covariates scale `lambda`.
 
 **How much the truncation term is worth, measured rather than asserted.**
 `H(a) = (a/lambda)^k`, so at a sharp shape an early entry age contributes
-almost nothing. At the shipped parameters and a 1998 record start it hides
-about 0.7% of episodes and moves the fitted scale by 0.1%; at a 2018 start it
-moves it by 3.9% and pushes the truth outside the interval. The term is kept
-because a record system that begins later than the install history is the
-ordinary case and the correction costs three lines, not because it rescues
-this particular configuration.
+almost nothing, and the rows the record window deletes are few: at the shipped
+parameters and a 1998 record start, 0.11% of episodes.
+
+An episode count is the wrong denominator, and reading the term as negligible
+from it is the mistake this paragraph exists to prevent. Shape is estimated
+from the spread of the ages cables failed at, so the rows that carry it are the
+**failures**, of which 1.61% are deleted — and not a random 1.61%, since a row
+is deleted only if the cable failed early enough to be gone before the records
+open. Every deleted row comes from the young end.
+
+So the term is worth more than its row count suggests. Dropping it biases the
+fitted shape by about +0.06, roughly 1%, and leaves the scale alone; the sign
+is upward because deleting the young failures makes the survivors look more
+alike than the cohort was. That bias does not shrink with sample size, which is
+what distinguishes it from noise: across 150 paired draws the corrected fit
+sits 0.0006 from the answer a complete record gives, with an interval covering
+zero, while the uncorrected fit sits 0.064 away at both 4,000 and 30,000
+segments. Notebook 03, section 45, is where this is run.
 
 **`survreg` names the form, not a route to reproducing this.** It does not
 accept left-truncated data, so a reader reaching for it in R to check this fit
@@ -369,6 +381,13 @@ package that takes delayed entry, and `lifelines` is what the test suite
 actually cross-checks against, through an entry column. Naming all three is
 worth the sentence: the first is the vocabulary, the second is the R
 equivalent, and only the third is a check that runs here.
+
+`survreg` was nonetheless run against this fit during development, on
+untruncated data, where it agreed to ten decimals on every parameter and on the
+log-likelihood itself — the stronger statement, since it says the two are the
+same function rather than two fits that landed nearby. It is not carried in the
+repository: it would run on no machine without R, and the half of the
+likelihood it cannot express is the half most worth checking.
 
 **The two parameterizations, written out once so nothing has to transpose them
 from memory.** The accelerated-failure-time form and the hazard form above are
