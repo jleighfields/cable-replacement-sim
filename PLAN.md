@@ -1242,6 +1242,15 @@ Implementation notes:
   The unused fields carry explicit neutral values rather than `Option`, so the
   loop keeps one code path and the choice of neutral value is made once, in
   Python, where it can be read beside the schema it comes from.
+- **Every array crosses as C-contiguous `f64`, and the binding rejects
+  anything else.** Rust reads NumPy's own buffer through `PyReadonlyArray`, so
+  the values are the same bytes rather than a copy or a conversion — which is
+  what removes cross-language divergence in the draws entirely, as opposed to
+  testing for it (2.11). What can still go wrong is layout: a transposed view
+  or a slice arrives non-contiguous, and code that reaches for a flat slice
+  either fails or reads the wrong element. Assert contiguity at the boundary
+  rather than relying on callers, since the caller that gets it wrong will be a
+  notebook passing `arr.T` and the symptom will be a plausible wrong number.
 - **A segment's array position is its `segment_id`**, and Python sorts the
   segment table by `segment_id` before the call. The tie-break of 2.9 is
   `(score descending, segment_id ascending)`, so both sides have to mean the
