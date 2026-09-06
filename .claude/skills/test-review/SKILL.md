@@ -224,8 +224,8 @@ the mutation could not be constructed goes in the scope statement.
   statement, and mutate the Python side where the same logic exists on both
   (it exists on both by design — see `simplify-audit`'s scope section).
 - **A mutation inside the statistical parity test may not be detectable, and
-  that is itself the finding.** `test_oracle_parity.py` compares Rust against
-  the Python oracle within Monte Carlo error, so a mutation smaller than that
+  that is itself the finding.** `test_reference_parity.py` compares Rust against
+  the Python reference within Monte Carlo error, so a mutation smaller than that
   tolerance passes. Where that happens, report it: the deterministic parity
   test — hazard forced to 0 or 1 — is the one that pins policy and budget
   logic exactly, and a mutation it cannot catch either means the tolerance is

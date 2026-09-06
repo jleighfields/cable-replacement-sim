@@ -1,7 +1,7 @@
 //! Rust compute kernel for the cable replacement simulation.
 //!
 //! The Python package `cablesim` wraps this module. Everything here is
-//! reached through PyO3, and the Python oracle in `python/cablesim/` mirrors
+//! reached through PyO3, and the Python reference in `python/cablesim/` mirrors
 //! it deliberately — the parity tests between the two are what validate this
 //! side, so neither is redundant with the other.
 

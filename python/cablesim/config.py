@@ -1,7 +1,7 @@
 """Configuration schema and loader.
 
 One pydantic model is the single source of truth for every run knob. The same
-validated object feeds the Python oracle, the Rust kernel and the Shiny app,
+validated object feeds the Python reference, the Rust kernel and the Shiny app,
 so a knob the app can set and a notebook cannot is a knob that has escaped
 this model.
 """
@@ -37,7 +37,7 @@ class WeibullSpec(pydantic.BaseModel):
 
     These describe a single conductor, not a segment. A segment with several
     conductors fails when its first conductor does, which shifts the effective
-    scale down — the min-of-n reduction the oracle and the kernel both apply.
+    scale down — the reduction the reference and the kernel both apply.
 
     Attributes:
         shape: Weibull shape parameter, above 1 for a wear-out hazard.

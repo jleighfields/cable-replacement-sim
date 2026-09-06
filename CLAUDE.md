@@ -17,7 +17,7 @@ wins on *how work is done here*.
 - **The population is fully synthetic.** No original utility data is used, and
   none should enter this repo. A file that appears to hold observed failure
   records is a problem, not an input.
-- **The package implements, the notebooks demonstrate, the oracle validates.**
+- **The package implements, the notebooks demonstrate, the reference validates.**
   Simulation logic lives in `python/cablesim/` and the Rust crate in `src/`.
   Notebooks and the Shiny app import from the package and define no modeling
   logic of their own.
@@ -53,7 +53,7 @@ wins on *how work is done here*.
   a loop over an empty list — and each returns success, letting every later
   step pass for the wrong reason.
 - **A statistical test is the easiest kind to fool yourself with.** The parity
-  suite compares Rust against the Python oracle within Monte Carlo error, so a
+  suite compares Rust against the Python reference within Monte Carlo error, so a
   real divergence smaller than the tolerance passes. Every claim of agreement
   needs the deterministic parity test — hazard forced to 0 or 1 — behind it,
   because that is the one that pins policy and budget logic exactly.
@@ -70,7 +70,7 @@ wins on *how work is done here*.
 
 ## The Python/Rust mirror
 
-The Python oracle and the Rust kernel implement the same model twice, and that
+The Python reference and the Rust kernel implement the same model twice, and that
 is the validation strategy rather than an accident:
 
 | Python | Rust | What it computes |
@@ -79,7 +79,7 @@ is the validation strategy rather than an accident:
 | `cablesim/policies.py` | `src/policy.rs` | candidate scoring |
 | `cablesim/weibull.py` | `src/weibull.rs` | conditional `p(t)`, left-truncated lifetime draws |
 
-- **Never collapse the two sides.** Deleting the oracle deletes the only thing
+- **Never collapse the two sides.** Deleting the reference deletes the only thing
   that validates the kernel. `simplify-audit` is told this explicitly so it
   does not report either side as dead code.
 - **A change to one side is incomplete until the other is read.** Report and
@@ -90,7 +90,7 @@ is the validation strategy rather than an accident:
   arrays out, `py.allow_threads` around the compute. Never call back into
   Python inside the loop; that erases the speedup this project exists to
   demonstrate.
-- **Benchmarks compare against a properly vectorized NumPy oracle**, not a
+- **Benchmarks compare against a properly vectorized NumPy reference**, not a
   naive Python loop, and report single-threaded Rust and rayon-parallel Rust
   separately. A 200x speedup over bad Python when NumPy gives 40x for free is
   the self-deception to avoid.
@@ -144,7 +144,7 @@ is the validation strategy rather than an accident:
   on it.
 - **Sweeps override config values from a driver script or notebook**, never by
   editing `configs/base.yaml`. The base file is the documented default.
-- **The same validated object feeds the oracle, the kernel, and the app.** One
+- **The same validated object feeds the reference, the kernel, and the app.** One
   code path, three front ends. A knob the Shiny UI sets and the notebooks
   cannot is a knob that has escaped the model.
 - **Fixed constants go in the package's constants module.** The test: a value
@@ -190,10 +190,10 @@ is the validation strategy rather than an accident:
   here. The suite reaches no network.
 - **The three validation layers, in order of authority** (`PLAN.md` §6,
   Validation strategy):
-  analytical checks against the closed form, oracle parity, then benchmarks.
+  analytical checks against the closed form, reference parity, then benchmarks.
   An analytical check is worth more than a parity check, because it can be
   wrong in only one way.
-  - **MLE recovery is the test that earns its keep.** Simulate lifetimes from
+  - **MLE recovery is what validates the fitting code.** Simulate lifetimes from
     known `(k, lambda)`, censor, refit, confirm the truth falls inside the
     fitted CI. It is built as a ladder (`PLAN.md` §6, Validation strategy) so
     each rung adds exactly one thing that can be wrong — censoring, then left

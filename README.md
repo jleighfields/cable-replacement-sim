@@ -20,11 +20,11 @@ yet. See [PLAN.md](PLAN.md) for the model and the phased roadmap.
 | Path | What it holds |
 |---|---|
 | `src/` | the Rust crate: the compute kernel, built as a Python extension module |
-| `python/cablesim/` | the Python package: configuration, and the pure-Python oracle that mirrors the kernel |
+| `python/cablesim/` | the Python package: configuration, and the pure-Python reference implementation that mirrors the kernel |
 | `configs/base.yaml` | the documented default run configuration |
 | `tests/` | the test suite |
 
-The Python oracle and the Rust kernel implement the same model twice. That is
+The Python reference and the Rust kernel implement the same model twice. That is
 deliberate: the parity tests between them are what validate the kernel, so
 neither side is redundant.
 

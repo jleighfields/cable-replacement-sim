@@ -400,7 +400,7 @@ are an ordered hierarchy you walk until one solves the problem.
 
 ### Project-specific additions
 
-- **The Python oracle and the Rust kernel are a deliberate mirror, so
+- **The Python reference and the Rust kernel are a deliberate mirror, so
   "duplication" here means *drift*, not repetition.**
   `python/cablesim/policies.py` and `src/policy.rs` implement the same
   scoring, and `python/cablesim/reference.py` and `src/sim.rs` the same annual

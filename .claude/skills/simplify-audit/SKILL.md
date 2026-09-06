@@ -45,7 +45,7 @@ Source of Truth for Parameter Values** section.
   runs this project, including the deployed Shiny app; an unused crate in
   `[dependencies]` is compiled into the extension module. Check both against
   what is actually imported and `use`d.
-- **The Python oracle and the Rust kernel duplicate each other on purpose,
+- **The Python reference and the Rust kernel duplicate each other on purpose,
   and neither side is a finding.** `python/cablesim/reference.py` reimplements
   what `src/sim.rs` computes, and `python/cablesim/policies.py` mirrors the
   scoring in `src/policy.rs`. The parity tests are the only thing that
@@ -53,7 +53,7 @@ Source of Truth for Parameter Values** section.
   Report a *divergence* between the two — the parity test is what catches it
   — but never propose collapsing them.
 - **`benches/` holds three implementations of one calculation, also on
-  purpose.** A naive Python loop, a vectorized NumPy oracle, and the Rust
+  purpose.** A naive Python loop, a vectorized NumPy reference, and the Rust
   kernel exist so the benchmark reports an honest baseline rather than a
   speedup measured against bad Python. Do not report the slow ones as dead.
 - **An unreferenced `cablesim` helper is still a finding here.** This repo is

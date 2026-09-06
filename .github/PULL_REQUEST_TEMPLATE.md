@@ -20,7 +20,7 @@
 -
 
 ## Both sides of the mirror
-<!-- The Python oracle and the Rust kernel implement the same model twice, on
+<!-- The Python reference and the Rust kernel implement the same model twice, on
      purpose — the parity tests are what validate the kernel. If this PR
      touches one side, say what happened to the other, and if it touches
      neither, delete this section. -->
