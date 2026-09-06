@@ -1,3 +1,11 @@
+# Quarto render output: `quarto render PLAN.md` writes PLAN.html beside a
+# PLAN_files/ sidecar of bootstrap CSS, JS and fonts. Named exactly rather than
+# by extension — the Shiny app ships static assets under app/, and a repo-wide
+# *.html or *.js would drop them without a word.
+/PLAN.html
+*_files/
+.quarto/
+
 # Rust
 /target
 # Cargo.lock IS committed: this crate is deployed as a wheel rather than
@@ -25,6 +33,11 @@ __marimo__/
 
 # Playwright, written by a local `pytest -m app` run
 test-results/
+playwright-report/
+
+# Claude Code writes per-machine permission settings here; the shared config
+# in .claude/agents/ and .claude/skills/ is committed, this is not.
+.claude/settings.local.json
 
 # outputs
 results/

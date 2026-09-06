@@ -13,6 +13,7 @@ dependencies = [
     "polars>=1.0",
     "pydantic>=2.7",
     "pyyaml>=6.0",
+    "scipy>=1.17.1",
 ]
 
 [tool.maturin]
@@ -68,3 +69,7 @@ select = ["E", "F", "I", "B", "SIM", "S"]
 # pytest's whole model is `assert`; the fixtures here are generated in code,
 # never real credentials.
 "tests/**" = ["S101"]
+# A marimo cell ends in a bare expression, which is the cell's displayed
+# output rather than a useless one, and a notebook may assert on a value it
+# has already computed instead of rebuilding the setup under `tests/`.
+"notebooks/**" = ["B018", "S101"]

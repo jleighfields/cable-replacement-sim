@@ -10,21 +10,28 @@ policies evaluated against customer reliability (SAIFI / SAIDI / CMI) over a
 30-year horizon. All inputs are parameterized via config; the cable population
 is fully synthetic.
 
-**Status: scaffolded.** The build pipeline works end to end — the Rust crate
-compiles, the extension module imports under Python, and the configuration
-schema validates the checked-in defaults. The simulation itself is not written
-yet. See [PLAN.md](PLAN.md) for the model and the phased roadmap.
+**Status: the population layer is built.** The configuration schema and its
+validators, the purpose-spawned sources of randomness, the Weibull forms and the
+synthetic population generator exist, with a marimo notebook that walks them.
+The continuous integration workflows run, and the extension module has been
+built and imports under Python — though see `PLAN.md` §14, First actions in the
+next session, for what is not yet verified on a fresh machine. The annual
+simulation loop, the replacement policies and the Rust kernel are not written
+yet. See [PLAN.md](PLAN.md) for the model, the decisions behind it, and the
+phased roadmap.
 
 ## Layout
 
 | Path | What it holds |
 |---|---|
 | `src/` | the Rust crate: the compute kernel, built as a Python extension module |
-| `python/cablesim/` | the Python package: configuration, and the pure-Python oracle that mirrors the kernel |
+| `python/cablesim/` | the Python package: configuration, the sources of randomness, the Weibull forms, the population generator, and the pure-Python reference implementation that will mirror the kernel |
 | `configs/base.yaml` | the documented default run configuration |
+| `notebooks/` | marimo notebooks that walk the package interface layer by layer |
 | `tests/` | the test suite |
+| [PLAN.md](PLAN.md) | the model, the configuration schema, the kernel contract, and the roadmap |
 
-The Python oracle and the Rust kernel implement the same model twice. That is
+The Python reference and the Rust kernel implement the same model twice. That is
 deliberate: the parity tests between them are what validate the kernel, so
 neither side is redundant.
 
@@ -69,3 +76,16 @@ caused it.
 `cargo test` needs `--no-default-features` because the default build enables
 PyO3's `extension-module`, and a test binary linked against it cannot resolve
 the CPython symbols the interpreter supplies at import time.
+
+## Reading the plan
+
+`PLAN.md` is long and heavily cross-referenced. It renders to HTML with a
+table of contents:
+
+```bash
+quarto render PLAN.md      # writes PLAN.html; both it and PLAN_files/ are ignored
+```
+
+The table of contents comes from the front matter, so there is none to
+maintain in the file itself. A test checks that every section citation in the
+document resolves to a section that exists.

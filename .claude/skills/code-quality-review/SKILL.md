@@ -400,7 +400,7 @@ are an ordered hierarchy you walk until one solves the problem.
 
 ### Project-specific additions
 
-- **The Python oracle and the Rust kernel are a deliberate mirror, so
+- **The Python reference and the Rust kernel are a deliberate mirror, so
   "duplication" here means *drift*, not repetition.**
   `python/cablesim/policies.py` and `src/policy.rs` implement the same
   scoring, and `python/cablesim/reference.py` and `src/sim.rs` the same annual
@@ -526,11 +526,12 @@ Example layout:
    enforce `ruff format`, so `ruff format --check` would report drift
    on files nobody intends to reformat. Do not run it or report it.
 
-   Note on marimo notebooks: ruff is configured to ignore B018,
-   E501, F401, F811, F821, I001 and S101 under `notebooks/**/*.py` because
-   marimo's reactive graph violates ruff's normal expectations
-   (bare expressions for output, cross-cell imports). Don't manually
-   re-flag these in notebook files.
+   Note on marimo notebooks: check `pyproject.toml` for what
+   `[tool.ruff.lint.per-file-ignores]` actually sets under `notebooks/**`
+   rather than assuming a list — it is currently B018 and S101, for marimo's
+   bare trailing expression (a cell's displayed output) and for a notebook
+   asserting on a value it has already computed. Don't manually re-flag what
+   that block ignores; do flag anything it does not.
 3. Read each file fully — do not skip any changed files. As you read, keep
    a running list of the claims the file makes — what a comment says a flag
    does, what a docstring says a function returns, what a doc says a command
