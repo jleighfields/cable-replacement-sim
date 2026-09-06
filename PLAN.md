@@ -393,8 +393,11 @@ outage_cost_per_failure       = (sum over types of count * voll[type])
 
 `customers` feeds SAIFI **unweighted**, because that index counts every
 customer equally by definition — weighting it by value produces a number that
-is not SAIFI and that no regulator would recognize. The customer-minute
-quantities feed SAIDI and CMI. `outage_cost_per_failure` feeds policy scoring
+is not SAIFI and that no regulator would recognize.
+`customer_minutes_per_failure` feeds SAIDI and CMI. `customer_minutes_per_planned` feeds **neither**:
+the indices cover unplanned interruptions only (2.6), and it is reported on its
+own so the cost of the work stays visible without entering a metric defined to
+exclude it. `outage_cost_per_failure` feeds policy scoring
 (2.8), where value is exactly what should drive the ranking.
 
 **Durations are configured in hours and converted to minutes here**, once, at
@@ -426,6 +429,21 @@ SAIDI = total customer minutes interrupted / total customers served
 CAIDI = SAIDI / SAIFI
 CMI   = sum over outages of (customers * outage_minutes)
 ```
+
+**These indices cover unplanned interruptions only.** Planned work is excluded,
+which is how the indices are conventionally defined and reported — IEEE Std
+1366 is where the definitions live — and it is also the only way they stay
+coherent here. A planned replacement that interrupts a lateral's customers
+would otherwise land in SAIDI while contributing nothing to SAIFI, and CAIDI,
+being their ratio, would divide two different populations of outages.
+
+The customer-minutes that planned work does cost are **reported separately**,
+as `planned_customer_minutes`, rather than dropped. A customer out for four
+hours does not care that the work was scheduled, so the cost is real; it simply
+is not what SAIDI measures. Keeping it beside the indices is what lets a
+notebook show that replacing laterals aggressively buys reliability later at a
+customer-minute cost now, without smuggling that cost into a metric whose
+definition excludes it.
 
 SAIFI's numerator is the count of customers interrupted, and SAIDI's is
 customer-minutes; the kernel returns both, because a count cannot be recovered
@@ -559,9 +577,10 @@ Then for each year `y`:
    way as a failed one: `age = 0`, replacement technology, fresh lifetime, and
    accumulates `customer_minutes_per_planned` — zero for a class that is
    switched out without interrupting anyone, and not zero for a radial one
-   (2.5). Planned work on laterals therefore costs SAIDI in the year it
-   happens while reducing it later, which is a real tradeoff the model should
-   show rather than assume away.
+   (2.5). That total is reported on its own and enters **no** reliability
+   index (2.6), so replacing laterals aggressively shows up as a
+   customer-minute cost now against a reliability gain later, with neither one
+   distorting the other.
 3. **Accumulate** per-year metrics, keyed by segment class.
 
 Failures resolve before planned work so that a segment which failed this year
@@ -1073,9 +1092,14 @@ fn simulate(
 ) -> PyResult<SimResults>                    // #[pyclass] holding numpy arrays
 ```
 
-`SimResults` returns `(n_reps, n_years, n_classes)` arrays: `failures`,
-`customers_interrupted`, `customer_minutes`, `planned_replacements`,
-`planned_spend`, `emergency_spend`.
+`SimResults` returns seven `(n_reps, n_years, n_classes)` arrays:
+`failures`, `customers_interrupted`, `customer_minutes`,
+`planned_customer_minutes`, `planned_replacements`, `planned_spend`,
+`emergency_spend`.
+
+The first three describe unplanned interruptions and are what the reliability
+indices are built from; `planned_customer_minutes` is the cost of the planned
+work itself and enters no index (2.6).
 
 `customers_interrupted` and `customer_minutes` are both returned because SAIFI
 needs a count and SAIDI needs a duration-weighted sum, and once restoration
@@ -1402,8 +1426,16 @@ override — never `policy`, which varies within one.
 ### 7.2 The grain of what is saved
 
 `results.parquet` holds one row per `(policy, replication, year, class)`, with
-one column per metric — failures, customer-minutes interrupted, planned
-replacements, planned spend, emergency spend.
+one column for each of the seven arrays the kernel returns (5.2): `failures`,
+`customers_interrupted`, `customer_minutes`, `planned_customer_minutes`,
+`planned_replacements`, `planned_spend`, `emergency_spend`.
+
+**Every returned array is saved, without exception.** 7.4 computes the metrics
+from this frame and from nothing else, so a quantity the kernel produces and
+this file omits is a metric that cannot be computed — and the one most likely
+to be dropped is `customers_interrupted`, which looks redundant beside
+`customer_minutes` and is not, because SAIFI needs a count and a count cannot
+be recovered from a duration-weighted sum once duration varies by class.
 
 **Per replication, not summary statistics.** Two things need the replication
 axis and cannot recover it from a mean: the Monte Carlo bands the app plots
@@ -1448,7 +1480,9 @@ the "never silently skip a missing file" convention exists for.
 ### 7.4 Metrics
 
 `metrics.py` reduces the saved frame: SAIFI, SAIDI, CAIDI and CMI per policy
-per year (2.6), replication mean and percentile bands, horizon totals,
+per year **from the unplanned columns only** (2.6), planned customer-minutes
+reported as a separate series, replication mean and percentile bands,
+horizon totals,
 customer-minutes avoided against the configured `baseline_policy`, and cost per
 customer-minute avoided.
 
@@ -1954,6 +1988,7 @@ reopen one deliberately rather than by accident.
 | Plotting backend | Plotly for the shared figures, as an optional extra (7.5) | One backend for the notebooks and the app; the comparison overlay is read by hovering, which a static image cannot support |
 | Shiny deployment target | Posit Connect (Section 9, Shiny application) | Installs the package into its own environment, so the abi3 wheel moves into Phase 6 |
 | Baseline for "avoided" metrics | `run_to_failure`, set by `reporting.baseline_policy` (7.4) | Doing nothing is the comparison a budget request is actually argued against |
+| Planned work in the indices | Excluded; reported separately as planned customer-minutes (2.6) | Reliability indices are conventionally defined over unplanned sustained interruptions, and including planned work here would put it in SAIDI but not SAIFI, leaving CAIDI dividing two different populations of outages. The cost is real, so it is reported beside the indices rather than dropped |
 | Outage duration | Customer restoration time, configured per class, with laterals longest (2.5) | The indices measure time until the customer is back on, not time to repair. A looped feeder is restored by switching in minutes and repaired afterwards; a radial lateral's customers are out for the whole job. The ordering therefore runs opposite to repair difficulty, and the same argument makes planned work non-free on laterals |
 | Ranking ties | Sort on `(score descending, segment_id ascending)` (2.9) | Scores tie constantly, and because the greedy stops at the first candidate that does not fit, which tied segment lands last decides the answer. A unique composite key makes the order total, so no implementation's sort stability can change the result |
 | Unspent budget | Does not carry forward (2.9) | Letting year `y`'s money depend on what earlier years happened to spend would decouple the swept parameter from the spending it describes, and the curve is read as a function of that parameter |
