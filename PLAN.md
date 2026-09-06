@@ -854,9 +854,9 @@ avoids that, and passing an array is the simplest way to be indexed.
 
 - **Replications are processed in chunks**, and the kernel is called once per
   chunk rather than once per policy. The full array at 1000 replications,
-  12,000 segments and a 30-year horizon is 3.0 GB; `simulation.chunk_reps` at
-  50 makes it 149 MB. At 40,000 segments those become 9.9 GB and 496 MB, which
-  is what sets the knob's useful range. Twenty crossings per policy costs nothing — the
+  12,000 segments and a 30-year horizon is 3.0 GB; batching 50 replications at
+  a time makes it 149 MB. At 40,000 segments those become 9.9 GB and 496 MB,
+  which is what sets the batch size's useful range. Twenty crossings per policy costs nothing — the
   rule that matters is never calling back into Python *inside* the loop, and
   that still holds.
 - **The draws come from the bit generator's raw stream, not from a
@@ -869,7 +869,7 @@ avoids that, and passing an array is the simplest way to be indexed.
   ```
 
   One `block` per replication, stacked in replication order into the
-  `(chunk_reps, n_segments, n_years + 1)` array 5.2 receives — C order
+  `(chunk, n_segments, n_years + 1)` array 5.2 receives — C order
   throughout, so one segment's draws are contiguous.
 
   **Spawn by purpose first, then by replication.** A fresh `SeedSequence(seed)`
@@ -883,9 +883,9 @@ avoids that, and passing an array is the simplest way to be indexed.
   children = lifetimes.spawn(n_reps)          # and policies.spawn(n_reps)
   ```
 
-  **One child per replication per stream is what makes a chunk addressable.** Chunk `c` builds replications `c * chunk_reps` onwards from
-  their own children without consuming the ones before, so replication `r`
-  holds the same draws at any chunk size — which is what lets 6.5, Benchmarks,
+  **One child per replication per stream is what makes a chunk addressable.**
+  A chunk builds its replications from their own children without consuming
+  the ones before, so replication `r` holds the same draws at any chunk size — which is what lets 6.5, Benchmarks,
   sweep chunk size and still claim it changes no result. Advancing a single
   stream by a computed offset would work too and puts the arithmetic in the
   caller, where an error is silent.
@@ -954,24 +954,51 @@ simulation:
   n_years: 30
   n_reps: 1000
   seed: 20260902
-  start_year: 2026      # year 0. Age is start_year - install_year, and every
-                        # present value is measured at this year.
-  chunk_reps: 50        # replications per kernel call. Sizes the draw array at
-                        # chunk_reps * n_segments * (n_years + 1) * 8 bytes,
-                        # which is 149 MB here and 496 MB at 40,000 segments.
+  start_year: 2026      # Year 0. A segment's age is start_year - install_year,
+                        # and every present value is discounted to this year.
+                        # Nothing may be installed after it: a negative age
+                        # makes both Weibull forms return NaN.
+
+  # How many replications are computed per batch is deliberately NOT here. It
+  # sizes the pre-generated draw array and so trades memory against time, but
+  # every replication reads the same draws whatever the batch size, so it
+  # changes no number. It is a driver-script argument, recorded in each run's
+  # manifest beside the thread count and the build profile.
 
 population:
-  n_segments: 12000
-  total_customers: 95000        # system-level denominator for SAIFI/SAIDI
+  n_segments: 12_000
+  # System-wide customer count, and the denominator for SAIFI and SAIDI. It is
+  # NOT the sum over segments: customers are counted downstream of each asset,
+  # so a feeder's count already contains the laterals' below it. The figure to
+  # sanity-check against is the sum over terminal laterals, since nothing sits
+  # downstream of those. Scale this with n_segments or every index moves by the
+  # ratio -- a systematic bias, not sampling noise.
+  total_customers: 95_000
   customer_types: [residential, commercial, industrial]
-  length_ref_ft: 500.0    # the length the technology scales below describe
-  length_exponent: 0.5    # sub-linear: faults concentrate at accessories, not
-                          # along the run. 1.0 would be spatial-Poisson.
+  # The length a configured technology scale describes. Only ratios to it
+  # matter, so it sets the level and never the spread between classes.
+  length_ref_ft: 500.0
+  # How strongly length drives failure, as the exponent in
+  # (n * (L / L_ref) ** length_exponent) ** (-1 / shape).
+  #   1.0 = spatial-Poisson: failure rate proportional to feet of run.
+  #   0.0 = failures are per-segment and length does not matter.
+  # Sub-linear because a large share of underground faults are at splices,
+  # terminations and elbows, which scale with the count of accessories rather
+  # than with length. It is also what separates the two three-phase classes
+  # from each other, since both carry three conductors.
+  length_exponent: 0.5
 
-  # Weibull parameters key on technology, not on class. Each pair is the scale
-  # of a SINGLE CONDUCTOR; the min-of-n reduction turns it into the per-segment
-  # value, so a three-phase segment lives n^(-1/shape) as long. Vintage ranges
-  # partition initial_age.install_year_range with no gap and no overlap.
+  # Scale keys on technology, because failure behaviour follows the insulation
+  # compound and the vintage. Each pair describes a SINGLE CONDUCTOR at
+  # length_ref_ft; the reduction above turns it into the per-segment value, so
+  # a three-phase segment lives 3^(-1/shape) as long as an otherwise identical
+  # single-phase one -- about 0.82x at these shapes. That ordering comes from
+  # the conductor count and cannot be reversed by choosing scales, which is why
+  # laterals come out longest-lived.
+  #
+  # Vintage ranges must partition install_year_range with no gap and no
+  # overlap, or a segment resolves to no technology and silently carries
+  # whichever parameters the array was initialised with.
   technologies:
     - {name: hmwpe,   vintage: [1965, 1985], weibull: {shape: 6.2, scale: 50.0}}
     - {name: xlpe,    vintage: [1986, 2004], weibull: {shape: 6.5, scale: 57.0}}
@@ -984,10 +1011,14 @@ population:
       n_conductors: 3
       length_ft:   {dist: lognormal, median: 1200, sigma: 0.45}
       cost_per_ft: 185.0
-      # Feeder cable is a larger conductor and a different product from the
-      # lateral and distribution cable of the same vintage: longer runs, more
-      # accessories and heavier thermal loading spread its failures out, so it
-      # takes a lower shape than the technology default rather than sharing it.
+      # Shape only, overriding the technology default. Conductor size is a
+      # second axis technology does not capture: feeder cable is a larger
+      # conductor and a different product from the lateral and distribution
+      # cable of the same vintage and compound. Longer runs, more accessories
+      # and heavier thermal loading spread its failures out, which is a lower
+      # shape rather than a shorter scale. Classes naming no shape take their
+      # technology's, so distribution and lateral segments of one vintage
+      # remain the same cable.
       weibull_shape: 5.5
       customer_mix:
         residential: {dist: lognormal, median: 700, sigma: 0.70}
@@ -1032,7 +1063,7 @@ population:
 # above: this table is sized by how many observed failures the recovery test
 # needs, not by how large a system is being modeled.
 records:
-  n_segments: 20000
+  n_segments: 20_000
   monitoring_start: 1998    # left-truncation point; no record exists before it
   study_end: 2026           # right-censoring point
 
@@ -1041,13 +1072,25 @@ failure:
 
 costs:
   emergency_multiplier: 2.5
-  mobilization_per_segment: 3500.0
+  mobilization_per_segment: 3_500.0
   escalation_rate: 0.03
   discount_rate: 0.06               # for present-value reporting
 
 budget:
-  annual: 12.0e6
+  # Capital available in year 0, escalated annually. Sweeps override this from
+  # a driver script -- it is the horizontal axis of the deliverable figure.
+  # At these settings it funds about 141 replacements a year against about 240
+  # expected failures, so the constraint binds and the policies have something
+  # to differ about. That 59% is measured at planned cost on the population
+  # mean; the segments that actually fail are longer and dearer than average,
+  # so the same budget covers about 36% of the year's failures at planned cost
+  # and about 14% of the emergency spend they incur.
+  annual: 12_000_000.0
   escalation: 0.03
+  # false: emergency work draws a separate operations bucket, so the sweep axis
+  # stays purely planned capital. true charges it against this budget BEFORE
+  # the planned pass is scored, which is what produces the reinforcing loop
+  # where failures crowd out prevention.
   emergency_charged_to_budget: false
 
 reliability:
@@ -1081,6 +1124,7 @@ policies:
 reporting:
   baseline_policy: run_to_failure   # what "avoided" is measured against
 ```
+
 
 
 Three generation rules the YAML cannot carry on its own:
@@ -1302,7 +1346,8 @@ once the model has stopped moving.
 ### 5.2 The call
 
 One call across the FFI boundary **per policy per chunk of replications**
-(2.11) — twenty per policy at the shipped `n_reps` and `chunk_reps`. Arrays in,
+(2.11) — twenty per policy at the shipped replication count and a batch of 50.
+Arrays in,
 arrays out. **Never call back into Python inside the loop** — that is the rule
 that matters, and a handful of crossings per policy does not touch it.
 
@@ -1347,7 +1392,7 @@ fn simulate(
 ) -> PyResult<SimResults>                    // #[pyclass] holding numpy arrays
 ```
 
-`SimResults` returns seven `(chunk_reps, n_years, n_classes)` arrays — one
+`SimResults` returns seven `(chunk, n_years, n_classes)` arrays — one
 chunk's worth, which `run.py` concatenates along the replication axis into the
 frame 7.2 saves:
 `failures`, `customers_interrupted`, `customer_minutes`,
@@ -1704,14 +1749,15 @@ implementations of the annual loop:
 - **The greedy stopping rule of 2.8 is what makes the batched implementations
   possible at all**, and it is why that rule is pinned rather than left to each
   implementation to settle.
-- **Two different chunk sizes, and only one is a config knob.**
-  `simulation.chunk_reps` sizes the draw array and the kernel call (2.11) and
-  belongs on the config model because a run cannot be reproduced without it
-  being recorded. The *batched Python* implementations take their own chunk
-  size as an argument to the benchmark harness: it trades memory against time,
-  changes no result, and the harness sweeps it and reports the value beside
-  each timing. Keeping the second off the config model is what stops it
-  reading as part of the model.
+- **Chunk size is never a config knob, on either side of the boundary.** The
+  kernel batches replications to bound the draw array (2.11) and the batched
+  Python implementations batch to bound their state, and both trade memory
+  against time while changing no number — replication `r` reads the same draws
+  at any batch size, which is what the per-replication seed children buy. Both
+  are therefore driver-script arguments, recorded in the run manifest beside
+  the thread count and the build profile (7.1). Putting either on the config
+  model would say it is part of what is being modeled, and a reader would
+  reasonably wonder which results depend on it. None do.
 - **Both Python implementations chunk over replications, and the chunk size is
   reported alongside the timing.** At the configured 12,000 segments and 1,000
   replications the state is 12 million cells, so one f64 array is 96 MB; at
@@ -1793,7 +1839,8 @@ results/<run_id>/
 - **`manifest.json`** carries what a result cannot be interpreted without: run
   id, UTC timestamp, package version, git commit and whether the working tree
   was dirty, which implementation produced it (`reference` or `kernel`), the Rust
-  build profile where it was the kernel, thread count, and wall time. A timing
+  build profile where it was the kernel, thread count, replication batch size,
+  and wall time. A timing
   number without its build profile means nothing, which is the same point
   Section 6, Validation strategy, makes about benchmarks.
 - **`run_id` is a UTC timestamp** formatted `YYYYMMDDTHHMMSSffffff`. Ordering

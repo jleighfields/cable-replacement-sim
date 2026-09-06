@@ -194,21 +194,20 @@ class SimulationConfig(pydantic.BaseModel):
     Attributes:
         n_years: Years simulated per replication.
         n_reps: Monte Carlo replications.
-        seed: Base seed. Independent streams are spawned from it by purpose,
-            then per replication, so a result reproduces and does not depend on
-            the chunk size it was computed at.
+        seed: Base seed. Independent streams are spawned from it by purpose and
+            then per replication, so replication ``r`` reads the same draws
+            however the run was batched. That is what keeps the batch size out
+            of this model: it changes how much memory a run needs and how long
+            it takes, and it changes no number, so it is recorded with the run
+            as provenance rather than configured as a parameter.
         start_year: Year 0. A segment's age is ``start_year - install_year``,
             and present values are discounted to this year.
-        chunk_reps: Replications per kernel call, which sizes the draw array.
-            It is recorded because a run cannot be reproduced without it, and
-            it changes no result.
     """
 
     n_years: int = pydantic.Field(ge=1)
     n_reps: int = pydantic.Field(ge=1)
     seed: int = pydantic.Field(ge=0)
     start_year: int
-    chunk_reps: int = pydantic.Field(ge=1)
 
 
 class PopulationConfig(pydantic.BaseModel):

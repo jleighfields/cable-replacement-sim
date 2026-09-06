@@ -11,7 +11,8 @@ from typing import Any
 
 import pydantic
 import pytest
-from cablesim import config
+import yaml
+from cablesim import config, constants
 
 
 def raw_config() -> dict[str, Any]:
@@ -203,3 +204,37 @@ def test_a_policy_missing_a_parameter_it_requires_is_rejected() -> None:
 
     with pytest.raises(pydantic.ValidationError, match="threshold_years"):
         config.Config.model_validate(broken)
+
+
+def test_every_configured_number_parses_as_a_number() -> None:
+    """No numeric field reaches pydantic as a string.
+
+    YAML 1.1 requires a signed exponent, so `12.0e6` is a *string* to the
+    parser and only becomes a float because pydantic coerces it. That works
+    until something reads the file without pydantic — a driver script, a diff,
+    another language — and it hides in plain sight, because the coerced value
+    is correct. Writing the digits out avoids the trap entirely; this checks
+    nobody reintroduces it.
+    """
+    raw = yaml.safe_load(constants.DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
+
+    numeric: list[tuple[str, Any]] = [
+        ("population.n_segments", raw["population"]["n_segments"]),
+        ("population.total_customers", raw["population"]["total_customers"]),
+        ("population.length_ref_ft", raw["population"]["length_ref_ft"]),
+        ("population.length_exponent", raw["population"]["length_exponent"]),
+        ("records.n_segments", raw["records"]["n_segments"]),
+        ("budget.annual", raw["budget"]["annual"]),
+        ("budget.escalation", raw["budget"]["escalation"]),
+        ("costs.mobilization_per_segment", raw["costs"]["mobilization_per_segment"]),
+        ("costs.emergency_multiplier", raw["costs"]["emergency_multiplier"]),
+        ("costs.discount_rate", raw["costs"]["discount_rate"]),
+    ]
+    for name, value in numeric:
+        assert isinstance(value, (int, float)), (
+            f"{name} parsed as {type(value).__name__}"
+        )
+
+    for technology in raw["population"]["technologies"]:
+        for field, value in technology["weibull"].items():
+            assert isinstance(value, (int, float)), f"{technology['name']}.{field}"
