@@ -7,6 +7,38 @@ observed failures the recovery test needs to have power.
 Technologies, length and sample size are arguments rather than config lookups,
 because the early rungs of the recovery ladder need one technology and a fixed
 length while the configured record block describes the full population mix.
+
+Censoring and truncation
+------------------------
+
+Two different things happen at the edges of the study window, and the words are
+not interchangeable.
+
+**Right censoring** is incomplete *observation* of an episode you have. The
+cable is in the table, you know it reached the study end, and you do not know
+when it will fail. It contributes ``S(t)`` to the likelihood — the probability
+of lasting at least that long.
+
+**Left truncation** is *selection* of which episodes you have at all. An
+episode that failed before the failure records begin is absent from the table
+entirely; nothing represents it, and no row is missing a value, because there
+is no row. The episodes you do have are in the sample partly *because* they
+lasted long enough to be seen, so the likelihood conditions on that survival by
+dividing by ``S(entry age)``.
+
+The generator produces both, in different places. It simulates the complete
+history first, from installation to the study end, so every segment's real
+lifetime is drawn whether or not anyone would have recorded it. The record
+window is then applied as a filter: episodes ending at or before
+``monitoring_start`` are dropped, which creates the truncation, and the
+survivors keep an entry age measured from that date. Nothing about the
+underlying lifetimes changes — the cable really did fail, there is simply no
+record of it, which is what the correction in the likelihood exists to undo.
+
+Whether the entry age is knowable at all rests on the asset register: install
+dates are recorded even where failures are not, so an episode's age when
+observation began can be computed. Without that, the episode would be in the
+sample with no way to say what it had already survived.
 """
 
 import numpy as np
@@ -192,10 +224,12 @@ def episode_table(
         .otherwise(pl.col("failure_year"))
         .alias("failure_year")
     )
-    # The observation window. An episode that ended at or before monitoring
-    # began was never observable, and dropping it is what the truncation
-    # correction compensates for; the comparison is inclusive so nothing is
-    # kept with zero exposure after entry.
+    # The record window, which creates the truncation. Dropping an episode
+    # that ended before monitoring began is not the same as censoring one: a
+    # censored episode stays in the table with an unknown end, while this one
+    # leaves no trace at all. The comparison is inclusive so nothing is kept
+    # with zero exposure after entry, which would contribute nothing to the
+    # likelihood while inflating the apparent sample size.
     return (
         frame.with_columns(
             pl.max_horizontal(
@@ -213,3 +247,26 @@ def episode_table(
         )
         .sort("segment_id", "install_year")
     )
+
+
+def lifetimes(
+    table: pl.DataFrame, study_end: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Converts the episode table into the ages the likelihood is written in.
+
+    The table records calendar years; the likelihood is a function of age. An
+    episode that ran from its install year to its failure year contributes the
+    difference, and a censored one is measured to the study end instead.
+
+    Args:
+        table: The episode table.
+        study_end: The year observation stopped.
+
+    Returns:
+        Age at end, age at entry, and 1 where the episode ended in a failure.
+    """
+    install = table["install_year"].to_numpy()
+    failure = table["failure_year"].to_numpy()
+    observed = np.where(np.isnan(failure), 0.0, 1.0)
+    end = np.where(np.isnan(failure), float(study_end), failure)
+    return end - install, table["entry_year"].to_numpy() - install, observed

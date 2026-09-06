@@ -305,20 +305,46 @@ loglik = sum_i [ delta_i * log h(t_i) ] - sum_i H(t_i)
     where H(t) = (t/lambda)^k        (cumulative hazard)
 ```
 
-**Left truncation is required here, not optional.** Records exist only from
-when monitoring began, so cables that failed before that date are absent
-entirely. Ignoring this biases the fit toward longer life, because the
-population that survived to be recorded is not the population that was
-installed. With entry age `a_i`, the correction adds the hazard accumulated
-before observation began back in:
+**Censoring and truncation are different mechanisms, and the words are not
+interchangeable.**
+
+- **Right censoring** is incomplete *observation* of an episode you have. The
+  cable is in the table, you know it reached the study end, you do not know
+  when it fails. `delta_i = 0` and it contributes accumulated hazard only.
+- **Left truncation** is *selection* of which episodes you have at all. An
+  episode that failed before the failure records begin is absent — no row is
+  missing a value, because there is no row. The episodes present are there
+  partly *because* they lasted long enough to be recorded.
+
+Truncation is correctable here only because the asset register records install
+dates even where failures are not recorded, which is what makes an entry age
+computable. With entry age `a_i`, the correction divides each contribution by
+`S(a_i)` — adding back the hazard accumulated before observation began:
 
 ```
 loglik = sum_i [ delta_i * log h(t_i) ] - sum_i [ H(t_i) - H(a_i) ]
 ```
 
 **Covariates enter through scale.** The fit is an accelerated-failure-time
-model in the sense of R's `survreg`: shape is constant within a stratum and
+model of the form R's `survreg` fits: shape is constant within a stratum and
 covariates scale `lambda`.
+
+**How much the truncation term is worth, measured rather than asserted.**
+`H(a) = (a/lambda)^k`, so at a sharp shape an early entry age contributes
+almost nothing. At the shipped parameters and a 1998 record start it hides
+about 0.7% of episodes and moves the fitted scale by 0.1%; at a 2018 start it
+moves it by 3.9% and pushes the truth outside the interval. The term is kept
+because a record system that begins later than the install history is the
+ordinary case and the correction costs three lines, not because it rescues
+this particular configuration.
+
+**`survreg` names the form, not a route to reproducing this.** It does not
+accept left-truncated data, so a reader reaching for it in R to check this fit
+would find the model unsupported rather than merely awkward. `flexsurv::flexsurvreg` is the R
+package that takes delayed entry, and `lifelines` is what the test suite
+actually cross-checks against, through an entry column. Naming all three is
+worth the sentence: the first is the vocabulary, the second is the R
+equivalent, and only the third is a check that runs here.
 
 **The two parameterizations, written out once so nothing has to transpose them
 from memory.** The accelerated-failure-time form and the hazard form above are
@@ -762,13 +788,20 @@ population:
    episode begins with its own lifetime draw. Repeat until an episode survives
    past `study_end`. Each completed episode is one uncensored row; the last one
    is right-censored.
-4. **Apply the observation window.** `entry_year = max(install_year,
-   monitoring_start)`, which is the left-truncation point. An episode that
-   ended at or before `monitoring_start` is dropped entirely — it was never
-   observable, and dropping it is what the truncation correction in 2.4 exists
-   to compensate for. The comparison is inclusive so that no episode is kept
-   with zero exposure after entry, which contributes nothing to the likelihood
-   and would silently inflate the apparent sample size.
+4. **Apply the record window.** The complete history is simulated first, from
+   installation to the study end, so every real lifetime is drawn whether or
+   not anyone would have recorded it. The window is then a filter over that
+   truth: `entry_year = max(install_year, monitoring_start)`, and an episode
+   that ended at or before `monitoring_start` is **dropped entirely**. That
+   drop is the truncation — the cable really did fail, there is simply no
+   record of it — and it is a different thing from censoring an episode that
+   is still in the table with an unknown end. The comparison is inclusive so
+   no episode is kept with zero exposure after entry, which contributes
+   nothing to the likelihood and would silently inflate the sample size.
+
+   Simulating the truth first and hiding part of it is what makes this a valid
+   test of the correction: the parameters that generated the whole history are
+   known, so fitting only the visible subset either recovers them or does not.
 5. Censor every surviving episode at `study_end`.
 
 The censoring fraction is not configured directly. It falls out of
@@ -1064,8 +1097,14 @@ population:
 # needs, not by how large a system is being modeled.
 records:
   n_segments: 20_000
-  monitoring_start: 1998    # left-truncation point; no record exists before it
-  study_end: 2026           # right-censoring point
+  # The two window edges do different things, and the difference is not
+  # cosmetic. study_end RIGHT-CENSORS: an episode still running is in the table
+  # with an unknown end. monitoring_start LEFT-TRUNCATES: an episode that
+  # already ended is absent from the table altogether, so nothing represents
+  # it. Install dates are known either way, which is what lets the likelihood
+  # compute how long a surviving episode had already run and condition on it.
+  monitoring_start: 1998
+  study_end: 2026
 
 failure:
   conductor_dependence: iid         # iid | shared_frailty (not implemented)
@@ -1124,6 +1163,7 @@ policies:
 reporting:
   baseline_policy: run_to_failure   # what "avoided" is measured against
 ```
+
 
 
 

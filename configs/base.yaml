@@ -124,8 +124,14 @@ population:
 # needs, not by how large a system is being modeled.
 records:
   n_segments: 20_000
-  monitoring_start: 1998    # left-truncation point; no record exists before it
-  study_end: 2026           # right-censoring point
+  # The two window edges do different things, and the difference is not
+  # cosmetic. study_end RIGHT-CENSORS: an episode still running is in the table
+  # with an unknown end. monitoring_start LEFT-TRUNCATES: an episode that
+  # already ended is absent from the table altogether, so nothing represents
+  # it. Install dates are known either way, which is what lets the likelihood
+  # compute how long a surviving episode had already run and condition on it.
+  monitoring_start: 1998
+  study_end: 2026
 
 failure:
   conductor_dependence: iid         # iid | shared_frailty (not implemented)
