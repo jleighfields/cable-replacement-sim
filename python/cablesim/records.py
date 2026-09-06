@@ -274,8 +274,13 @@ def episode_table(
         )
         .filter(pl.col("install_year") < records.study_end)
         .select(
-            "segment_id", "technology", "n_conductors", "length_ft",
-            "install_year", "entry_year", "failure_year",
+            "segment_id",
+            "technology",
+            "n_conductors",
+            "length_ft",
+            "install_year",
+            "entry_year",
+            "failure_year",
         )
         .sort("segment_id", "install_year")
     )
@@ -349,6 +354,22 @@ def technology_indicators(
     Under this coding the fitted intercept is the reference technology's value
     and each coefficient is a log ratio against it.
 
+    **A technology with no observed failure gets no coefficient, because there
+    is none to get.** Its rows are all censored, so its scale enters the
+    likelihood only through accumulated hazard, which shrinks without limit as
+    the scale grows: the derivative stays strictly positive, no interior
+    optimum exists, and the estimate runs to infinity. What a solver reports
+    then is wherever it gave up. Refusing the fit is the only honest answer, so
+    this raises rather than returning a column that cannot be estimated.
+
+    Few failures is the same problem short of the boundary rather than a
+    different one, and it is not caught here because no threshold separates the
+    two. It is worth knowing what it looks like: at the shipped parameters the
+    newest technology draws 25 failures from 77,151 rows, and its coefficient
+    then varies across seeds by far more than its own value -- while any single
+    run returns something that looks reasonable. Check the failure count per
+    technology before believing a coefficient.
+
     Args:
         table: The episode table.
         reference: The technology to leave without a column.
@@ -357,11 +378,25 @@ def technology_indicators(
         The indicator matrix and its column names.
 
     Raises:
-        ValueError: If the reference technology does not appear in the table.
+        ValueError: If the reference technology does not appear in the table,
+            or if any technology present has no observed failure.
     """
     present = sorted(set(table["technology"].to_list()))
     if reference not in present:
         raise ValueError(f"reference {reference!r} is not in the table: {present}")
+
+    failures = (
+        table.group_by("technology")
+        .agg(pl.col("failure_year").is_not_null().sum().alias("failures"))
+        .filter(pl.col("failures") == 0)["technology"]
+        .to_list()
+    )
+    if failures:
+        raise ValueError(
+            f"no observed failure for {sorted(failures)}: their scale is not "
+            f"identified and the fit would report wherever the solver stopped. "
+            f"Drop these technologies, or widen the record window until they fail."
+        )
 
     others = [name for name in present if name != reference]
     values = table["technology"].to_numpy()

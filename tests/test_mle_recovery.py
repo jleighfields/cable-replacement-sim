@@ -609,3 +609,53 @@ def test_the_fit_does_not_depend_on_where_the_search_starts() -> None:
             )
             assert found.success
             assert np.allclose(np.exp(found.x), [reference.shape, reference.scale])
+
+
+def test_the_fit_converges_where_the_summed_objective_stalled() -> None:
+    """A pinned draw that the fit used to reject at the right answer.
+
+    `scipy`'s BFGS stops when the gradient norm falls below an absolute
+    tolerance. The gradient of a summed log-likelihood grows with the number of
+    episodes, so a summed objective quietly asks the line search for more
+    precision the larger the sample gets: on this draw it stalled at a gradient
+    norm of 1.1e-5 against a tolerance of 1e-5, standing on the same parameters
+    a derivative-free search finds, and raised. Averaging over episodes makes
+    the stopping rule mean one thing at every sample size.
+
+    The seed is pinned because the stall needs a particular line-search path
+    rather than a particular size -- most draws of this size converged either
+    way, and duplicating a table to inflate its gradient does not reproduce it.
+    """
+    settings = one_technology_config()
+    settings.simulation.seed = 20260938
+    table = records.episode_table(
+        settings,
+        technologies=[settings.population.technologies[0]],
+        n_conductors=[1],
+        length_ft=settings.population.length_ref_ft,
+        n_segments=4000,
+    )
+    end, entry, observed = records.lifetimes(table, settings.records.study_end)
+
+    fitted = weibull.fit_censored(end, entry, observed)
+
+    # The value the search stalled at, which was never the problem.
+    assert fitted.shape == pytest.approx(6.0390, abs=1e-3)
+    assert fitted.scale == pytest.approx(50.2345, abs=1e-3)
+
+
+def test_the_reported_likelihood_is_the_summed_one() -> None:
+    """Averaging is an optimizer detail and must not reach the result.
+
+    The objective is divided by the episode count so that convergence means the
+    same thing at every sample size, which would silently divide the reported
+    log-likelihood too. It is compared against models fitted elsewhere, so it
+    has to stay the sum.
+    """
+    settings = one_technology_config()
+    end, entry, observed, _, _ = cross_check_data(settings)
+    fitted = weibull.fit_censored(end, entry, observed)
+
+    assert fitted.log_likelihood == pytest.approx(
+        weibull.log_likelihood(fitted.shape, fitted.scale, end, entry, observed)
+    )

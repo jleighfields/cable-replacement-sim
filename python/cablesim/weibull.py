@@ -257,9 +257,19 @@ def fit_censored(
     if not np.any(observed):
         raise ValueError("no observed failures: the shape is not identified")
 
+    # The objective is averaged over episodes rather than summed. BFGS stops on
+    # an absolute tolerance for the gradient norm, while the gradient of a sum
+    # grows with the number of rows, so a summed objective silently demands
+    # more precision from the line search the larger the sample gets -- past a
+    # few thousand episodes it asks for more than float64 can deliver and the
+    # fit reports failure while standing on the right answer. Averaging makes
+    # the stopping rule mean the same thing at every sample size. It rescales
+    # the curvature by the same factor, which `hess_inv` below undoes.
+    episodes = float(age_at_end.size)
+
     def negative(log_parameters: np.ndarray) -> float:
         shape, scale = np.exp(log_parameters)
-        return -log_likelihood(shape, scale, age_at_end, entry_age, observed)
+        return -log_likelihood(shape, scale, age_at_end, entry_age, observed) / episodes
 
     def gradient(log_parameters: np.ndarray) -> np.ndarray:
         """Analytic gradient of the negative log-likelihood in log-parameters.
@@ -279,17 +289,16 @@ def fit_censored(
         # hazard is zero and its logarithm is not finite. The product is zero,
         # so the term is dropped rather than evaluated.
         safe_ratio = np.where(entry_age > 0.0, entry_ratio, 1.0)
-        entry_term = np.where(
-            entry_age > 0.0, entry_hazard * np.log(safe_ratio), 0.0
-        )
+        entry_term = np.where(entry_age > 0.0, entry_hazard * np.log(safe_ratio), 0.0)
         d_shape = np.sum(observed * (1.0 / shape + np.log(end_ratio))) - np.sum(
             end_hazard * np.log(end_ratio) - entry_term
         )
         d_scale = (shape / scale) * (
             np.sum(end_hazard - entry_hazard) - np.sum(observed)
         )
-        # Chain to the log-parameters the optimizer works in.
-        return -np.array([shape * d_shape, scale * d_scale])
+        # Chain to the log-parameters the optimizer works in, and average to
+        # match the objective.
+        return -np.array([shape * d_shape, scale * d_scale]) / episodes
 
     start = np.log([1.0, float(np.mean(age_at_end))])
     result = optimize.minimize(negative, start, jac=gradient, method="BFGS")
@@ -299,7 +308,9 @@ def fit_censored(
     shape, scale = np.exp(result.x)
     # hess_inv is the covariance of the log-parameters, so the interval is
     # symmetric there and exponentiates to an asymmetric one for the parameter.
-    errors = np.sqrt(np.diag(result.hess_inv))
+    # It inverts the curvature of the averaged objective, so dividing by the
+    # episode count returns it to the scale of the likelihood itself.
+    errors = np.sqrt(np.diag(result.hess_inv) / episodes)
     width = stats.norm.ppf(0.5 + level / 2.0)
     low, high = np.exp(result.x - width * errors), np.exp(result.x + width * errors)
 
@@ -308,7 +319,7 @@ def fit_censored(
         scale=float(scale),
         shape_interval=(float(low[0]), float(high[0])),
         scale_interval=(float(low[1]), float(high[1])),
-        log_likelihood=float(-result.fun),
+        log_likelihood=float(-result.fun * episodes),
     )
 
 
@@ -406,6 +417,10 @@ def fit_regression(
 
     ancillary_names = list(ancillary_names or [])
     width_shape = 1 + len(ancillary_names)
+    # Averaged over episodes for the reason given in `fit_censored`: BFGS stops
+    # on an absolute gradient tolerance, so a summed objective changes what
+    # convergence means as the sample grows.
+    episodes = float(age_at_end.size)
 
     def unpack(parameters: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         if ancillary is None:
@@ -419,7 +434,7 @@ def fit_regression(
 
     def negative(parameters: np.ndarray) -> float:
         shape, scale = unpack(parameters)
-        return -log_likelihood(shape, scale, age_at_end, entry_age, observed)
+        return -log_likelihood(shape, scale, age_at_end, entry_age, observed) / episodes
 
     def gradient(parameters: np.ndarray) -> np.ndarray:
         shape, scale = unpack(parameters)
@@ -442,7 +457,7 @@ def fit_regression(
         if ancillary is not None:
             blocks.append(ancillary.T @ by_shape)
         blocks.extend([[np.sum(by_scale)], covariates.T @ by_scale])
-        return -np.concatenate(blocks)
+        return -np.concatenate(blocks) / episodes
 
     start = np.concatenate(
         [
@@ -456,7 +471,9 @@ def fit_regression(
     if not result.success:
         raise ValueError(f"the fit did not converge: {result.message}")
 
-    errors = np.sqrt(np.diag(result.hess_inv))
+    # hess_inv inverts the curvature of the averaged objective; dividing by the
+    # episode count returns it to the scale of the likelihood itself.
+    errors = np.sqrt(np.diag(result.hess_inv) / episodes)
     width = stats.norm.ppf(0.5 + level / 2.0)
     low, high = result.x - width * errors, result.x + width * errors
 
@@ -476,7 +493,7 @@ def fit_regression(
             name: (float(low[scale_at + 1 + i]), float(high[scale_at + 1 + i]))
             for i, name in enumerate(names)
         },
-        log_likelihood=float(-result.fun),
+        log_likelihood=float(-result.fun * episodes),
         ancillary_coefficients=dict(
             zip(ancillary_names, result.x[1:width_shape], strict=True)
         ),

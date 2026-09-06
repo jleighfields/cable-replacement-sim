@@ -104,14 +104,18 @@ def _(config, records, settings):
 def _(complete, mo, settings, visible):
     import polars as pl
 
-    _lost = complete.join(
-        visible, on=["segment_id", "install_year"], how="anti"
-    ).sort("install_year")
+    _lost = complete.join(visible, on=["segment_id", "install_year"], how="anti").sort(
+        "install_year"
+    )
     _segment = _lost["segment_id"][0]
     _kept = visible.filter(pl.col("segment_id") == _segment)["install_year"].to_list()
 
     def _mark(year: float) -> str:
         return "yes" if year in _kept else "**no row at all**"
+
+    def _when(year: float | None) -> str:
+        return "—" if year is None else format(year, ".0f")
+
     mo.md(
         f"""
     ### One segment, both views
@@ -120,14 +124,18 @@ def _(complete, mo, settings, visible):
 
     | | install | failed | in the study? |
     |---|---|---|---|
-    {chr(10).join(
-        f"| episode {i+1} | {r['install_year']:.0f} | "
-        f"{'—' if r['failure_year'] is None else format(r['failure_year'], '.0f')} | "
-        f"{_mark(r['install_year'])} |"
-        for i, r in enumerate(
-            complete.filter(pl.col("segment_id") == _segment).iter_rows(named=True)
-        )
-    )}
+    {
+            chr(10).join(
+                f"| episode {i + 1} | {r['install_year']:.0f} | "
+                f"{_when(r['failure_year'])} | "
+                f"{_mark(r['install_year'])} |"
+                for i, r in enumerate(
+                    complete.filter(pl.col("segment_id") == _segment).iter_rows(
+                        named=True
+                    )
+                )
+            )
+        }
 
     The first episode is the **missing row**. Not a row with an unknown age —
     no row. Nothing in the study's data even says the second cable is a
@@ -181,15 +189,24 @@ def _(np, truth_scale, truth_shape):
     _figure, _axes = plt.subplots(1, 2, figsize=(11, 3.5))
     _axes[0].plot(_age, _hazard, color="black", lw=1)
     _axes[0].fill_between(
-        _age, _hazard, where=(_age <= _entry), alpha=0.35,
+        _age,
+        _hazard,
+        where=(_age <= _entry),
+        alpha=0.35,
         label="H(a): before entry — charged only if the term is dropped",
     )
     _axes[0].fill_between(
-        _age, _hazard, where=(_age >= _entry) & (_age <= _exit), alpha=0.65,
+        _age,
+        _hazard,
+        where=(_age >= _entry) & (_age <= _exit),
+        alpha=0.65,
         label="H(t) − H(a): hazard while watched",
     )
-    _axes[0].set(xlabel="age (years)", ylabel="hazard h(age)",
-                 title="the likelihood counts the darker area only")
+    _axes[0].set(
+        xlabel="age (years)",
+        ylabel="hazard h(age)",
+        title="the likelihood counts the darker area only",
+    )
     _axes[0].legend(fontsize=7, loc="upper left")
 
     _survival = np.exp(-((_age / truth_scale) ** truth_shape))
@@ -197,11 +214,17 @@ def _(np, truth_scale, truth_shape):
         _survival / np.exp(-((_entry / truth_scale) ** truth_shape)), 0, 1
     )
     _axes[1].plot(_age, _survival, label="S(t) — as installed")
-    _axes[1].plot(_age[_age >= _entry], _conditional[_age >= _entry],
-                  label=f"S(t)/S(a) — given it reached {_entry:.0f}")
+    _axes[1].plot(
+        _age[_age >= _entry],
+        _conditional[_age >= _entry],
+        label=f"S(t)/S(a) — given it reached {_entry:.0f}",
+    )
     _axes[1].axvline(_entry, color="grey", lw=0.8, ls=":")
-    _axes[1].set(xlabel="age (years)", ylabel="survival",
-                 title="dividing by S(a) renormalises to the survivors")
+    _axes[1].set(
+        xlabel="age (years)",
+        ylabel="survival",
+        title="dividing by S(a) renormalises to the survivors",
+    )
     _axes[1].legend(fontsize=8)
     _figure.tight_layout()
     _figure
@@ -235,13 +258,19 @@ def _(config, np, pl, records, settings, truth_scale, truth_shape):
     def _built(monitoring_start: int) -> pl.DataFrame:
         """Episodes visible to a study beginning in the given year."""
         _cfg = config.Config.model_validate(
-            {**settings.model_dump(),
-             "records": {**settings.records.model_dump(),
-                         "monitoring_start": monitoring_start}}
+            {
+                **settings.model_dump(),
+                "records": {
+                    **settings.records.model_dump(),
+                    "monitoring_start": monitoring_start,
+                },
+            }
         )
         return records.episode_table(
-            _cfg, technologies=[settings.population.technologies[0]],
-            length_ft=settings.population.length_ref_ft, n_conductors=[1],
+            _cfg,
+            technologies=[settings.population.technologies[0]],
+            length_ft=settings.population.length_ref_ft,
+            n_conductors=[1],
             n_segments=20_000,
         )
 
@@ -254,8 +283,10 @@ def _(config, np, pl, records, settings, truth_scale, truth_shape):
     _expected = float(
         np.mean(
             np.exp(
-                -(((_late - _installed["install_year"].to_numpy()) / truth_scale)
-                  ** truth_shape)
+                -(
+                    ((_late - _installed["install_year"].to_numpy()) / truth_scale)
+                    ** truth_shape
+                )
             )
         )
     )
@@ -268,15 +299,21 @@ def _(config, np, pl, records, settings, truth_scale, truth_shape):
     print(f"  actually installed           : {_n_installed}")
     print(f"  present in the inventory     : {_n_left}")
     print(f"  missing, failed beforehand   : {_n_installed - _n_left}")
-    print(f"  survival to entry: observed {_n_left / _n_installed:.3f}, "
-          f"theory {_expected:.3f}\n")
+    print(
+        f"  survival to entry: observed {_n_left / _n_installed:.3f}, "
+        f"theory {_expected:.3f}\n"
+    )
     print("  starting the survivors at age 0 claims:")
-    print(f"    {_n_left} cables x {_mean_age:.0f} yr = "
-          f"{_n_left * _mean_age:,.0f} cable-years, 0 failures")
+    print(
+        f"    {_n_left} cables x {_mean_age:.0f} yr = "
+        f"{_n_left * _mean_age:,.0f} cable-years, 0 failures"
+    )
     print("  what happened over those same years:")
-    print(f"    {_n_installed} cables x {_mean_age:.0f} yr = "
-          f"{_n_installed * _mean_age:,.0f} cable-years, "
-          f"{_n_installed - _n_left} failures")
+    print(
+        f"    {_n_installed} cables x {_mean_age:.0f} yr = "
+        f"{_n_installed * _mean_age:,.0f} cable-years, "
+        f"{_n_installed - _n_left} failures"
+    )
     return
 
 
@@ -365,11 +402,284 @@ def _(end, entry, np, observed, truth_scale, truth_shape, weibull):
         print(f"{_label:32} shape {_fit.shape:6.3f}   scale {_fit.scale:7.2f}")
     print(f"{'truth':32} shape {truth_shape:6.3f}   scale {truth_scale:7.2f}")
 
-    assert (
-        correct.scale_interval[0] < truth_scale < correct.scale_interval[1]
-    ), "the correct likelihood must recover the scale"
+    assert correct.scale_interval[0] < truth_scale < correct.scale_interval[1], (
+        "the correct likelihood must recover the scale"
+    )
     assert no_censoring.scale < correct.scale, "inventing failures shortens life"
     return correct, no_censoring, no_truncation
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+    ## 45 · The rows that went missing, and what they were worth
+
+    Section 40 compared the two ways of reading the table the study can see.
+    Neither is the answer a complete record would have given, and that is the
+    comparison worth making: the correction earns its place only if it recovers
+    what the deleted rows would have said.
+
+    So three fits of the same cable. The complete history, where nothing is
+    deleted and every episode is watched from installation; the study's view
+    with the correction; and the study's view without it.
+    """
+    )
+    return
+
+
+@app.cell
+def _(
+    complete,
+    correct,
+    no_truncation,
+    records,
+    settings,
+    truth_scale,
+    truth_shape,
+    weibull,
+):
+    _end, _entry, _observed = records.lifetimes(complete, settings.records.study_end)
+    # Nothing is truncated in the complete history: monitoring begins at the
+    # first install year, so no episode entered partway through life.
+    assert not _entry.any(), "a complete record has nothing to condition on"
+    full_history = weibull.fit_censored(_end, _entry, _observed)
+
+    for _label, _fit in [
+        ("the complete record", full_history),
+        ("the study's view, corrected", correct),
+        ("the study's view, uncorrected", no_truncation),
+    ]:
+        print(f"{_label:32} shape {_fit.shape:6.3f}   scale {_fit.scale:7.2f}")
+    print(f"{'truth':32} shape {truth_shape:6.3f}   scale {truth_scale:7.2f}")
+    return (full_history,)
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+    One draw does not settle which reading is better, and reading an ordering
+    off those three numbers would be reading noise. The correction is worth a
+    few hundredths of shape here, and a single sample of this size carries more
+    than that in sampling error.
+
+    What removes the noise is fitting the *same* draw all three ways and
+    averaging the differences rather than the fits, so whatever a draw happened
+    to do to the shape affects every arm equally and cancels. It takes more
+    draws than seems necessary: a dozen is enough to produce a confident
+    standard error and the wrong sign, because at that size the estimate of
+    the spread is no more reliable than the estimate of the mean.
+    """
+    )
+    return
+
+
+@app.cell
+def _(config, np, records, settings, weibull):
+    def refit(seed: int) -> tuple[float, float, float]:
+        """Fit one draw three ways: complete record, corrected, uncorrected.
+
+        Args:
+            seed: Replaces the configured seed, giving an independent draw.
+
+        Returns:
+            Fitted shape from the complete record, from the study's view with
+            the truncation term, and from the study's view without it.
+        """
+
+        def ages(start_year: int):
+            table = records.episode_table(
+                config.Config.model_validate(
+                    {
+                        **settings.model_dump(),
+                        "simulation": {
+                            **settings.simulation.model_dump(),
+                            "seed": seed,
+                        },
+                        "records": {
+                            **settings.records.model_dump(),
+                            "monitoring_start": start_year,
+                        },
+                    }
+                ),
+                technologies=[settings.population.technologies[0]],
+                length_ft=settings.population.length_ref_ft,
+                n_conductors=[1],
+                n_segments=4000,
+            )
+            return records.lifetimes(table, settings.records.study_end)
+
+        whole = ages(settings.population.initial_age.install_year_range[0])
+        seen = ages(settings.records.monitoring_start)
+        return (
+            weibull.fit_censored(*whole).shape,
+            weibull.fit_censored(*seen).shape,
+            weibull.fit_censored(seen[0], np.zeros_like(seen[1]), seen[2]).shape,
+        )
+
+    DRAWS = 150
+    _fits = np.array([refit(seed) for seed in range(20260902, 20260902 + DRAWS)])
+    corrected_gap = _fits[:, 1] - _fits[:, 0]
+    uncorrected_gap = _fits[:, 2] - _fits[:, 0]
+
+    print(f"{DRAWS} draws, distance from the complete record's own answer")
+    for _label, _gap in (
+        ("  corrected  ", corrected_gap),
+        ("  uncorrected", uncorrected_gap),
+    ):
+        _half = 1.96 * _gap.std(ddof=1) / np.sqrt(len(_gap))
+        print(f"{_label} {_gap.mean():+.4f}  +/- {_half:.4f}")
+    return corrected_gap, uncorrected_gap
+
+
+@app.cell
+def _(corrected_gap, mo, np, uncorrected_gap):
+    _half = 1.96 * corrected_gap.std(ddof=1) / np.sqrt(len(corrected_gap))
+    mo.md(
+        f"""
+    The corrected fit lands on the complete record's answer:
+    {corrected_gap.mean():+.4f}, with an interval of plus or minus
+    {_half:.4f} that covers zero. It is not merely closer — it is
+    indistinguishable from having had the deleted rows all along, which is the
+    strongest thing the correction could be said to do.
+
+    Leaving the term out costs {uncorrected_gap.mean():+.4f} of shape. That is
+    the bias the deleted rows would have removed, and it does not shrink as the
+    sample grows: at 30,000 segments the same two numbers are about
+    -0.003 and +0.060, unchanged. More data makes the noise smaller and leaves
+    this exactly where it was, which is what separates a bias from a wobble.
+    """
+    )
+    return
+
+
+@app.cell
+def _(corrected_gap, np, uncorrected_gap):
+    def standard_error(gap: np.ndarray) -> float:
+        """Standard error of a paired mean difference.
+
+        Args:
+            gap: One difference per draw.
+
+        Returns:
+            The standard deviation divided by the root of the count.
+        """
+        return float(gap.std(ddof=1) / np.sqrt(len(gap)))
+
+    # The claim of the section, paired across draws so no single sample decides
+    # it. Two separate things, each stated against its own sampling error
+    # rather than against the other: the correction reproduces the complete
+    # record, and dropping it does not.
+    assert abs(corrected_gap.mean()) < 1.96 * standard_error(corrected_gap), (
+        "the corrected fit must be indistinguishable from the complete record"
+    )
+    assert uncorrected_gap.mean() > 5.0 * standard_error(uncorrected_gap), (
+        "dropping the term must leave a bias the draws can clearly resolve"
+    )
+    _corrected = abs(corrected_gap.mean()) / standard_error(corrected_gap)
+    _uncorrected = uncorrected_gap.mean() / standard_error(uncorrected_gap)
+    (
+        f"standard errors from zero — corrected {_corrected:.1f}, "
+        f"uncorrected {_uncorrected:.1f}"
+    )
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+    ### Why so few rows move the answer at all
+
+    A row count is the wrong denominator. Shape is estimated from the spread of
+    the ages cables failed at, so the rows carrying it are the **failures**,
+    and the deleted rows are a far larger share of those than of the table.
+
+    They are also not a random sample of them. A row is deleted only if the
+    cable failed early enough to be gone before the records open, so every one
+    is drawn from the young end and none from the old.
+    """
+    )
+    return
+
+
+@app.cell
+def _(config, pl, records, settings):
+    def episodes(start_year: int, n_segments: int = 30_000):
+        """The episode table a study opening in the given year would hold.
+
+        Args:
+            start_year: Year the record system begins.
+            n_segments: Segments to draw. Larger than the table the sections
+                above share, because at 4,000 segments only a single episode
+                is deleted and one row shows nothing about a distribution.
+
+        Returns:
+            One row per installation episode.
+        """
+        return records.episode_table(
+            config.Config.model_validate(
+                {
+                    **settings.model_dump(),
+                    "records": {
+                        **settings.records.model_dump(),
+                        "monitoring_start": start_year,
+                    },
+                }
+            ),
+            technologies=[settings.population.technologies[0]],
+            length_ft=settings.population.length_ref_ft,
+            n_conductors=[1],
+            n_segments=n_segments,
+        )
+
+    _whole = episodes(settings.population.initial_age.install_year_range[0])
+    _seen = episodes(settings.records.monitoring_start)
+    _failed = _whole.filter(pl.col("failure_year").is_not_null()).with_columns(
+        (pl.col("failure_year") - pl.col("install_year")).alias("age_at_failure")
+    )
+    _on = ["segment_id", "install_year"]
+    lost = _failed.join(_seen, on=_on, how="anti")
+    kept = _failed.join(_seen, on=_on, how="semi")
+
+    print(f"{_whole.height} episodes, of which {_failed.height} failed")
+    print(
+        f"deleted {lost.height}: {lost.height / _whole.height:.2%} of the "
+        f"episodes, {lost.height / _failed.height:.2%} of the failures"
+    )
+    for _label, _frame in (("deleted", lost), ("kept", kept)):
+        _age = _frame["age_at_failure"]
+        print(
+            f"  {_label:8} n={_frame.height:>5}  mean age at failure "
+            f"{_age.mean():5.1f}   oldest {_age.max():5.1f}"
+        )
+
+    # The deleted failures come from the young end. Not a clean cut -- cable
+    # installed after the records open can fail young and be kept -- so this is
+    # a claim about the averages, which is what the fitted shape responds to.
+    assert lost["age_at_failure"].mean() < kept["age_at_failure"].mean()
+    return
+
+
+@app.cell
+def _(kept, lost, mo):
+    mo.md(
+        f"""
+    Losing {lost.height} rows from {lost.height + kept.height} failures moves
+    the shape because those rows are the young tail: they failed at
+    {lost["age_at_failure"].mean():.1f} years on average against
+    {kept["age_at_failure"].mean():.1f} for the ones that survive into the
+    record. Delete the young failures and the survivors look more alike than
+    the cohort was — a tighter spread, read as a higher shape, which is the
+    direction the uncorrected fit misses by.
+
+    It is not a clean cut. Cable installed after the records open can fail
+    young and still be kept, so the two ranges overlap; what shifts is the
+    average, and the fitted shape follows the average.
+    """
+    )
+    return
 
 
 @app.cell
@@ -396,12 +706,19 @@ def _(config, np, plt, records, settings, truth_scale, weibull):
     _corrected, _ignored = [], []
     for _start in _starts:
         _cfg = config.Config.model_validate(
-            {**settings.model_dump(),
-             "records": {**settings.records.model_dump(), "monitoring_start": _start}}
+            {
+                **settings.model_dump(),
+                "records": {
+                    **settings.records.model_dump(),
+                    "monitoring_start": _start,
+                },
+            }
         )
         _table = records.episode_table(
-            _cfg, technologies=[settings.population.technologies[0]],
-            length_ft=settings.population.length_ref_ft, n_conductors=[1],
+            _cfg,
+            technologies=[settings.population.technologies[0]],
+            length_ft=settings.population.length_ref_ft,
+            n_conductors=[1],
             n_segments=6000,
         )
         _e, _a, _o = records.lifetimes(_table, _cfg.records.study_end)
@@ -412,8 +729,11 @@ def _(config, np, plt, records, settings, truth_scale, weibull):
     _axis.axhline(truth_scale, color="grey", ls=":", lw=0.9, label="truth")
     _axis.plot(_starts, _corrected, "o-", label="with the truncation term")
     _axis.plot(_starts, _ignored, "s--", label="without it")
-    _axis.set(xlabel="year the record system starts", ylabel="fitted scale (years)",
-              title="the correction only matters once entry ages are late")
+    _axis.set(
+        xlabel="year the record system starts",
+        ylabel="fitted scale (years)",
+        title="the correction only matters once entry ages are late",
+    )
     _axis.legend(fontsize=8)
     _figure.tight_layout()
     _figure

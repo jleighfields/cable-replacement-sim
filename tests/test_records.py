@@ -164,3 +164,43 @@ def test_implausibly_short_lifetimes_raise_rather_than_truncate(
 
     with pytest.raises(ValueError, match="still failing after"):
         records.episode_table(absurd, n_segments=200)
+
+
+def test_a_technology_with_no_observed_failure_is_refused(
+    table: pl.DataFrame,
+) -> None:
+    """An all-censored technology has no estimable scale, so coding it raises.
+
+    Its rows enter the likelihood only through accumulated hazard, which falls
+    as the scale grows without ever turning back, so the maximum sits at
+    infinity and a solver stops wherever its tolerance runs out. That returns a
+    finite, ordinary-looking number with nothing behind it, which is worse than
+    a refusal because nothing about it invites a second look.
+    """
+    censored = table.with_columns(
+        pl.when(pl.col("technology") == "xlpe")
+        .then(None)
+        .otherwise(pl.col("failure_year"))
+        .alias("failure_year")
+    )
+    with pytest.raises(ValueError, match="no observed failure.*xlpe"):
+        records.technology_indicators(censored, reference="hmwpe")
+
+
+def test_technologies_that_do_fail_are_coded_against_the_reference(
+    table: pl.DataFrame,
+) -> None:
+    """The reference is left without a column and the rest get one each.
+
+    An intercept alongside an indicator for every level would be rank
+    deficient, so the reference carries no column of its own and each
+    coefficient reads as a log ratio against it.
+    """
+    design, names = records.technology_indicators(table, reference="hmwpe")
+
+    assert names == ["technology_tr_xlpe", "technology_xlpe"]
+    assert design.shape == (table.height, 2)
+    # Every row belongs to exactly one technology, so a row is either the
+    # reference, coded as zeros, or carries a single one.
+    assert set(design.sum(axis=1)) <= {0.0, 1.0}
+    assert (design.sum(axis=1) == 0.0).sum() == (table["technology"] == "hmwpe").sum()
