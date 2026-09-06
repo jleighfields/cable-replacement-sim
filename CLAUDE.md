@@ -86,10 +86,11 @@ is the validation strategy rather than an accident:
   fix divergence; the parity test may not be sensitive enough to catch it.
 - **A numeric literal appearing in both is a defect.** The copies drift, and
   drift here is silent — see *Configuration and parameters* below.
-- **The FFI boundary is crossed once per policy per sweep point.** Arrays in,
-  arrays out, `py.allow_threads` around the compute. Never call back into
-  Python inside the loop; that erases the speedup this project exists to
-  demonstrate.
+- **The FFI boundary is crossed once per policy per chunk of replications.**
+  Arrays in, arrays out, `py.allow_threads` around the compute. Never call back
+  into Python inside the loop; that erases the speedup this project exists to
+  demonstrate. Random draws arrive as an array — the kernel neither seeds nor
+  generates.
 - **Benchmarks compare against a properly vectorized NumPy reference**, not a
   naive Python loop, and report single-threaded Rust and rayon-parallel Rust
   separately. A 200x speedup over bad Python when NumPy gives 40x for free is
