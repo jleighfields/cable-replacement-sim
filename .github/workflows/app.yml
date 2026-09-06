@@ -54,8 +54,17 @@ jobs:
 
       # The app fixture starts the server and tears it down; nothing here
       # assumes a server is already listening.
+      # Same reasoning as the notebook run: `pytest -m app` exits 5 when the
+      # marker selects nothing. The guard is on the app suite existing, so
+      # this job always runs and an empty selection once it does exist is a
+      # break rather than the expected state.
       - name: App tests
-        run: uv run pytest -m app --tracing=retain-on-failure --screenshot=only-on-failure
+        run: |
+          if ! compgen -G 'tests/app/test_*.py' > /dev/null; then
+            echo "::notice::No app tests yet — nothing to run."
+            exit 0
+          fi
+          uv run pytest -m app --tracing=retain-on-failure --screenshot=only-on-failure
 
       # A failing browser test is close to unreadable without them.
       - uses: actions/upload-artifact@v4
