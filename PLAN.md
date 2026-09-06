@@ -56,7 +56,12 @@ and utilization could enter the model as an accelerated-failure-time effect on
 Weibull scale. It is left out on purpose: it depends on historical loading data
 (AMI or SCADA aggregated downstream of each asset) that may not be available,
 and synthesizing it convincingly would add a modeling layer whose realism could
-not be checked against anything. **Age is the sole covariate.**
+not be checked against anything.
+
+**The covariates this model does carry are technology and length** — 2.2,
+Weibull failure model, and 2.3, Effective scale: three-phase segments and
+length. Age is the survival model's time axis rather than a covariate on it.
+Loading would be a third covariate, and it is the one left out.
 
 If loading data does become available later, the extension is clean and
 scale-only:
@@ -115,8 +120,8 @@ comes from. At simulation time they are joined once into a single frame and
 handed to the kernel as flat arrays. **A join never appears inside the annual
 loop.**
 
-Two columns are derived from the customer table before the run starts, and 2.5,
-Customers served by type, gives the reason both are needed rather than one:
+Four columns are derived before the run starts, and 2.5, Customers served by
+type, gives the reason each is needed rather than one combined figure:
 
 | Derived | Meaning |
 |---|---|
@@ -297,12 +302,21 @@ State whichever form a test asserts in, and give the conversion beside it. This
 is the transposition the document warns about two paragraphs below, and writing
 the bridge down once is what stops it.
 
-**Stratify by technology rather than pooling.** A single AFT across all
-technologies forces one shape parameter on all of them, and differing failure
-mechanism is the reason technology entered the model at all. Fit each
-technology separately, with `log(length_ft)` as the covariate inside each.
-That also keeps the fitted output in the shape the simulator consumes:
-one `(k, lambda)` pair per technology.
+**Technology enters as indicator variables, in both the location and the
+ancillary terms.** A single accelerated-failure-time model with technology
+dummies on `mu` alone would force one shape on every technology, and differing
+failure mechanism is the reason technology entered the model at all. Putting
+the same indicators in the ancillary term — what R's `survreg` calls
+`strata()`, and what `lifelines` exposes as `ancillary` — lets shape vary too,
+which keeps this one model rather than several while still yielding one
+`(k, lambda)` pair per technology, the shape the simulator consumes.
+
+Because shape then varies by technology and the weakest-link exponent is
+`-1/k`, the length coefficient has to vary with it: the model carries a
+technology-by-`log(L / L_ref)` interaction, and the prediction is
+`gamma_t = -sigma_t` for each technology. A single pooled length coefficient
+alongside per-technology shape is internally inconsistent, and Section 6's
+recovery ladder separates rungs 4 and 5 to catch exactly that.
 
 **Implementation: write the likelihood, cross-check it against a library.**
 The likelihood above is a few lines over `scipy.optimize.minimize` on
@@ -535,7 +549,11 @@ replacement it is heading for.
 
 Ranking mode is a parameter: `rank_by: score | score_per_dollar`. The
 `score_per_dollar` variant is a greedy knapsack approximation and will usually
-beat raw score under a binding budget.
+beat raw score under a binding budget. **The divisor is planned replacement
+cost**, because that is what the budget is charged, so the ratio is value per
+budget dollar. Emergency cost would rank on value per dollar of exposure, which
+is not what the constraint is denominated in, and the difference between them
+would double-count a term already in the numerator.
 
 **The greedy stops at the first candidate that does not fit.** Ranking and then
 funding down the list is what a capital plan does operationally, and it is the
@@ -648,8 +666,10 @@ the fit toward longer life.
 block of Section 3, Configuration schema, independently of the simulation
 population:
 
-1. Draw `n_records` segments: class, technology from install year, and length,
-   by the same rules `population.py` uses (Section 3).
+1. Draw `records.n_segments` segments: class, technology from install year,
+   and length, by the same rules `population.py` uses (Section 3). The table
+   has **more rows than segments**, because step 3 chains an extra row for
+   every replacement, so the knob is named for what it controls.
 2. Draw a lifetime for the first installation from that technology's effective
    scale (2.3), and set `failure_year = install_year + lifetime`.
 3. **Chain within a segment.** If that failure falls before `study_end`, the
@@ -672,7 +692,7 @@ directly would have to fight the lifetimes that produced it.
 **Sizing is set by the fit, not by realism.** Recovering a shape parameter to a
 useful interval takes on the order of hundreds of *observed* failures in each
 technology's cell, and heavy censoring means most cable never fails inside the
-window. `n_records` is therefore chosen by running the recovery test and
+window. `records.n_segments` is therefore chosen by running the recovery test and
 raising it until the intervals are tight enough, and the number that results is
 recorded in the config with that reasoning beside it. A population whose newest
 technology has almost no observed failures cannot recover that technology's
@@ -692,11 +712,33 @@ come out non-monotone for no reason but sampling. Giving every policy the same
 underlying draws removes that noise, because the policies then differ only in
 what they replace.
 
-**Draws are indexed, not consumed in order.** The uniform behind segment `i`'s
-`j`-th installation in replication `r` is addressable directly from
-`(r, i, j)` — a counter-based generator or a per-segment substream keyed on
-those three indices. This is what makes common random numbers work under
-discrete-event sampling:
+**Every uniform is generated once in NumPy and passed in.** The draws are one
+array, `lifetime_uniforms[r, i, y]` — replication, segment, year — produced by
+`numpy.random.Generator` before any implementation runs and read by all four of
+them (Section 6.C, Benchmarks). Index `y = 0` is the left-truncated draw made
+at the start of the run; `y = 1..n_years` is the draw a replacement made in
+that year takes.
+
+**Indexing by year rather than by installation number is what makes the array
+bounded.** A segment takes at most one new lifetime per year: failures resolve
+once, a segment already replaced is not a planned candidate the same year, and
+a replacement enters service the following year (2.9). So the horizon bounds
+the draws exactly, and there is no cap to configure and no path that has to
+raise when a segment is replaced more often than someone guessed. Most of the
+array goes unread — a segment that never fails uses one of its 31 draws — and
+that waste buys the removal of a knob and an error case.
+
+This is a stronger guarantee than generating them in each language and testing
+that the streams agree. Cross-language parity of the draws stops being
+something to verify and becomes something that cannot fail, because there is
+only one set of draws. It also removes the need to implement a counter-based
+generator identically in Python, in Rust, and vectorized in NumPy `uint64` —
+three implementations of one specification, each a place for a silent
+disagreement.
+
+The array *is* the addressing scheme: what an indexed generator would compute
+from `(r, i, j)`, this looks up at `[r, i, j]`. Everything below follows from
+the index rather than from how the number was made:
 
 - Every segment's original cable draws `u(r, i, 0)`, so any segment no policy
   replaces fails at an identical time under all of them.
@@ -704,14 +746,32 @@ discrete-event sampling:
   `u(r, i, 1)`. Same technology in, same lifetime out — the realized lifetime
   is preserved and only its start date moves.
 
-Deriving one generator per replication and consuming it sequentially does
-**not** achieve this. Policies diverge from the first year, so they reach the
-same draw at different points and the streams decorrelate immediately. This
-constrains the kernel's design and cannot be retrofitted once the loop is
-written.
+Deriving one generator per replication and consuming it in order does **not**
+achieve this. Policies diverge from the first year, so they reach the same draw
+at different points and the streams decorrelate immediately. Indexing is what
+avoids that, and passing an array is the simplest way to be indexed.
 
-Policies that draw their own randomness — `random` in 2.8 — take a separate
-stream, so that changing a policy's own draws cannot perturb the failure draws.
+**Three consequences of materializing the draws:**
+
+- **Replications are processed in chunks**, and the kernel is called once per
+  chunk rather than once per policy. The full array at 1000 replications,
+  40,000 segments and a 30-year horizon is 9.9 GB; `simulation.chunk_reps` at
+  50 makes it about 500 MB. Twenty crossings per policy costs nothing — the
+  rule that matters is never calling back into Python *inside* the loop, and
+  that still holds.
+- **The draws are not written to disk.** They regenerate from
+  `simulation.seed`, which 7.1 already records beside every run, so the seed
+  *is* the persistence and it is four bytes rather than nine gigabytes.
+  Uniform random doubles have maximal entropy, so parquet would compress them
+  by almost nothing, and reading them back would be slower than making them
+  again — `numpy.random.Generator` produces this array in seconds. Storing
+  synthetic data that a recorded seed reproduces exactly is the case the "no
+  committed data blobs" rule exists for.
+- **The `random` policy takes a second array**, `policy_uniforms[r, i]` — one
+  fixed priority per segment per replication rather than a fresh permutation
+  every year. A priority that holds across years also makes it a better
+  control, since `age_threshold` is consistent year to year and this way the
+  random comparison is too.
 
 ---
 
@@ -734,6 +794,8 @@ simulation:
   seed: 20260902
   start_year: 2026      # year 0. Age is start_year - install_year, and every
                         # present value in Section 7 is measured at this year.
+  chunk_reps: 50        # replications per kernel call, sized so the draw
+                        # array of 2.11 stays around 500 MB
 
 population:
   n_segments: 40000
@@ -798,7 +860,7 @@ population:
 # population above: this table is sized by how many observed failures the
 # recovery test needs, not by how large a system is being modeled.
 records:
-  n_records: 20000
+  n_segments: 20000         # segments, not rows: chaining yields >=1 row each
   monitoring_start: 1998    # left-truncation point; no record exists before it
   study_end: 2026           # right-censoring point
 
@@ -882,10 +944,12 @@ failure that would otherwise surface as a wrong number rather than an error:
   per configured class name. A class missing from either silently contributes a
   zero-duration outage, which reads as a reliability improvement.
 - `baseline_policy` names a configured policy.
-- `records.monitoring_start` and `records.study_end` lie inside
-  `install_year_range` and are ordered, and `study_end` is at or before
-  `simulation.start_year` — a study ending after the simulation begins would
-  fit on data the simulation is supposed to predict.
+- `records.monitoring_start` is inside `install_year_range`, and
+  `monitoring_start < study_end <= simulation.start_year`. `study_end` is
+  deliberately *not* required to fall inside `install_year_range`: that range
+  bounds when cable was *installed*, and observation continues after the last
+  install year — the shipped values, installs through 2020 and a study ending
+  in 2026, are the ordinary case rather than an error.
 - Each policy's `params` carries only the keys its `name` accepts:
   `threshold_years` for `age_threshold`, `rank_by` for `risk_ranked`, and none
   for the other three. An unrecognized key is rejected rather than ignored,
@@ -1013,6 +1077,7 @@ question with a different answer.
 | Synthetic failure records | `records.py` | — | One-time, and only the fit consumes it |
 | Effective-scale reduction (conductors, length) | `weibull.py` | — | Collapses to one `(shape, scale)` per segment before the call (2.3) |
 | Customer and restoration-time rollup | `population.py` | — | Collapses to four scalars per segment; the kernel never learns customer types or restoration times exist (2.5) |
+| Random draws | `numpy.random.Generator` | — | Generated once per chunk and handed to every implementation, so cross-language parity of the draws cannot fail rather than being tested (2.11) |
 | Budget and cost escalation series | `config.py` → arrays | — | A rate written on both sides diverges silently |
 | Censored MLE and the AFT fit | `weibull.py` | — | A one-time fit over a modest table; porting it buys nothing (2.4) |
 | **Conditional `p(t)`** | `weibull.py` | `weibull.rs` | **Mirrored** |
@@ -1056,39 +1121,39 @@ out. **Never call back into Python inside the loop** — that erases the speedup
 #[pyo3(signature = (
     length_ft, customers, customer_minutes_per_failure,
     customer_minutes_per_planned, outage_cost_per_failure, class_index,
-    n_conductors, age0, shape, scale, replacement_shape, replacement_scale,
-    cost_per_ft, policy, budget, cost_escalation, emergency_multiplier,
-    mobilization_per_segment, emergency_charged_to_budget, n_classes,
-    n_years, n_reps, seed,
+    age0, shape, scale, replacement_shape, replacement_scale, cost_per_ft,
+    lifetime_uniforms, policy_uniforms, budget, cost_escalation, policy,
+    emergency_multiplier, mobilization_per_segment,
+    emergency_charged_to_budget, n_classes, n_years,
 ))]
 fn simulate(
     py: Python<'_>,
-    // per-segment arrays, all length n_segments
-    length_ft:             PyReadonlyArray1<f64>,
+    // per-segment arrays, all length n_segments, ordered by segment_id
+    length_ft:                    PyReadonlyArray1<f64>,
     customers:                    PyReadonlyArray1<f64>,  // count, for SAIFI
     customer_minutes_per_failure: PyReadonlyArray1<f64>,  // count * duration (2.5)
     customer_minutes_per_planned: PyReadonlyArray1<f64>,  // zero where back-fed
     outage_cost_per_failure:      PyReadonlyArray1<f64>,  // dollars (2.5)
-    class_index:           PyReadonlyArray1<u8>,   // the per-class result axis
-    n_conductors:          PyReadonlyArray1<u8>,   // cost only; failure uses scale
-    age0:                  PyReadonlyArray1<f64>,
-    shape:                 PyReadonlyArray1<f64>,  // effective, reduction applied
-    scale:                 PyReadonlyArray1<f64>,  // effective, reduction applied
-    replacement_shape:     PyReadonlyArray1<f64>,  // effective, for new cable
-    replacement_scale:     PyReadonlyArray1<f64>,  // effective, for new cable
-    cost_per_ft:           PyReadonlyArray1<f64>,
-    // scalars and per-year series
-    policy:          PolicyConfig,
-    budget:          PyReadonlyArray1<f64>,  // length n_years, escalation applied
-    cost_escalation: PyReadonlyArray1<f64>,  // length n_years, multiplier
-    // cost and budget scalars the returned results cannot be computed without
-    emergency_multiplier:       f64,
-    mobilization_per_segment:   f64,
-    emergency_charged_to_budget: bool,
-    n_classes:       usize,                  // sizes the third result axis
-    n_years:         usize,
-    n_reps:          usize,
-    seed:            u64,
+    class_index:                  PyReadonlyArray1<u8>,   // the per-class result axis
+    age0:                         PyReadonlyArray1<f64>,
+    shape:                        PyReadonlyArray1<f64>,  // effective, reduction applied
+    scale:                        PyReadonlyArray1<f64>,  // effective, reduction applied
+    replacement_shape:            PyReadonlyArray1<f64>,  // effective, for new cable
+    replacement_scale:            PyReadonlyArray1<f64>,  // effective, for new cable
+    cost_per_ft:                  PyReadonlyArray1<f64>,
+    // draws, generated once in NumPy and shared by every implementation (2.11)
+    lifetime_uniforms:            PyReadonlyArray3<f64>,  // (chunk, segments, n_years + 1)
+    policy_uniforms:              PyReadonlyArray2<f64>,  // (chunk, segments)
+    // per-year series, both resolved in Python
+    budget:                       PyReadonlyArray1<f64>,  // length n_years, escalated
+    cost_escalation:              PyReadonlyArray1<f64>,  // length n_years, multiplier
+    // scalars the returned results cannot be computed without
+    policy:                       PolicyConfig,
+    emergency_multiplier:         f64,
+    mobilization_per_segment:     f64,
+    emergency_charged_to_budget:  bool,
+    n_classes:                    usize,   // sizes the third result axis
+    n_years:                      usize,
 ) -> PyResult<SimResults>                    // #[pyclass] holding numpy arrays
 ```
 
@@ -1132,12 +1197,18 @@ Implementation notes:
       /// 4 random. An integer tag rather than a string, because it is compared
       /// once per candidate per year.
       kind: u8,
-      /// Eligibility age for `age_threshold` (2.8). `f64::INFINITY` for every
-      /// other policy, so one comparison serves all of them and eligibility
-      /// needs no branch on `kind`.
+      /// Eligibility age, compared as `age >= threshold_years`, so one
+      /// comparison serves every policy and eligibility needs no branch on
+      /// `kind`. The neutral value is `f64::NEG_INFINITY` — every in-service
+      /// segment eligible — for `risk_ranked`, `worst_first` and `random`,
+      /// and `f64::INFINITY` for `run_to_failure`, which funds nothing.
+      /// Backwards, three of the five policies replace nothing at all while
+      /// still running to completion.
       threshold_years: f64,
-      /// Divide the score by cost — `rank_by: score_per_dollar`. False for
-      /// every policy but `risk_ranked` (2.8).
+      /// Divide the score by **planned** replacement cost — `rank_by:
+      /// score_per_dollar`. Planned rather than emergency because that is what
+      /// the budget is charged, so the ratio is value per budget dollar. False
+      /// for every policy but `risk_ranked` (2.8).
       rank_by_cost: bool,
   }
   ```
@@ -1145,6 +1216,14 @@ Implementation notes:
   The unused fields carry explicit neutral values rather than `Option`, so the
   loop keeps one code path and the choice of neutral value is made once, in
   Python, where it can be read beside the schema it comes from.
+- **A segment's array position is its `segment_id`**, and Python sorts the
+  segment table by `segment_id` before the call. The tie-break of 2.9 is
+  `(score descending, segment_id ascending)`, so both sides have to mean the
+  same thing by it; passing the identifier implicitly, as position, is what
+  stops them tie-breaking on different keys.
+- **`n_conductors` is not passed.** It shapes the effective scale (2.3), and
+  cost per foot keys on class (2.1), so by the time these arrays are built
+  there is nothing left for the kernel to do with it.
 - **`class_index` follows the order classes appear in `configs/base.yaml`**,
   and that order is what the third result axis means. `results.py` writes the
   class *name* into the saved frame rather than the index (7.2), so nothing
@@ -1291,27 +1370,25 @@ Which comparisons share random draws, and which do not:
 | Scalar reference against batched NumPy against batched polars | Yes; all three call the same uniform function | Exact equality, at a handful of replications |
 | Any Python implementation against the Rust kernel | Uniforms match; the arithmetic does not | Statistical, plus the exact tests below |
 
-- **The uniform generator is a named function, and it is tested across
-  languages directly.** Because 2.11 makes draws addressable,
-  `uniform(seed, replication, segment, installation)` is a pure function of
-  four integers rather than a position in a stream, so it can be compared
-  bit-exactly between Python and Rust over a grid of indices for almost
-  nothing. The familiar advice against chasing bit-exact RNG parity was written
-  for stream-based generators, where matching one language's consumption order
-  in the other is the whole of the work. It does not apply to a
-  function of four integers, and choosing an addressable scheme is what changed
-  that.
-- **The lifetime draw is compared to a tight floating-point tolerance**, not
+- **The draws are identical by construction, not by test.** Every
+  implementation reads the same `lifetime_uniforms` array, generated once in
+  NumPy (2.11), so there is no random-number stream to reconcile across
+  languages and nothing here to verify.
+- **The lifetime draw is compared to a relative tolerance of `1e-12`**, not
   bit-exactly: `ln` and `powf` differ in their last bits between the two
-  languages' standard libraries.
-- **The whole-simulation comparison stays statistical**, for a specific reason
-  rather than as a hedge. Even given identical uniforms, a one-unit-in-the-last-
-  place difference in a score can flip a sort order, which changes which
-  candidate is funded last, which moves the answer by a whole segment. Compare
-  over many replications with a tolerance derived from replication standard
-  error rather than a fixed epsilon, and state whether the two runs are treated
-  as paired or independent — that choice moves the tolerance by a factor of
-  root two.
+  languages' standard libraries, and the transform is a handful of operations,
+  so anything looser would hide a real error and anything tighter would fail on
+  a compiler upgrade.
+- **The whole-simulation comparison is paired, replication against
+  replication.** Because both sides consume the same draws, replication `r` in
+  Python and replication `r` in Rust see identical lifetimes, so their results
+  should differ only where a last-place floating-point difference in a score
+  flipped a sort and changed which candidate was funded last. Assert two things
+  over 1000 replications: the mean paired difference in each reported quantity
+  is within three standard errors of zero, and fewer than one percent of
+  replications differ by more than `1e-9` relative on any of them. A two-sample
+  test treating the runs as independent would throw away the pairing and could
+  only see a difference large enough to move a whole distribution.
 - **The three Python implementations are compared exactly**, because they share
   both the uniform function and the arithmetic, so there is no reason to accept
   a tolerance. That makes those parity tests fast enough to run at five
@@ -1461,8 +1538,10 @@ the format for that.
 ### 7.3 Reading a sweep back
 
 A sweep is a directory of run directories. The reader scans them into one lazy
-frame and adds the parameters that varied — budget, policy, seed, and any
-overridden config value — into columns, reading each run's `config.yaml` to
+frame and adds the parameters that varied *between* runs — budget, seed, any
+overridden config value — into columns. `policy` is not among them: it varies
+*within* a run and is already a key column in each `results.parquet` (7.1).
+The reader reading each run's `config.yaml` to
 recover them.
 
 **Swept parameters live in the parquet columns, not only in the directory
@@ -1662,6 +1741,16 @@ app, not to Phase 7 — the app is not deliverable without it, and a wheel that
 will not install is otherwise discovered at deploy time, after everything else
 is finished.
 
+**The wheel travels inside the deploy bundle**, referenced from
+`app/requirements.txt` by relative path, rather than being fetched from an
+index. Nothing external has to exist for a deploy to work: no index, no
+credentials, no extra index URL configured on the server. It also keeps
+publishing in Phase 7 where it belongs, instead of committing to a permanent
+version number while the model is still moving — a released version cannot be
+replaced. Because the wheel is `abi3-py311`, one file covers every Python 3.11
+and later, so the Linux platform tag is the only thing that has to match the
+target.
+
 ---
 
 ## 10. Continuous integration and branch protection
@@ -1713,7 +1802,8 @@ asserting their agreement there costs one line.
 
 Keep the boundary honest, though — **an assertion belongs in `tests/` when it
 is about the package, and in a notebook when it is about the notebook.** A
-regression in `min_of_n` should fail a fast unit test, not a five-minute
+regression in the effective-scale reduction (2.3) should fail a fast unit
+test, not a five-minute
 weekly notebook run.
 
 **This is not a required check.** A weekly schedule cannot report on a pull
@@ -1759,7 +1849,8 @@ Mechanics that decide whether this suite is usable or abandoned:
   not about the app.
 - **Shrink the run for tests.** A 30-year, 1000-replication Monte Carlo does
   not belong on the critical path of a browser test; point the fixture at
-  interactive-scale defaults (a few thousand segments, tens of replications)
+  the interactive-scale defaults Section 9 states (5,000 segments, 100
+  replications)
   and pin the seed. The parity and analytical suites are what establish the
   numbers are right — this suite establishes the wiring is right.
 - **Chromium only.** Cross-browser rendering is not a risk this project
@@ -1988,6 +2079,10 @@ reopen one deliberately rather than by accident.
 | Plotting backend | Plotly for the shared figures, as an optional extra (7.5) | One backend for the notebooks and the app; the comparison overlay is read by hovering, which a static image cannot support |
 | Shiny deployment target | Posit Connect (Section 9, Shiny application) | Installs the package into its own environment, so the abi3 wheel moves into Phase 6 |
 | Baseline for "avoided" metrics | `run_to_failure`, set by `reporting.baseline_policy` (7.4) | Doing nothing is the comparison a budget request is actually argued against |
+| Random draws | Generated in NumPy and passed in, indexed `(replication, segment, year)`, never written to disk (2.11) | One set of draws for every implementation makes cross-language parity a property rather than a test, and removes the need to write one counter-based generator three times. Year indexing bounds the array exactly, since a segment takes at most one new lifetime per year, so there is no cap to tune and no path that raises. The seed reproduces them, so storing nine gigabytes of maximal-entropy doubles would buy nothing |
+| `score_per_dollar` divisor | Planned replacement cost (2.8) | It is what the budget is charged, so the ratio is value per budget dollar — the quantity the greedy is approximating under the constraint that actually binds |
+| Reference-versus-kernel parity | Paired by replication: mean difference within three standard errors of zero, and under one percent of replications differing by more than `1e-9` relative (6.B) | Both sides read the same draws, so replication `r` is directly comparable to replication `r`. Treating the runs as independent would discard the pairing and could only detect a difference big enough to move a whole distribution |
+| Wheel delivery to Posit Connect | Vendored into the deploy bundle and referenced by relative path (Section 9) | Nothing external has to exist for a deploy to work, and publishing stays in Phase 7 rather than committing to a permanent version number while the model is still moving |
 | Planned work in the indices | Excluded; reported separately as planned customer-minutes (2.6) | Reliability indices are conventionally defined over unplanned sustained interruptions, and including planned work here would put it in SAIDI but not SAIFI, leaving CAIDI dividing two different populations of outages. The cost is real, so it is reported beside the indices rather than dropped |
 | Outage duration | Customer restoration time, configured per class, with laterals longest (2.5) | The indices measure time until the customer is back on, not time to repair. A looped feeder is restored by switching in minutes and repaired afterwards; a radial lateral's customers are out for the whole job. The ordering therefore runs opposite to repair difficulty, and the same argument makes planned work non-free on laterals |
 | Ranking ties | Sort on `(score descending, segment_id ascending)` (2.9) | Scores tie constantly, and because the greedy stops at the first candidate that does not fit, which tied segment lands last decides the answer. A unique composite key makes the order total, so no implementation's sort stability can change the result |
