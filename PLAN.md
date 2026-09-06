@@ -1246,8 +1246,8 @@ cable-replacement-sim/
 │   └── plots.py                # shared figures; optional plotly extra
 ├── notebooks/                  # marimo, all plain .py
 │   ├── 01_population.py
-│   ├── 02_weibull_fitting.py
-│   ├── 03_effective_scale.py
+│   ├── 02_effective_scale.py
+│   ├── 03_weibull_fitting.py
 │   ├── 04_policy_explorer.py
 │   └── 05_parity_and_bench.py
 ├── app/                        # Shiny for Python
@@ -1983,8 +1983,8 @@ notebook needs a function, it belongs in the package.
 | Notebook | Purpose |
 |----------|---------|
 | `01_population.py` | Generate and inspect a synthetic population. Sliders for `n_segments` and class shares; show length, customer, and install-year distributions by class. Sanity check that main feeders carry far more customers than laterals. |
-| `02_weibull_fitting.py` | Censored MLE walkthrough. Slider for censoring fraction; show the likelihood surface, fitted vs true survival curve, and the recovery test result. Demonstrates *why* censoring must be handled. |
-| `03_effective_scale.py` | The effective-scale reduction derived and made visual (2.3). Arrives in Phase 1 with the reduction, ahead of the fitting notebook it is numbered beside. Sliders for `k`, `lambda`, `n` and length; overlay conductor-level and segment-level survival curves against the empirical minimum of sampled draws, and against draws for a longer segment. Shows scale shrinking by `(n * L/L_ref)^(-1/k)` while shape holds, which is the claim the recovery ladder's rung 3 tests numerically. |
+| `03_weibull_fitting.py` | Censored MLE walkthrough. Slider for censoring fraction; show the likelihood surface, fitted vs true survival curve, and the recovery test result. Demonstrates *why* censoring must be handled. |
+| `02_effective_scale.py` | The effective-scale reduction derived and made visual (2.3). Numbered ahead of the fitting notebook because the fitting notebook's third rung tests what this one establishes. Sliders for `k`, `lambda`, `n` and length; overlay conductor-level and segment-level survival curves against the empirical minimum of sampled draws, and against draws for a longer segment. Shows scale shrinking by `(n * L/L_ref)^(-1/k)` while shape holds, which is the claim the recovery ladder's rung 3 tests numerically. |
 | `04_policy_explorer.py` | Sliders for annual budget, policy, and policy params; plot SAIDI/SAIFI trajectories over 30 years, spend, and failures by class. **This is the reliability-vs-budget curve** — the deliverable the original work produced. |
 | `05_parity_and_bench.py` | Reference-vs-Rust agreement plots plus the benchmark table. Its rows are the four implementations of Section 6.5, with Rust appearing twice as its two thread configurations — scalar reference, batched NumPy, batched polars, Rust single-threaded, Rust with rayon — at a stated chunk size. The scalar reference is shown for scale and is explicitly **not** the baseline the speedup is claimed against; 6.5 rules that comparison out as flattering, and the batched NumPy row is the honest one. |
 
@@ -2345,11 +2345,11 @@ fitting to the same module rather than creating it.
 `population.py` generating the segment table from config: class assignment,
 install year from the install-volume curve, technology from install year,
 per-type customer counts, and the effective-scale reduction of 2.3 folded into
-one `(shape, scale)` pair per segment. Notebooks 01 and 03.
+one `(shape, scale)` pair per segment. Notebooks 01 and 02.
 
-Notebook 03 sits here rather than with the fitting notebook it was first
+Notebook 02 sits here rather than with the fitting notebook it was first
 grouped with, because it needs nothing from that phase — only the reduction,
-which lands here. The grouping came from both being about the same claim, and
+which lands here. It is numbered ahead of that notebook for the same reason. The grouping came from both being about the same claim, and
 the order that implies is backwards: the recovery ladder's third rung tests by
 fitting that the coefficients come back at the values the reduction predicts,
 so establishing those values independently has to come first or the fit is the
@@ -2362,7 +2362,7 @@ the whole install-year range, and reproducible seeding.
 its reduction and draw functions landed in Phase 1.
 `records.py`: the synthetic episode-grain record table. Tests: the analytical
 checks and every rung of the MLE recovery ladder (Section 6, Validation
-strategy), including the `lifelines` cross-check. Notebook 02.
+strategy), including the `lifelines` cross-check. Notebook 03.
 
 This phase is where the length claim is either confirmed or abandoned, so it
 comes before anything depends on it.

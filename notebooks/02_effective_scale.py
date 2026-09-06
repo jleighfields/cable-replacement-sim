@@ -15,7 +15,7 @@ def _():
 def _(mo):
     mo.md(
         r"""
-    # 03 — Effective scale
+    # 02 — Effective scale
 
     A three-phase segment is out when any one of its conductors fails, and a
     long segment has more of itself to fail than a short one. Both shorten the
