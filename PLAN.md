@@ -6,11 +6,11 @@ number-sections: false
 
 # Cable Replacement Simulation — Project Plan
 
-Status: **Phase 0 is partly done.** The configuration schema, the continuous
-integration workflows and the branch-protection ruleset are in place; the
-extension module has been built once and is not currently rebuildable, because
-the machine has no Rust toolchain (Section 14, First actions). No modeling code
-exists. This document is the pickup point for a fresh session — read it top to
+Status: **Phase 1 is landing.** The configuration schema and its validators,
+the random streams, the Weibull forms and the population generator exist and
+are calibrated against a run of the generator itself; notebook 01 does not yet.
+The extension module has been built once and is not currently rebuildable,
+because the machine has no Rust toolchain (Section 14, First actions). This document is the pickup point for a fresh session — read it top to
 bottom before writing code, and read the roadmap in Section 11 for what each
 phase owes.
 
@@ -235,18 +235,21 @@ segment table**, so the Rust kernel receives one `(shape, scale)` pair per
 segment and never needs to know about conductor counts or length for failure
 purposes. Both still pass through to Rust for cost calculation.
 
-**The exponent is a prediction, not a parameter.** Because the reduction is
-derived rather than fitted, an accelerated-failure-time fit that includes
-`log(n * L / L_ref)` must recover a coefficient of `-1/k` on it (2.4, Censored MLE and
-the failure-time regression). That turns a modeling assumption into an
-analytical check, and it is the kind Section 6, Validation strategy, ranks
-highest — it can be wrong in only one way.
+**One coefficient is a prediction; the other is a consistency check.** The
+conductor term is derived, so an accelerated-failure-time fit must recover
+`-1/k` on `log(n)` — exact, and not tunable. The length term carries a
+configured `beta`, so its coefficient on `log(L/L_ref)` should come back at
+`-beta/k`: not an independent prediction, but a check that the generator and
+the estimator agree about the same exponent (2.4, Censored MLE and the
+failure-time regression). The first is the kind of analytical check Section 6,
+Validation strategy, ranks highest — it can be wrong in only one way.
 
-It also gives a real diagnostic on data this model does not have. A length
-coefficient shrunk toward zero would say failures concentrate at splices and
-terminations, which are per-segment rather than per-foot. Modeling that
-honestly means a per-splice hazard and a splice count in the segment state; it
-is a documented extension, not part of this model.
+On observed data the length coefficient is a diagnostic rather than a check:
+one shrunk toward zero would say failures concentrate at splices and
+terminations rather than along the run, which is the reading `beta` below 1
+already encodes. Modeling it fully means a per-splice hazard and a splice count
+in the segment state, which is a documented extension and not part of this
+model.
 
 Independence caveat, worth a config flag: conductors in a shared trench see
 correlated soil, moisture, and loading, so iid is optimistic. Parameterize as
@@ -304,21 +307,24 @@ identifiable, and a solver will either fail or return one of infinitely many
 answers. Under reference coding `exp(mu)` is the reference technology's scale
 and each remaining coefficient is a log ratio against it.
 
-**The covariate is `log(n * L / L_ref)`, not `log(length_ft)` and not
-`log(L / L_ref)`.** Conductor count and length enter the effective scale
-through one composite (2.3), so one covariate carries both, with the same
-predicted coefficient `-1/k`. Leaving conductor count out is not a
+**Two covariates, `log(n)` and `log(L / L_ref)`, never `log(length_ft)` and
+never one composite.** Conductor count and length enter the effective scale at
+different strengths — the first exactly, the second raised to `beta` (2.3) — so
+a single composite covariate would force one coefficient on two effects and
+recover neither. Leaving conductor count out is not a
 simplification: the record table mixes single-phase and three-phase segments
 (2.10), so a fit without it pools populations whose scales differ by
 `n^(-1/k)` and biases every technology estimate. Using the ratio rather than
 raw feet makes `exp(mu)` the single-conductor, reference-length scale of the
 reference technology, directly comparable to what Section 3 configures.
 
-Under that parameterization, 2.3, Effective scale, predicts the coefficient on
-`log(n * L / L_ref)` exactly:
+Under that parameterization, 2.3, Effective scale, gives both coefficients:
 
 ```
-lambda ∝ (n * L / L_ref)^(-1/k)   =>   gamma = -1/k = -sigma
+lambda ∝ ( n * (L/L_ref)^beta )^(-1/k)
+
+    coefficient on log(n)        = -1/k     = -sigma        (exact)
+    coefficient on log(L/L_ref)  = -beta/k  = -beta*sigma   (checks beta)
 ```
 
 State whichever form a test asserts in, and give the conversion beside it. This
@@ -335,9 +341,9 @@ which keeps this one model rather than several while still yielding one
 `(k, lambda)` pair per technology, the shape the simulator consumes.
 
 Because shape then varies by technology and the weakest-link exponent is
-`-1/k`, the coefficient has to vary with it: the model carries a
-technology-by-`log(n * L / L_ref)` interaction, and the prediction is
-`gamma_t = -sigma_t` for each technology. A single pooled length coefficient
+`-1/k`, both coefficients have to vary with it: the model carries
+technology-by-covariate interactions, predicted at `-sigma_t` on `log(n)` and
+`-beta*sigma_t` on `log(L/L_ref)` for each technology. A single pooled length coefficient
 alongside per-technology shape is internally inconsistent, and Section 6's
 recovery ladder separates rungs 4 and 5 to catch exactly that.
 
@@ -687,7 +693,7 @@ Its grain is one row per **cable installation episode**:
 | `segment_id`   | which segment the episode belongs to                 |
 | `technology`   | what was installed                                   |
 | `length_ft`    | segment length |
-| `n_conductors` | 1 or 3; with `length_ft` it forms the covariate `log(n * L / L_ref)` (2.4) |
+| `n_conductors` | 1 or 3; enters the fit as `log(n)`, alongside `log(L/L_ref)` (2.4) |
 | `install_year` | when the episode began                               |
 | `entry_year`   | when observation of this episode began; left truncation point |
 | `failure_year` | when it ended, or null if still in service at study end |
@@ -893,36 +899,49 @@ Everything below is parameterized. Single YAML file validated by a pydantic
 model; the same validated object feeds the Python reference, the Rust kernel and
 the Shiny app.
 
-**The schema in `config.py` and `configs/base.yaml` is the Phase 0 version and
-is narrower than what follows** — it has Weibull parameters on the class, a
-single customer count, and one blended value of lost load. Bringing it to the
-schema below is the first implementation step (Section 14, First actions in the
-next session).
+**The block below is `configs/base.yaml` itself**, and a test asserts the two
+are identical — a schema copied into prose drifts from the file it describes,
+and this document has lost that argument before.
 
 ```yaml
+# Documented defaults for a full-size run. Sweeps override these from a driver
+# script or notebook rather than by editing this file, so what is written here
+# stays the one reproducible baseline.
+#
+# The coupled values below — the technology scales, the install-volume curve,
+# the population size, the lateral customer mix and the annual budget — were
+# calibrated together against the target in PLAN.md §13.2, Still open, by
+# running the population generator: about 2% of segments fail in the first year
+# under run-to-failure, the budget funds roughly 60% of that, and the customers
+# on terminal laterals reconcile with the system total. The value-of-lost-load
+# figures are still placeholders needing a published source.
+
 simulation:
   n_years: 30
   n_reps: 1000
   seed: 20260902
   start_year: 2026      # year 0. Age is start_year - install_year, and every
-                        # present value in Section 7 is measured at this year.
-  chunk_reps: 50        # replications per kernel call, sized so the draw
-                        # array of 2.11 stays around 500 MB
+                        # present value is measured at this year.
+  chunk_reps: 50        # replications per kernel call, sized so the draw array
+                        # stays around 500 MB
 
 population:
-  n_segments: 40000
+  n_segments: 12000
   total_customers: 95000        # system-level denominator for SAIFI/SAIDI
   customer_types: [residential, commercial, industrial]
-  length_ref_ft: 500.0          # L_ref in the effective-scale reduction (2.3)
+  length_ref_ft: 500.0    # the length the technology scales below describe
+  length_exponent: 0.5    # sub-linear: faults concentrate at accessories, not
+                          # along the run. 1.0 would be spatial-Poisson.
 
-  # Weibull parameters key on technology, not on class (2.2). Vintage ranges
-  # partition initial_age.install_year_range with no gap and no overlap, so
-  # every generated segment resolves to exactly one technology.
+  # Weibull parameters key on technology, not on class. Each pair is the scale
+  # of a SINGLE CONDUCTOR; the min-of-n reduction turns it into the per-segment
+  # value, so a three-phase segment lives n^(-1/shape) as long. Vintage ranges
+  # partition initial_age.install_year_range with no gap and no overlap.
   technologies:
-    - {name: hmwpe,   vintage: [1965, 1985], weibull: {shape: 1.8, scale: 38.0}}
-    - {name: xlpe,    vintage: [1986, 2004], weibull: {shape: 2.2, scale: 50.0}}
-    - {name: tr_xlpe, vintage: [2005, 2020], weibull: {shape: 2.6, scale: 70.0}}
-  replacement_technology: tr_xlpe   # what a replacement installs (2.2)
+    - {name: hmwpe,   vintage: [1965, 1985], weibull: {shape: 6.2, scale: 50.0}}
+    - {name: xlpe,    vintage: [1986, 2004], weibull: {shape: 6.5, scale: 57.0}}
+    - {name: tr_xlpe, vintage: [2005, 2020], weibull: {shape: 6.8, scale: 65.0}}
+  replacement_technology: tr_xlpe   # what a replacement installs
 
   classes:
     - name: main_feeder
@@ -930,6 +949,11 @@ population:
       n_conductors: 3
       length_ft:   {dist: lognormal, median: 1200, sigma: 0.45}
       cost_per_ft: 185.0
+      # Feeder cable is a larger conductor and a different product from the
+      # lateral and distribution cable of the same vintage: longer runs, more
+      # accessories and heavier thermal loading spread its failures out, so it
+      # takes a lower shape than the technology default rather than sharing it.
+      weibull_shape: 5.5
       customer_mix:
         residential: {dist: lognormal, median: 700, sigma: 0.70}
         commercial:  {dist: lognormal, median: 120, sigma: 0.90}
@@ -949,53 +973,53 @@ population:
       length_ft:   {dist: lognormal, median: 350, sigma: 0.60}
       cost_per_ft: 95.0
       customer_mix:
-        residential: {dist: lognormal, median: 12, sigma: 0.85}
-        commercial:  {dist: lognormal, median: 1,  sigma: 1.10}
+        residential: {dist: lognormal, median: 8,   sigma: 0.85}
+        commercial:  {dist: lognormal, median: 1,   sigma: 1.10}
         industrial:  {dist: lognormal, median: 0.4, sigma: 1.30}
 
   initial_age:
     dist: empirical_install_years
     install_year_range: [1965, 2020]
-    # Relative install volume at each breakpoint, linearly interpolated
-    # between them. More cable went in during the growth decades, and that
-    # shape is what puts most of the aging population in the vintages with the
-    # worst Weibull parameters.
+    # Relative volume of cable STILL IN THE GROUND at each breakpoint, not of
+    # cable ever installed: the oldest vintages have been progressively
+    # replaced already, so the surviving profile rises toward the present.
+    # Linearly interpolated between breakpoints and normalized to a
+    # distribution over integer years.
     install_volume:
-      1965: 0.4
-      1975: 1.0
-      1985: 1.0
-      1995: 0.6
-      2005: 0.5
-      2020: 0.4
+      1965: 0.002
+      1975: 0.077
+      1985: 0.214
+      1995: 0.395
+      2005: 0.613
+      2020: 1.0
 
-# The censored failure history the MLE fits (2.10). Separate from the
-# population above: this table is sized by how many observed failures the
-# recovery test needs, not by how large a system is being modeled.
+# The censored failure history the MLE fits. Separate from the population
+# above: this table is sized by how many observed failures the recovery test
+# needs, not by how large a system is being modeled.
 records:
-  n_segments: 20000         # segments, not rows: chaining yields >=1 row each
+  n_segments: 20000
   monitoring_start: 1998    # left-truncation point; no record exists before it
   study_end: 2026           # right-censoring point
 
 failure:
-  conductor_dependence: iid         # iid | shared_frailty (future)
+  conductor_dependence: iid         # iid | shared_frailty (not implemented)
 
 costs:
   emergency_multiplier: 2.5
   mobilization_per_segment: 3500.0
   escalation_rate: 0.03
-  discount_rate: 0.06               # for present-value reporting (Section 7)
+  discount_rate: 0.06               # for present-value reporting
 
 budget:
-  annual: 4.0e6
+  annual: 12.0e6
   escalation: 0.03
   emergency_charged_to_budget: false
 
 reliability:
   # Customer restoration time by class, in hours — time until the customer is
-  # back on, not time until the cable is repaired (2.5). A looped feeder is
-  # restored by switching and repaired afterwards; a radial lateral's customers
-  # are out for the whole job, so the ordering runs opposite to repair
-  # difficulty. PLACEHOLDERS.
+  # back on, not time until the cable is repaired. A looped feeder is restored
+  # by switching and repaired afterwards; a radial lateral's customers are out
+  # for the whole job, so the ordering runs opposite to repair difficulty.
   outage_hours_emergency:
     main_feeder: 1.8
     distribution_3ph: 3.0
@@ -1004,10 +1028,9 @@ reliability:
     main_feeder: 0.0        # back-fed, no interruption
     distribution_3ph: 0.5   # brief switching
     lateral_1ph: 4.0        # radial: customers out for the work
-  # Value of lost load, dollars per customer-hour, by customer type (2.5).
-  # PLACEHOLDERS. These need sourcing to published interruption-cost estimates
-  # before any result is presented, and the source and outage duration they
-  # were read at belong beside them.
+  # Value of lost load, dollars per customer-hour, by customer type.
+  # PLACEHOLDERS needing sourcing to published interruption-cost estimates,
+  # with the source and the outage duration they were read at beside them.
   voll_per_customer_hour:
     residential: 8.0
     commercial: 180.0
@@ -1130,6 +1153,7 @@ cable-replacement-sim/
 │   ├── __init__.py
 │   ├── config.py               # pydantic schema + loader
 │   ├── constants.py            # project paths, MINUTES_PER_HOUR
+│   ├── streams.py              # random streams, spawned by purpose
 │   ├── population.py           # synthetic segment table (simulation input)
 │   ├── records.py              # synthetic censored failure records (fit input)
 │   ├── weibull.py              # censored MLE, effective-scale reduction
@@ -1451,14 +1475,15 @@ you what.
 |---|---|---|---|
 | 1 | one technology, one length, right-censored | `k`, `lambda` | the censored likelihood itself |
 | 2 | rung 1 plus left truncation | `k`, `lambda` | the truncation correction |
-| 3 | one technology, lengths and conductor counts varying | `k`, `lambda`, `gamma` | the weakest-link law: `gamma` must recover `-1/k` |
+| 3 | one technology, lengths and conductor counts varying | `k`, `lambda`, `gamma`, `delta` | the weakest-link law: `gamma` recovers `-1/k` exactly, `delta` the configured `-beta/k` |
 | 4 | several technologies, common shape | per-technology scale | the technology indicators |
 | 5 | several technologies, shape varying | per-technology `k` and `lambda` | shape as an ancillary term |
 
 Rung 3 is where the length claim of 2.3, Effective scale, stops being an
 assumption. Because the reduction is derived rather than fitted, the fitted
-coefficient on `log(n * L / L_ref)` has a predicted value, and recovering it confirms
-the generator and the estimator agree about the same physics.
+coefficients on `log(n)` and `log(L/L_ref)` have predicted values, and
+recovering them confirms the generator and the estimator agree about the same
+physics.
 
 **Technology enters as indicator variables**, which keeps this one model rather
 than several. Two rungs are needed because the two ways of using indicators are
@@ -1466,13 +1491,15 @@ not equivalent:
 
 ```
 log(T) = mu + sum_{t != ref} beta_t I(tech=t)
-            + sum_t gamma_t [ I(tech=t) * log(n * L / L_ref) ]
+            + sum_t gamma_t [ I(tech=t) * log(n) ]
+            + sum_t delta_t [ I(tech=t) * log(L / L_ref) ]
             + sigma(tech) * W
 ```
 
-Reference coding on the indicators, and the covariate is the composite
-`log(n * L / L_ref)` of 2.3 rather than length alone — 2.4, Censored MLE and
-the failure-time regression, has why both matter.
+Reference coding on the indicators, and two geometry covariates rather than one
+composite — 2.4, Censored MLE and the failure-time regression, has why they
+cannot share a coefficient. The predictions are `gamma_t = -sigma_t`, exact,
+and `delta_t = -beta * sigma_t`, which checks the configured exponent.
 
 - With **common shape** (rung 4), one `sigma`, one length coefficient, and the
   prediction is `gamma = -sigma`.
@@ -2354,7 +2381,8 @@ the argument belongs beside the model it constrains.
 | Timestep | continuous failures, annual budget cycle | 2.9 |
 | Technology in the model | a dimension keying the Weibull parameters | 2.2 |
 | What `weibull.scale` means | single conductor at the reference length | 2.2 |
-| Length in the failure model | derived weakest-link reduction, fitted as a check | 2.3 |
+| Length in the failure model | weakest-link, sub-linear, with the exponent configured | 2.3 |
+| Weibull shape | technology sets it; a class may name its own for a different conductor size | 2.2 |
 | Conductor dependence | `iid` for v1, frailty deferred | 2.3 |
 | Customer counts over the horizon | static per segment | 2.5 |
 | Outage duration | restoration time per class, laterals longest | 2.5 |
@@ -2394,36 +2422,19 @@ the argument belongs beside the model it constrains.
 2. **Weibull parameters and vintage boundaries per technology.** Also
    placeholders. The vintage ranges in particular assert when each technology
    was in common use, which is a checkable historical claim.
-3. **The technology scales, `length_ref_ft` and `budget.annual` have to be
-   chosen together, against a stated calibration target.** They are not
-   independent, and the shipped placeholders are not a consistent set. With
-   `length_ref_ft: 500`, a three-phase feeder of 1200 feet carries a composite
-   `n * L / L_ref` of 7.2, so an early-technology scale of 38 years reduces to
-   an effective 12.7 — a median life of about 10 years against starting ages
-   that reach 61. Meanwhile the mean planned replacement cost across the
-   class mix is about 86,000 dollars — the lognormal *mean* length is
-   `median * exp(sigma^2/2)`, not the median, which is the arithmetic that is
-   easy to get wrong here — so an annual budget of 4 million funds roughly 46
-   segments out of 40,000 in a year. Almost the whole three-phase population
-   fails early, almost none of it can be replaced, and every policy collapses
-   onto `run_to_failure` — the reliability-against-budget curve, which is the
-   deliverable, comes out flat.
-
-   **`total_customers` is a second coupled set, and it is inconsistent too.**
-   Laterals are 55% of 40,000 segments and their customer mix has a mean near
-   20 per segment, so the leaf level alone serves some 440,000 customers
-   against a configured system total of 95,000. The double-counting argument
-   of 2.6 does not cover this: laterals are terminal, so no customer sits on
-   two of them. `population.n_segments`, the `customer_mix` medians and
-   `total_customers` have to be picked together as well.
-
-   The calibration target makes this checkable rather than a matter of taste:
-   under `run_to_failure`, the first-year failure count should be a small
-   percentage of the population rather than most of it, and the budget should
-   fund a replacement rate of the same order as the failure rate, so that the
-   policies have something to differ about. Pick the numbers by running the
-   population generator and the reference simulator and adjusting until that
-   holds, and record what was targeted alongside the values.
+3. **Whether the calibration survives the annual loop.** The coupled values —
+   the technology parameters, the install-volume curve, the population size,
+   the lateral customer mix and the annual budget — were chosen together by
+   running the population generator, and they satisfy the target at year zero:
+   about 2% of segments fail in the first year under `run_to_failure`, the
+   budget funds 59% of that so the constraint binds, and the customers on
+   terminal laterals reconcile with the system total to within 2%. What is not
+   yet checked is the other 29 years. A population that ages faster than it is
+   replaced drifts, and the failure rate at year 30 could be several times the
+   rate at year 1 — which is a finding if it is the aging story, and a
+   miscalibration if `run_to_failure` runs away. Re-check once the reference
+   simulator exists, and record the horizon behaviour beside the year-zero
+   numbers.
 4. **Discount rate.** A number is in the config; it needs a stated basis, since
    the present-value comparison is sensitive to it over a 30-year horizon.
 5. **Does the recovery ladder's rung 5 stay in the suite or move to a
