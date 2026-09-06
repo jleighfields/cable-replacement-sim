@@ -1,7 +1,8 @@
 # Cable Replacement Simulation — Project Plan
 
-Status: **planning only, no code written yet.** This document is the pickup
-point for a fresh session. Read it top to bottom before writing code.
+Status: **the Phase 0 scaffold is in place** — build pipeline, configuration
+schema, and continuous integration. No modeling code yet. This document is the
+pickup point for a fresh session. Read it top to bottom before writing code.
 
 ---
 
@@ -13,9 +14,12 @@ via PyO3/maturin**.
 
 Two goals, weighted equally:
 
-1. **Learn PyO3/maturin on a workload that genuinely justifies Rust** — the
-   simulation is sequential per asset, branches per year, and has a budget
-   constraint that resists vectorization.
+1. **Learn PyO3/maturin on a workload that genuinely justifies Rust** — each
+   replication walks 30 annual budget cycles in sequence, and each cycle
+   scores, sorts and greedily funds candidates against a constraint that
+   couples them. The honest baseline for that is a vectorized NumPy
+   implementation rather than a naive loop, and Section 6, Validation strategy,
+   records the measured ratio once there is one.
 2. **Produce a publishable portfolio artifact** in asset health / reliability
    modeling: a versioned, tested, documented package with an evaluation
    harness, benchmarks, and a synthetic data generator.
@@ -49,7 +53,10 @@ lambda_i = lambda_class * exp(-beta * (u_i - u_ref))
 ```
 
 Because that acts on scale and leaves shape unchanged, it composes directly
-with the min-of-n result in 2.3 without disturbing anything else in the model.
+with the conductor-count and length reductions in 2.3, Effective scale, without
+disturbing anything else in the model. Those two are worked examples of the
+same composition, so the mechanism this extension would use is already in place
+and tested.
 
 ---
 
@@ -57,17 +64,51 @@ with the min-of-n result in 2.3 without disturbing anything else in the model.
 
 ### 2.1 Segment as the unit of simulation
 
-The simulated entity is a **cable segment**, not a conductor. A segment has:
+The simulated entity is a **cable segment**, not a conductor. Three tables
+describe the population, joined on `segment_id`.
 
-| Attribute      | Meaning                                        |
-|----------------|------------------------------------------------|
-| `class`        | main_feeder / distribution_3ph / lateral_1ph   |
-| `n_conductors` | 1 (single-phase) or 3 (three-phase)            |
-| `length_ft`    | drives replacement cost                        |
-| `customers`    | customers served downstream, drives outage cost|
-| `age`          | years in service, resets to 0 on replacement   |
-| `shape, scale` | Weibull parameters (effective, see 2.3)        |
-| `cost_per_ft`  | planned replacement unit cost                  |
+**Segments** — one row per segment, and the state the simulation carries:
+
+| Attribute      | Meaning                                              |
+|----------------|------------------------------------------------------|
+| `segment_id`   | stable identifier; the join key for the other tables |
+| `class`        | main_feeder / distribution_3ph / lateral_1ph         |
+| `technology`   | insulation technology; keys the Weibull parameters   |
+| `n_conductors` | 1 (single-phase) or 3 (three-phase)                  |
+| `length_ft`    | drives replacement cost, and failure rate (2.3)      |
+| `install_year` | year placed in service; `age` derives from it and resets on replacement |
+
+**Customers served** — one row per segment, counts by customer type:
+
+| Attribute                              | Meaning                              |
+|----------------------------------------|--------------------------------------|
+| `segment_id`                           | join key                             |
+| `residential`, `commercial`, `industrial` | customers of each type served downstream |
+
+**Replacement cost** — one row per class, a lookup rather than per-segment data:
+
+| Attribute     | Meaning                                    |
+|---------------|--------------------------------------------|
+| `class`       | join key                                   |
+| `cost_per_ft` | planned replacement cost per foot          |
+
+Cost keys on class rather than on technology because it is the cost of
+installing new cable — conductor count, duct, and conductor size — and does not
+depend on what is being removed.
+
+The three-way split is a modeling convenience: it keeps the population
+generator's responsibilities separate and makes it obvious where each number
+comes from. At simulation time they are joined once into a single frame and
+handed to the kernel as flat arrays. **A join never appears inside the annual
+loop.**
+
+Two columns are derived from the customer table before the run starts, and 2.5,
+Customers served by type, gives the reason both are needed rather than one:
+
+| Derived                 | Meaning                                                        |
+|-------------------------|----------------------------------------------------------------|
+| `customers`             | total across types; contributes to the SAIFI and SAIDI numerators |
+| `outage_value_per_hour` | sum over types of count times that type's value of lost load    |
 
 ### 2.2 Weibull failure model
 
@@ -78,37 +119,103 @@ S(t) = exp(-(t/lambda)^k)
 h(t) = (k/lambda) * (t/lambda)^(k-1)
 ```
 
-Discrete annual failure probability, conditional on surviving to age `t`:
+Two derived forms are used, for two different jobs.
+
+**Sampling a lifetime** (2.9, Annual simulation loop) inverts the survivor
+function. For newly installed cable:
+
+```
+T = lambda * (-ln u)^(1/k),                    u ~ U(0,1)
+```
+
+For cable already in service at age `a`, the draw must be **conditional on
+having survived to `a`**, which adds the hazard already accumulated back in:
+
+```
+T = lambda * ( (a/lambda)^k - ln u )^(1/k)     remaining life = T - a
+```
+
+Drawing unconditionally for cable that is already old is the most likely
+correctness bug in this model. It makes the starting population behave as
+though it were new, which inflates every policy's apparent performance and
+does so silently — the run completes and the curves look plausible. 2.11,
+Random numbers and why policies must share them, and Section 6, Validation
+strategy, both pin this.
+
+**Scoring a candidate** (2.8, Replacement policies) uses the discrete annual
+failure probability conditional on surviving to age `t`:
 
 ```
 p(t) = 1 - S(t+1)/S(t) = 1 - exp( -[ ((t+1)/lambda)^k - (t/lambda)^k ] )
 ```
 
-This conditional form is what the simulation draws against each year. Do not
-sample lifetimes once up front — replacement resets age, so the hazard must be
-re-evaluated annually.
+A policy ranks on `p(t)` because that is what a planner knows. It never sees
+the sampled failure time; only the simulation does.
 
-### 2.3 Three-phase segments: min of 3 lifetimes  ← key modeling requirement
+**Parameters key on technology, not on class.** Insulation technology and
+vintage drive failure behavior — early solid-dielectric compounds water-tree
+and fail younger than tree-retardant ones — while class drives cost, conductor
+count, and customer exposure. Those are independent, so the configuration
+carries a Weibull pair per technology and assigns technology from install year
+(Section 3, Configuration schema).
 
-A three-phase segment is replaced when **any one** of its three conductors
-fails, so segment lifetime is `T_seg = min(T1, T2, T3)`.
+Keying on technology is also what makes replacement well defined. A replaced
+segment is new cable of the current technology, so it takes that technology's
+parameters rather than inheriting those of the cable it replaced. A model that
+resets age but keeps the old parameters understates the benefit of replacing a
+bad vintage, and replacing bad vintages is most of the benefit there is.
 
-For iid Weibull conductors with common shape `k` and scale `lambda`:
+### 2.3 Effective scale: three-phase segments and length
+
+Two separate physical arguments reduce the effective scale of a segment
+relative to a single unit-length conductor, and they have the same form.
+
+**Conductor count.** A three-phase segment is replaced when **any one** of its
+three conductors fails, so segment lifetime is `T_seg = min(T1, T2, T3)`. For
+iid Weibull conductors with common shape `k` and scale `lambda`:
 
 ```
 S_seg(t) = [exp(-(t/lambda)^k)]^n = exp(-n*(t/lambda)^k)
-         = exp(-(t/lambda_eff)^k)
+```
 
-    where   lambda_eff = lambda * n^(-1/k)
+**Length.** A segment fails when any point along it fails. If failure sites
+arrive along the cable as a spatial process with rate proportional to length, a
+segment of length `L` behaves as `L/L_ref` unit-length pieces in series:
+
+```
+S_seg(t) = exp( -(L/L_ref) * (t/lambda)^k )
+```
+
+Both are the same weakest-link argument, so they compose into one reduction:
+
+```
+S_seg(t) = exp( -(t/lambda_eff)^k )
+
+    where   lambda_eff = lambda * ( n * L/L_ref )^(-1/k)
 ```
 
 **The minimum of n iid Weibulls is Weibull with the same shape and a reduced
-scale.** Shape is unchanged; only scale shrinks by `n^(-1/k)`.
+scale**, and length enters the same way. Shape is unchanged throughout, which
+is what lets these compose at all and what keeps a single `(shape, scale)` pair
+sufficient per segment.
 
-Design decision: **apply this reduction in Python when building the segment
-table**, so the Rust kernel receives one `(shape, scale)` pair per segment and
-never needs to know about conductor counts for failure purposes. `n_conductors`
-still passes through to Rust for cost calculation.
+Design decision: **apply the whole reduction in Python when building the
+segment table**, so the Rust kernel receives one `(shape, scale)` pair per
+segment and never needs to know about conductor counts or length for failure
+purposes. Both still pass through to Rust for cost calculation.
+
+**The length exponent is a prediction, not a parameter.** Because the reduction
+is derived rather than fitted, an accelerated-failure-time fit that includes
+`log(length)` must recover a coefficient of `-1/k` on it (2.4, Censored MLE and
+the failure-time regression). That turns a modeling assumption into an
+analytical check, and it is the kind Section 6, Validation strategy, ranks
+highest — it can be wrong in only one way.
+
+It also gives a real diagnostic on data this model does not have. A length
+coefficient shrunk toward zero would say failures concentrate at splices and
+terminations, which are per-segment rather than per-foot. Modeling that
+honestly means a per-splice hazard and a splice count in the segment state; it
+is a documented extension, not part of this model.
 
 Independence caveat, worth a config flag: conductors in a shared trench see
 correlated soil, moisture, and loading, so iid is optimistic. Parameterize as
@@ -117,11 +224,11 @@ a documented hook for a frailty/copula variant. Under positive dependence the
 effective scale sits between `lambda * n^(-1/k)` (iid) and `lambda` (perfect
 dependence).
 
-Fitting note: if failure records are observed at the **segment** level for
-three-phase cable, an MLE fit recovers `lambda_eff` directly. Convert to
-conductor level with `lambda = lambda_eff * n^(1/k)`.
+Fitting note: if failure records are observed at the **segment** level, an MLE
+fit recovers `lambda_eff` directly. Convert to unit-conductor, unit-length
+terms with `lambda = lambda_eff * (n * L/L_ref)^(1/k)`.
 
-### 2.4 Censored MLE
+### 2.4 Censored MLE and the failure-time regression
 
 Right-censored log-likelihood, with `delta_i = 1` for observed failures and `0`
 for cables still in service at study end:
@@ -132,25 +239,100 @@ loglik = sum_i [ delta_i * log h(t_i) ] - sum_i H(t_i)
     where H(t) = (t/lambda)^k        (cumulative hazard)
 ```
 
-Optional left truncation (records only exist after monitoring began at age
-`a_i`): add `+ sum_i H(a_i)`.
+**Left truncation is required here, not optional.** Records exist only from
+when monitoring began, so cables that failed before that date are absent
+entirely. Ignoring this biases the fit toward longer life, because the
+population that survived to be recorded is not the population that was
+installed. With entry age `a_i`, the correction adds the hazard accumulated
+before observation began back in:
 
-Fit with `scipy.optimize.minimize` on `(log k, log lambda)` to keep parameters
-positive. **This stays in Python** — it is a one-time fit over a modest table
+```
+loglik = sum_i [ delta_i * log h(t_i) ] - sum_i [ H(t_i) - H(a_i) ]
+```
+
+**Covariates enter through scale.** The fit is an accelerated-failure-time
+model in the sense of R's `survreg`: shape is constant within a stratum and
+covariates scale `lambda`. `log(length_ft)` is the covariate that matters, and
+2.3, Effective scale, predicts its coefficient is `-1/k`.
+
+**Stratify by technology rather than pooling.** A single AFT across all
+technologies forces one shape parameter on all of them, and differing failure
+mechanism is the reason technology entered the model at all. Fit each
+technology separately, with `log(length_ft)` as the covariate inside each.
+That also keeps the fitted output in exactly the shape the simulator consumes:
+one `(k, lambda)` pair per technology.
+
+**Implementation: write the likelihood, cross-check it against a library.**
+The likelihood above is a few lines over `scipy.optimize.minimize` on
+`(log k, log lambda, beta)`, keeping parameters positive, and notebook 02
+needs it written out to plot the likelihood surface anyway. Writing it also
+keeps the parameterization identical to the simulator's, which is where this
+kind of code actually goes wrong — an AFT library's `(mu, sigma)` and this
+model's `(k, lambda)` are easy to transpose and the error is silent.
+
+The cross-check is `lifelines.WeibullAFTFitter`, in the test suite only. It
+parameterizes as `lambda(x) = exp(beta_0 + beta_1 x_1 + ...)` with shape `rho`
+constant unless given ancillary covariates, supports entry times for left
+truncation, and reports standard errors and confidence intervals. Fitting the
+same synthetic data both ways and requiring agreement is the same validation
+idea as the Python/Rust mirror, applied to the fit: two independent
+implementations disagree loudly where one implementation is silently wrong.
+It also supplies the confidence interval the recovery test needs, which
+otherwise means hand-rolling a Hessian inversion.
+
+`statsmodels` has no parametric AFT — its survival support is Cox proportional
+hazards and nonparametric estimators — so it is not an alternative here. It is
+worth naming because it is the first place most people look.
+
+This whole stage **stays in Python.** It is a one-time fit over a modest table
 and porting it to Rust buys nothing.
 
-### 2.5 Customers served
+### 2.5 Customers served, by type
 
-Customer counts must differ sharply by class:
+Customer counts differ sharply by class and by customer type, and the two
+differences matter for different reasons.
+
+By class:
 
 - **Main feeders** — large counts (hundreds to low thousands). Failures here
   dominate reliability metrics.
 - **Neighborhood distribution / laterals** — small counts (single digits to
   low tens).
 
-Generate from a heavy-tailed distribution per class (lognormal is the default);
-customer count is the primary driver of outage consequence and therefore of any
-risk-ranked policy.
+By type, the consequence of an interruption differs by orders of magnitude per
+customer-hour: an interrupted industrial customer loses far more value than an
+interrupted residential one. A single blended value of lost load applies a
+residential number to industrial load, which changes which segments a
+risk-ranked policy selects. The ranking is the deliverable, so this is modeled
+rather than averaged away.
+
+Counts are generated per segment per type from a heavy-tailed distribution
+(lognormal is the default), with a class-specific median for each type.
+
+**Two derived quantities, both required:**
+
+```
+customers             = sum over types of count
+outage_value_per_hour = sum over types of count * voll[type]
+```
+
+`customers` feeds SAIFI and SAIDI **unweighted**, because those indices count
+every customer equally by definition — weighting them by value produces a
+number that is not SAIFI and that no regulator would recognize.
+`outage_value_per_hour` feeds policy scoring (2.8), where value is exactly what
+should drive the ranking.
+
+**Both are computed in Python before the kernel is called**, the same design
+decision as the effective-scale reduction in 2.3: the kernel receives two
+scalars per segment and never learns that customer types exist. Adding a
+customer type then changes the population generator and the configuration and
+leaves the Rust side untouched.
+
+The value-of-lost-load figures in `configs/base.yaml` are placeholders. They
+need to come from published interruption-cost estimates by customer class,
+such as those behind Lawrence Berkeley National Laboratory's Interruption Cost
+Estimate (ICE) Calculator, and the config should record which source and which
+duration the numbers were taken at.
 
 ### 2.6 Reliability metrics
 
@@ -162,6 +344,10 @@ SAIDI = total customer minutes interrupted / total customers served
 CAIDI = SAIDI / SAIFI
 CMI   = sum over outages of (customers * outage_minutes)
 ```
+
+These use the unweighted `customers` count from 2.5, Customers served by type.
+Value weighting belongs to policy scoring and to the cost reporting in
+Section 7, Results, metrics, and reporting, not to the reliability indices.
 
 `total_customers` is a system-level config value, not the sum over segments
 (customers are counted downstream and would double-count across a radial path).
@@ -175,8 +361,24 @@ emergency_cost = planned_cost * emergency_multiplier
 ```
 
 Emergency (post-failure) replacement is more expensive than planned work.
-Config controls whether emergency spend draws from the same budget or a
-separate O&M bucket (`emergency_charged_to_budget`).
+
+`mobilization_per_segment` is what makes short segments expensive per foot, and
+it is also what makes the `score_per_dollar` ranking in 2.8 differ from the
+`score` ranking at all. Without it, cost is exactly proportional to length and
+dividing by cost is a rescaling.
+
+**Emergency spend draws on a separate operations bucket by default.** Capital
+and operations are usually funded separately, and keeping them separate keeps
+the budget sweep's horizontal axis purely planned capital.
+`emergency_charged_to_budget` switches this; when it is true, emergency spend
+for a year is charged **before** the planned pass is scored, so planned work
+competes for what remains. That ordering is part of the contract, not an
+implementation detail — it is what produces the reinforcing loop where failures
+crowd out prevention, and the deterministic parity test pins it.
+
+Costs accumulate in nominal terms inside the kernel and are discounted when
+reported (Section 7, Results, metrics, and reporting). Discounting a stream is
+a reduction over saved results; the loop does not need to know about it.
 
 ### 2.8 Replacement policies
 
@@ -187,12 +389,19 @@ is exhausted. Policies to implement:
 |------------------|---------------------------------------------------------------|
 | `run_to_failure` | no planned replacement; baseline                              |
 | `age_threshold`  | eligible if `age >= threshold_years`; rank by age desc        |
-| `risk_ranked`    | `p(t) * customers * outage_hours * voll + p(t) * (emerg - planned)` |
+| `risk_ranked`    | `p(t) * outage_value_per_hour * outage_hours_emergency + p(t) * (emergency_cost - planned_cost)` |
 | `worst_first`    | rank by `p(t)` alone, ignoring consequence                    |
 | `random`         | random eligible order; control for ranking value              |
 
 `worst_first` and `random` exist as controls — they isolate how much of the
 benefit comes from *consequence weighting* rather than merely from spending.
+
+**The two terms in `risk_ranked` answer different questions and both are
+needed.** The first is customer value at risk. The second is the cost the
+utility avoids by doing the work planned rather than after a failure. Without
+the second term, a lateral serving three customers is never replaced at any
+age, even where planned replacement is strictly cheaper than the emergency
+replacement it is heading for.
 
 Ranking mode is a parameter: `rank_by: score | score_per_dollar`. The
 `score_per_dollar` variant is a greedy knapsack approximation and will usually
@@ -200,25 +409,121 @@ beat raw score under a binding budget.
 
 ### 2.9 Annual simulation loop
 
-For each replication, for each year:
+Failure times are continuous and drawn once per installation; the budget cycle
+is annual, because utilities budget annually. The loop resolves the two
+against each other.
 
-1. Age every in-service segment by 1.
-2. Draw failures: `u ~ U(0,1) < p(age)` per segment.
-3. For each failure: record outage (`customers * outage_hours_emergency`),
-   charge `emergency_cost`, reset `age = 0`.
-4. Planned replacement: score eligible segments, sort, fund greedily until the
-   annual budget is exhausted, reset `age = 0` for each funded segment.
-5. Accumulate per-year metrics.
+For each replication:
 
-Step 4 is the sequential, budget-constrained, non-vectorizable core — the
-reason this workload suits Rust.
+**Initialize.** For every segment, draw a failure time conditional on its
+starting age, using the left-truncated form in 2.2. Segments start partway
+through their lives, and drawing unconditionally here is the bug that model
+warns about.
+
+Then for each year `y`:
+
+1. **Resolve failures** whose failure time falls in `[y, y+1)`. Record the
+   outage (`customers * outage_hours_emergency`), charge `emergency_cost`, and
+   replace the segment immediately: `age = 0`, the parameters of
+   `replacement_technology`, and a fresh lifetime drawn from the next
+   installation index for that segment (2.11).
+2. **Planned replacement.** Score eligible segments, sort, and fund greedily
+   until the annual budget is exhausted. Each funded segment resets the same
+   way as a failed one: `age = 0`, replacement technology, fresh lifetime.
+3. **Accumulate** per-year metrics, keyed by segment class.
+
+Failures resolve before planned work so that a segment which failed this year
+is not also a planned candidate in the same year. Where
+`emergency_charged_to_budget` is true, step 1's spend reduces the budget step 2
+scores against (2.7, Costs).
+
+Step 2 is the sequential, budget-constrained core — the reason this workload
+suits Rust. Drawing lifetimes rather than evaluating hazard every segment-year
+removes most of the arithmetic (roughly one draw per segment per replication
+instead of thirty hazard evaluations), which leaves the scoring, sort, and
+greedy fill as the dominant cost. Section 6, Validation strategy, records what
+that is actually worth once it is measured.
+
+**No event queue.** Because the budget cycle is annual, one `failure_time` per
+segment plus a scan per year is enough. A priority queue would be machinery
+for an ordering nothing consumes.
+
+### 2.10 Observed failure records, and the table the MLE fits
+
+Censored MLE (2.4) fits a different table from the one the simulation carries.
+Its grain is one row per **cable installation episode**:
+
+| Column         | Meaning                                              |
+|----------------|------------------------------------------------------|
+| `segment_id`   | which segment the episode belongs to                 |
+| `technology`   | what was installed                                   |
+| `length_ft`    | the regression covariate (2.3)                       |
+| `install_year` | when the episode began                               |
+| `entry_year`   | when observation of this episode began; left truncation point |
+| `failure_year` | when it ended, or null if still in service at study end |
+
+`delta_i = 1` where `failure_year` is present and `0` where it is null.
+
+**The grain is the episode, not the segment.** A segment installed in 1972,
+failed and replaced in 1998, and still in service today contributes two
+observations: one uncensored lifetime of 26 years, and one right-censored
+lifetime measured from 1998. Collapsing that to one row per segment either
+discards the failure or mismeasures the age at which it happened, and both bias
+the fit toward longer life.
+
+Fitting per technology needs enough failures in each technology's cell. A
+population whose newest technology has almost no observed failures cannot
+recover that technology's parameters, and the MLE recovery test in Section 6,
+Validation strategy, is what surfaces it rather than a plausible-looking
+number.
+
+### 2.11 Random numbers, and why policies must share them
+
+The deliverable is a comparison — reliability against budget, and one policy
+against another. What gets read off those curves is a *difference* between
+runs, so the quantity that has to be small is the variance of the difference,
+not the variance of either run.
+
+**Common random numbers.** Independent draws per run make that difference carry
+the noise of both runs, and at plausible replication counts a budget sweep can
+come out non-monotone for no reason but sampling. Giving every policy the same
+underlying draws removes that noise, because the policies then differ only in
+what they replace.
+
+**Draws are indexed, not consumed in order.** The uniform behind segment `i`'s
+`j`-th installation in replication `r` is addressable directly from
+`(r, i, j)` — a counter-based generator or a per-segment substream keyed on
+those three indices. This is what makes common random numbers work under
+discrete-event sampling:
+
+- Every segment's original cable draws `u(r, i, 0)`, so any segment no policy
+  replaces fails at an identical time under all of them.
+- When policies diverge, segment `i`'s second installation still draws
+  `u(r, i, 1)`. Same technology in, same lifetime out — the realized lifetime
+  is preserved and only its start date moves.
+
+Deriving one generator per replication and consuming it sequentially does
+**not** achieve this. Policies diverge from the first year, so they reach the
+same draw at different points and the streams decorrelate immediately. This
+constrains the kernel's design and cannot be retrofitted once the loop is
+written.
+
+Policies that draw their own randomness — `random` in 2.8 — take a separate
+stream, so that changing a policy's own draws cannot perturb the failure draws.
 
 ---
 
 ## 3. Configuration schema
 
 Everything below is parameterized. Single YAML file validated by a pydantic
-model; the same validated object feeds the Python oracle and the Rust kernel.
+model; the same validated object feeds the Python oracle, the Rust kernel and
+the Shiny app.
+
+**The schema in `config.py` and `configs/base.yaml` is the Phase 0 version and
+is narrower than what follows** — it has Weibull parameters on the class, a
+single customer count, and one blended value of lost load. Bringing it to the
+schema below is the first implementation step (Section 14, First actions in the
+next session).
 
 ```yaml
 simulation:
@@ -229,32 +534,61 @@ simulation:
 population:
   n_segments: 40000
   total_customers: 95000        # system-level denominator for SAIFI/SAIDI
+  customer_types: [residential, commercial, industrial]
+  length_ref_ft: 500.0          # L_ref in the effective-scale reduction (2.3)
+
+  # Weibull parameters key on technology, not on class (2.2). Vintage ranges
+  # partition initial_age.install_year_range with no gap and no overlap, so
+  # every generated segment resolves to exactly one technology.
+  technologies:
+    - {name: hmwpe,   vintage: [1965, 1985], weibull: {shape: 1.8, scale: 38.0}}
+    - {name: xlpe,    vintage: [1986, 2004], weibull: {shape: 2.2, scale: 50.0}}
+    - {name: tr_xlpe, vintage: [2005, 2020], weibull: {shape: 2.6, scale: 70.0}}
+  replacement_technology: tr_xlpe   # what a replacement installs (2.2)
+
   classes:
     - name: main_feeder
       share: 0.12
       n_conductors: 3
       length_ft:   {dist: lognormal, median: 1200, sigma: 0.45}
-      customers:   {dist: lognormal, median: 850,  sigma: 0.70}
       cost_per_ft: 185.0
-      weibull:     {shape: 2.4, scale: 55.0}     # conductor-level
+      customer_mix:
+        residential: {dist: lognormal, median: 700, sigma: 0.70}
+        commercial:  {dist: lognormal, median: 120, sigma: 0.90}
+        industrial:  {dist: lognormal, median: 4,   sigma: 1.10}
     - name: distribution_3ph
       share: 0.33
       n_conductors: 3
       length_ft:   {dist: lognormal, median: 600, sigma: 0.50}
-      customers:   {dist: lognormal, median: 95,  sigma: 0.80}
       cost_per_ft: 140.0
-      weibull:     {shape: 2.2, scale: 50.0}
+      customer_mix:
+        residential: {dist: lognormal, median: 85, sigma: 0.80}
+        commercial:  {dist: lognormal, median: 9,  sigma: 1.00}
+        industrial:  {dist: lognormal, median: 1,  sigma: 1.20}
     - name: lateral_1ph
       share: 0.55
       n_conductors: 1
       length_ft:   {dist: lognormal, median: 350, sigma: 0.60}
-      customers:   {dist: lognormal, median: 12,  sigma: 0.85}
       cost_per_ft: 95.0
-      weibull:     {shape: 2.0, scale: 45.0}
+      customer_mix:
+        residential: {dist: lognormal, median: 12, sigma: 0.85}
+        commercial:  {dist: lognormal, median: 1,  sigma: 1.10}
+        industrial:  {dist: lognormal, median: 0,  sigma: 1.30}
+
   initial_age:
     dist: empirical_install_years
     install_year_range: [1965, 2020]
-    weights: build_out_curve        # more cable installed in growth decades
+    # Relative install volume at each breakpoint, linearly interpolated
+    # between them. More cable went in during the growth decades, and that
+    # shape is what puts most of the aging population in the vintages with the
+    # worst Weibull parameters.
+    install_volume:
+      1965: 0.4
+      1975: 1.0
+      1985: 1.0
+      1995: 0.6
+      2005: 0.5
+      2020: 0.4
 
 failure:
   conductor_dependence: iid         # iid | shared_frailty (future)
@@ -263,6 +597,7 @@ costs:
   emergency_multiplier: 2.5
   mobilization_per_segment: 3500.0
   escalation_rate: 0.03
+  discount_rate: 0.06               # for present-value reporting (Section 7)
 
 budget:
   annual: 4.0e6
@@ -272,7 +607,14 @@ budget:
 reliability:
   outage_hours_emergency: 4.5
   outage_hours_planned: 0.0
-  voll_per_customer_hour: 8.0
+  # Value of lost load, dollars per customer-hour, by customer type (2.5).
+  # PLACEHOLDERS. These need sourcing to published interruption-cost estimates
+  # before any result is presented, and the source and outage duration they
+  # were read at belong beside them.
+  voll_per_customer_hour:
+    residential: 8.0
+    commercial: 180.0
+    industrial: 1400.0
 
 policies:
   - {name: run_to_failure}
@@ -280,10 +622,28 @@ policies:
   - {name: risk_ranked,   params: {rank_by: score_per_dollar}}
   - {name: worst_first}
   - {name: random}
+
+reporting:
+  baseline_policy: run_to_failure   # what "avoided" is measured against
 ```
 
-Sweeps (budget levels, thresholds) are driven by overriding config values from
-a driver script or notebook, not by editing the base file.
+Validators the schema needs beyond field types and ranges, each guarding a
+failure that would otherwise surface as a wrong number rather than an error:
+
+- Class shares sum to 1.
+- Every key of `customer_mix` and of `voll_per_customer_hour` appears in
+  `customer_types`, and every type in `customer_types` appears in both. A type
+  configured in one and missing from the other silently contributes zero.
+- Technology vintage ranges partition `install_year_range` with no gap and no
+  overlap, so technology assignment is total and unambiguous.
+- `replacement_technology` names a configured technology.
+- `baseline_policy` names a configured policy.
+- `install_volume` breakpoints lie inside `install_year_range` and include both
+  endpoints, so interpolation never extrapolates.
+
+Sweeps override config values from a driver script or notebook, not by editing
+the base file. That is also what keeps `configs/base.yaml` the one reproducible
+baseline the results are compared against.
 
 ---
 
@@ -319,24 +679,28 @@ cable-replacement-sim/
 │       └── report.md
 ├── configs/
 │   └── base.yaml
+├── results/                    # gitignored; one directory per run (Section 7)
 ├── src/                        # Rust crate
 │   ├── lib.rs                  # PyO3 module definition
-│   ├── weibull.rs              # hazard, conditional annual p(t)
+│   ├── weibull.rs              # conditional p(t), left-truncated lifetime draw
 │   ├── policy.rs               # scoring + greedy budget allocation
 │   └── sim.rs                  # replication loop
 ├── python/cablesim/
 │   ├── __init__.py
 │   ├── config.py               # pydantic schema + loader
-│   ├── population.py           # synthetic segment generator
-│   ├── weibull.py              # censored MLE, min-of-n helpers
-│   ├── reference.py            # pure-Python oracle simulator
-│   ├── metrics.py              # SAIFI / SAIDI / CAIDI / CMI
+│   ├── constants.py            # fixed values; overriding one is a bug
+│   ├── population.py           # synthetic segment table (simulation input)
+│   ├── records.py              # synthetic censored failure records (fit input)
+│   ├── weibull.py              # censored MLE, effective-scale reduction
 │   ├── policies.py             # scoring functions (shared definitions)
-│   └── constants.py            # fixed values; overriding one is a bug
+│   ├── reference.py            # pure-Python oracle simulator
+│   ├── metrics.py              # SAIFI / SAIDI / CAIDI / CMI, discounting
+│   ├── results.py              # run directory layout, write and read
+│   └── plots.py                # shared figures; optional plotly extra
 ├── notebooks/                  # marimo, all plain .py
 │   ├── 01_population.py
 │   ├── 02_weibull_fitting.py
-│   ├── 03_three_phase.py
+│   ├── 03_effective_scale.py
 │   ├── 04_policy_explorer.py
 │   └── 05_oracle_and_bench.py
 ├── app/                        # Shiny for Python
@@ -347,11 +711,15 @@ cable-replacement-sim/
 │   ├── __init__.py             # required, and in every subdirectory
 │   ├── conftest.py
 │   ├── helpers.py
+│   ├── test_config.py
+│   ├── test_population.py
 │   ├── test_weibull.py
 │   ├── test_mle_recovery.py
-│   ├── test_min_of_n.py
+│   ├── test_effective_scale.py
 │   ├── test_policies.py
 │   ├── test_oracle_parity.py
+│   ├── test_results.py
+│   ├── test_plots.py
 │   ├── test_notebooks.py       # marker: notebooks
 │   └── app/                    # marker: app (Playwright)
 │       ├── __init__.py
@@ -361,90 +729,390 @@ cable-replacement-sim/
     └── bench_sim.py
 ```
 
+`population.py` and `records.py` both generate synthetic data from config and a
+seed, and they are separate because they produce different tables for different
+consumers. `population.py` emits the segment table the simulation runs on, and
+its size is set by how large a system is being modeled. `records.py` emits the
+episode-grain failure history the MLE fits (2.10), and its size is set by how
+many observed failures the recovery test needs to have power — a different
+question with a different answer.
+
 ---
 
 ## 5. Rust kernel contract
+
+### 5.1 What is implemented where
+
+| Concern | Python | Rust | Why it lives there |
+|---|---|---|---|
+| Config load and validation | `config.py` | — | Pydantic is the single source of truth; Rust receives resolved values, never a schema |
+| Synthetic segment population | `population.py` | — | One-time, and it vectorizes well |
+| Synthetic failure records | `records.py` | — | One-time, and only the fit consumes it |
+| Effective-scale reduction (conductors, length) | `weibull.py` | — | Collapses to one `(shape, scale)` per segment before the call (2.3) |
+| Value-weighted customer rollup | `population.py` | — | Collapses to one scalar per segment; the kernel never learns customer types exist (2.5) |
+| Budget and cost escalation series | `config.py` → arrays | — | A rate written on both sides diverges silently |
+| Censored MLE and the AFT fit | `weibull.py` | — | A one-time fit over a modest table; porting it buys nothing (2.4) |
+| **Conditional `p(t)`** | `weibull.py` | `weibull.rs` | **Mirrored** |
+| **Left-truncated lifetime draw** | `weibull.py` | `weibull.rs` | **Mirrored** |
+| **Policy scoring** | `policies.py` | `policy.rs` | **Mirrored** |
+| **Greedy budget allocation** | `reference.py` | `policy.rs` | **Mirrored** |
+| **Annual replication loop** | `reference.py` | `sim.rs` | **Mirrored** |
+| Parallelism over replications | — | `sim.rs` (rayon) | The oracle stays single-threaded and readable; it is the reference, not the fast path |
+| Reliability metrics and discounting | `metrics.py` | — | Ratios derived once from returned counts, so both implementations are compared on what they compute (7.4) |
+| Run persistence and sweep reading | `results.py` | — | The kernel does no I/O |
+| Figures | `plots.py` | — | — |
+
+Three rules decide that table, and each is a rule rather than a preference:
+
+- **The five mirrored rows are the validation strategy, not duplication.**
+  Deleting the Python side deletes the only thing that validates the Rust side.
+  Section 6.B, Oracle parity, is what the mirror exists for, and a change to
+  one side is incomplete until the other has been read.
+- **Anything that reduces to a per-segment number is reduced in Python before
+  the call.** Conductor count, length, customer types and escalation all
+  collapse to arrays the kernel reads without interpreting. That is what keeps
+  the boundary narrow enough to cross once, and it means adding a customer type
+  or a technology touches no Rust.
+- **The kernel does no I/O and never calls back into Python.** It takes arrays
+  and returns arrays. Everything about files, formats and figures is on the
+  Python side of the boundary.
+
+### 5.2 The call
 
 One call across the FFI boundary per policy per sweep point. Arrays in, arrays
 out. **Never call back into Python inside the loop** — that erases the speedup.
 
 ```rust
 #[pyfunction]
-#[pyo3(signature = (segments, params, policy, budget, n_years, n_reps, seed))]
+#[pyo3(signature = (
+    length_ft, customers, outage_value_per_hour, class_index, n_conductors,
+    age0, shape, scale, replacement_shape, replacement_scale, cost_per_ft,
+    policy, budget, cost_escalation, n_years, n_reps, seed,
+))]
 fn simulate(
     py: Python<'_>,
     // per-segment arrays, all length n_segments
-    length_ft:    PyReadonlyArray1<f64>,
-    customers:    PyReadonlyArray1<f64>,
-    n_conductors: PyReadonlyArray1<u8>,
-    age0:         PyReadonlyArray1<f64>,
-    shape:        PyReadonlyArray1<f64>,   // effective, min-of-n applied
-    scale:        PyReadonlyArray1<f64>,   // effective, min-of-n applied
-    cost_per_ft:  PyReadonlyArray1<f64>,
-    // scalars / config
-    policy:  PolicyConfig,                 // #[pyclass] or plain struct via FromPyObject
-    budget:  PyReadonlyArray1<f64>,        // length n_years
-    n_years: usize,
-    n_reps:  usize,
-    seed:    u64,
-) -> PyResult<SimResults>                  // #[pyclass] holding numpy arrays
+    length_ft:             PyReadonlyArray1<f64>,
+    customers:             PyReadonlyArray1<f64>,  // unweighted total (2.5)
+    outage_value_per_hour: PyReadonlyArray1<f64>,  // value-weighted (2.5)
+    class_index:           PyReadonlyArray1<u8>,   // the per-class result axis
+    n_conductors:          PyReadonlyArray1<u8>,   // cost only; failure uses scale
+    age0:                  PyReadonlyArray1<f64>,
+    shape:                 PyReadonlyArray1<f64>,  // effective, reduction applied
+    scale:                 PyReadonlyArray1<f64>,  // effective, reduction applied
+    replacement_shape:     PyReadonlyArray1<f64>,  // effective, for new cable
+    replacement_scale:     PyReadonlyArray1<f64>,  // effective, for new cable
+    cost_per_ft:           PyReadonlyArray1<f64>,
+    // scalars and per-year series
+    policy:          PolicyConfig,
+    budget:          PyReadonlyArray1<f64>,  // length n_years, escalation applied
+    cost_escalation: PyReadonlyArray1<f64>,  // length n_years, multiplier
+    n_years:         usize,
+    n_reps:          usize,
+    seed:            u64,
+) -> PyResult<SimResults>                    // #[pyclass] holding numpy arrays
 ```
 
-`SimResults` returns `(n_reps, n_years)` arrays: `failures`, `cmi`,
-`planned_replacements`, `planned_spend`, `emergency_spend`, plus optional
-final `ages`.
+`SimResults` returns `(n_reps, n_years, n_classes)` arrays: `failures`, `cmi`,
+`planned_replacements`, `planned_spend`, `emergency_spend`, plus optional final
+`ages`.
 
 Implementation notes:
 
+- **The class axis is in the return, not summed away.** The app plots failures
+  by segment class, and a system total cannot be decomposed after the fact.
+- **Replacement parameters arrive per segment, already reduced.** A replaced
+  segment takes `replacement_technology`'s Weibull pair (2.2), but the
+  effective-scale reduction of 2.3 depends on that segment's own conductor
+  count and length, so the reduction is applied per segment in Python for the
+  replacement case exactly as it is for the initial case.
+- **Both escalation series are resolved in Python.** `budget` arrives with
+  `budget.escalation` already applied and `cost_escalation` as a per-year
+  multiplier. Neither belongs as a scalar rate the kernel re-derives — a rate
+  written on the pydantic model and again in Rust diverges silently.
+- **`PolicyConfig` is built in exactly one place**, a single function in
+  `policies.py` mapping the validated `PolicySpec` onto the Rust struct. The
+  Rust struct carries no default values of its own; a default written on both
+  sides is the defect the parity test would have to catch, and only the
+  deterministic case would.
 - Wrap the compute in `py.allow_threads(|| ...)` and parallelize replications
   with `rayon`. Replications are independent — this is the natural axis.
-- Seed **per replication** (`seed + rep_index`) via `StdRng::seed_from_u64` so
-  results are reproducible and order-independent under parallelism. Do not
-  share one RNG across threads.
+- **Uniforms are addressed by `(replication, segment, installation_index)`**,
+  not drawn from a stream consumed in order. 2.11, Random numbers and why
+  policies must share them, is why this is required rather than preferred, and
+  it is the one design decision here that cannot be retrofitted after the loop
+  is written. It also makes results independent of the order replications
+  complete in under rayon, without needing a generator per replication.
+- **The initial draw is left-truncated** at each segment's starting age (2.2).
+  Getting this wrong produces a run that completes and curves that look
+  plausible.
 - Keep the scoring function in `policy.rs` mirroring `python/cablesim/policies.py`
   exactly. Any divergence shows up in the parity test.
+- Flat arrays rather than a struct per segment: arrays keep the boundary
+  crossing to one call and let each column arrive zero-copy, where a list of
+  per-segment objects would be built and torn down on every call.
 
 ---
 
 ## 6. Validation strategy
 
-Three layers, in order of authority:
+Three layers, in order of authority.
 
-**A. Analytical checks** (fastest, strongest)
-- `min_of_n` scale reduction matches the closed form `lambda * n^(-1/k)`;
-  verify empirically that sampled minima of 3 Weibull draws match a Weibull
-  with the reduced scale (KS test).
-- Conditional annual probability `p(t)` integrates to the correct survival
+### A. Analytical checks (fastest, strongest)
+
+An analytical check is worth more than a parity check because it can be wrong
+in only one way.
+
+- **Effective-scale reduction** matches the closed form
+  `lambda * (n * L/L_ref)^(-1/k)` (2.3). Verify empirically that sampled minima
+  of 3 Weibull draws match a Weibull with the reduced scale, and that sampled
+  lifetimes for a segment of length `L` match the length-reduced scale, by KS
+  test in both cases.
+- **The left-truncated lifetime draw** reproduces the conditional survivor
+  function. Draw remaining lifetimes for a cohort at age `a`, and confirm the
+  empirical survival of `a + remaining` matches `S(t)/S(a)`. This is the check
+  that catches the drawing-unconditionally bug in 2.2, which otherwise produces
+  a run that completes and curves that look plausible.
+- **Conditional annual probability `p(t)`** integrates to the correct survival
   curve over a 30-year horizon.
-- **MLE recovery**: simulate lifetimes from known `(k, lambda)`, apply
-  right-censoring, refit, and confirm parameter recovery within CI. This is
-  what validates the fitting code, and it is the test that would have caught
-  real errors in the original work.
 
-**B. Oracle parity** (Python reference vs Rust)
+### The MLE recovery ladder
+
+**MLE recovery is the test that earns its keep**: simulate lifetimes from known
+parameters, censor and truncate them, refit, and confirm recovery. It is built
+as a ladder so that each rung adds exactly one thing that can be wrong. A
+single test of the full model tells you something is broken; the ladder tells
+you what.
+
+| Rung | Data generated with | Recovers | What it isolates |
+|---|---|---|---|
+| 1 | one technology, one length, right-censored | `k`, `lambda` | the censored likelihood itself |
+| 2 | rung 1 plus left truncation | `k`, `lambda` | the truncation correction |
+| 3 | one technology, lengths varying | `k`, `lambda`, `beta_len` | the weakest-link law: `beta_len` must recover `-1/k` |
+| 4 | several technologies, common shape | per-technology scale | the technology indicators |
+| 5 | several technologies, shape varying | per-technology `k` and `lambda` | shape as an ancillary term |
+
+Rung 3 is where the length claim of 2.3, Effective scale, stops being an
+assumption. Because the reduction is derived rather than fitted, the fitted
+coefficient on `log(length)` has a predicted value, and recovering it confirms
+the generator and the estimator agree about the same physics.
+
+**Technology enters as indicator variables**, which keeps this one model rather
+than several. Two rungs are needed because the two ways of using indicators are
+not equivalent:
+
+```
+log(T) = mu + sum_t beta_t I(tech=t)
+            + sum_t gamma_t [ I(tech=t) * log(L/L_ref) ]
+            + sigma(tech) * W
+```
+
+- With **common shape** (rung 4), one `sigma`, one length coefficient, and the
+  prediction is `gamma = -sigma`.
+- With **shape varying by technology** (rung 5), the indicators appear in the
+  ancillary term as well, and then the length coefficient must vary by
+  technology too — `gamma_t = -sigma_t` for each `t`, because the weakest-link
+  exponent is `-1/k` and `k` now differs. A single pooled length coefficient
+  alongside per-technology shape is internally inconsistent, and rung 5 is
+  where that shows up.
+
+**The generator and the estimator must agree about whether shape varies.**
+Fitting a common-shape model to data generated with per-technology shape
+recovers a compromise and biases every scale estimate, and the failure looks
+like a tolerance problem rather than a specification error. Each rung generates
+its own data to match its own specification.
+
+Two further requirements on how these are asserted:
+
+- **Assert the true value lies inside the fitted confidence interval**, at a
+  pinned seed — not that the point estimate is within a fixed epsilon. An
+  epsilon either flakes or is loose enough to prove nothing.
+- **The coverage study belongs in notebook 02**, not in the suite. Refitting a
+  hundred times to confirm roughly 95% of intervals contain the truth is a
+  figure worth showing and minutes too slow to gate a merge.
+
+**Sample size is set by power, not by realism.** Recovering a shape parameter
+to a useful interval takes on the order of hundreds of *observed* failures per
+technology, and heavy censoring means most cable never fails inside the study
+window. The synthetic record table is therefore sized by what the fit needs
+(4, Repo layout, on why `records.py` is separate from `population.py`).
+
+**An independent implementation cross-checks the fit.**
+`lifelines.WeibullAFTFitter` fits the same data in the test suite and must
+agree. This is the same idea as the Python/Rust mirror applied to the
+estimator: two implementations disagree loudly where one is silently wrong, and
+the failure it is aimed at is a parameterization transposed between an AFT
+library's `(mu, sigma)` and this model's `(k, lambda)`.
+
+### B. Oracle parity (Python reference vs Rust)
+
 - Do **not** chase bit-exact RNG parity between Python and Rust. Matching
   random streams across languages is a rabbit hole and proves little.
 - Compare **statistically**: over many replications, failure counts, SAIDI,
-  SAIFI, spend, and survival curves must agree within Monte Carlo error.
-  Use a tolerance derived from replication standard error, not a fixed epsilon.
-- Add one **deterministic** parity test with hazard forced to 0 or 1, which
-  removes randomness entirely and checks the policy/budget logic exactly. This
-  is where greedy-allocation bugs actually surface.
+  SAIFI, spend, and survival curves must agree within Monte Carlo error. Use a
+  tolerance derived from replication standard error, not a fixed epsilon.
+- Add one **deterministic** parity test with lifetimes forced to zero or to
+  beyond the horizon, which removes randomness entirely and checks the policy
+  and budget logic exactly. This is where greedy-allocation bugs actually
+  surface, and it is the only test that pins the emergency-spend ordering of
+  2.7, Costs, when `emergency_charged_to_budget` is true.
+- **Parity is checked on saved runs**, not only in memory. Two runs written to
+  disk (Section 7, Results, metrics, and reporting) can be diffed after the
+  fact, which is what makes a failure diagnosable rather than merely red.
 
-**C. Benchmarks** (honest baselines)
+### C. Benchmarks (honest baselines)
+
 - Baseline must be a **properly vectorized NumPy oracle**, not a naive Python
-  loop. Reporting a 200x speedup against bad Python when NumPy gives 40x for
-  free is exactly the self-deception to avoid.
+  loop. Reporting a large speedup against bad Python when NumPy gives most of
+  it for free is exactly the self-deception to avoid. The honest baseline
+  batches replications as a second array axis, so the year loop runs 30 times
+  rather than 30,000, and vectorizes the greedy fill as sort, cumulative sum,
+  and search.
 - Report single-threaded Rust and rayon-parallel Rust separately, so the
   language win and the parallelism win are not conflated.
 - Always build with `maturin develop --release` before benchmarking; debug
   builds are slow enough to make timing numbers meaningless. Record the
   measured ratio here once Phase 5 produces one — nothing has been measured
   yet, so no number is quoted.
+- Drawing lifetimes rather than evaluating hazard every segment-year (2.9)
+  removes most of the floating-point work and leaves the scoring, sort, and
+  greedy fill dominant. That changes what the benchmark is measuring, and it is
+  a reason to measure rather than to predict.
 
 ---
 
-## 7. Marimo notebooks
+## 7. Results, metrics, and reporting
+
+The kernel returns arrays. Everything between those arrays and a figure — how a
+run is stored, how a sweep is read back, what is reduced, and what is plotted —
+lives in the package, because three front ends need the same answers: the
+notebooks, the Shiny app, and batch driver scripts. A figure written three
+times is three figures that drift.
+
+### 7.1 What a run writes
+
+One directory per run:
+
+```
+results/<run_id>/
+├── config.yaml      # the effective config, dumped from the validated model
+├── manifest.json    # run identity and provenance
+└── results.parquet  # per-replication results
+```
+
+- **`config.yaml` is dumped from the validated pydantic object, not copied from
+  the input file.** A driver script overriding budget levels never touches
+  `configs/base.yaml`, so copying the input would record settings the run did
+  not use — which is the failure this convention exists to prevent.
+- **`manifest.json`** carries what a result cannot be interpreted without: run
+  id, UTC timestamp, package version, git commit and whether the working tree
+  was dirty, which implementation produced it (`oracle` or `kernel`), the Rust
+  build profile where it was the kernel, thread count, and wall time. A timing
+  number without its build profile means nothing, which is the same point
+  Section 6, Validation strategy, makes about benchmarks.
+- **`run_id` is a UTC timestamp.** It orders runs and does not collide within a
+  sweep driven from one process.
+
+### 7.2 The grain of what is saved
+
+`results.parquet` holds one row per `(policy, replication, year, class)`, with
+one column per metric — failures, customer-minutes interrupted, planned
+replacements, planned spend, emergency spend.
+
+**Per replication, not summary statistics.** Two things need the replication
+axis and cannot recover it from a mean: the Monte Carlo bands the app plots
+(Section 9, Shiny application), and the paired difference between two policies
+under common random numbers (2.11). A saved mean discards the pairing, and the
+paired difference is the entire reason for holding the draws fixed.
+
+**Class stays a key column.** The app plots failures by segment class, which is
+why the kernel returns that axis rather than a system total.
+
+Size is not a constraint at this grain: five policies, 1000 replications, 30
+years and three classes is 450,000 rows, which parquet stores in a few
+megabytes.
+
+**Parquet for storage, CSV only for export.** Parquet preserves dtypes and the
+schema, compresses, and can be scanned lazily so a sweep directory is queryable
+without loading it. CSV round-trips floats through text and loses the schema.
+The app's download button emits CSV because a person opens it in a spreadsheet;
+nothing in this project reads CSV back.
+
+### 7.3 Reading a sweep back
+
+A sweep is a directory of run directories. The reader scans them into one lazy
+frame and hoists the parameters that varied — budget, policy, seed, and any
+overridden config value — into columns, reading each run's `config.yaml` to
+recover them.
+
+**Swept parameters live in the parquet columns, not only in the directory
+name.** A frame carrying its own parameters is readable without the layout that
+produced it, so a renamed directory or a run copied elsewhere still answers
+questions.
+
+`pl.scan_parquet` over the glob keeps a large sweep from being materialized to
+answer a question about one budget level.
+
+**A missing or unreadable run raises.** A sweep silently short one budget level
+produces a curve that looks fine and is wrong, which is the class of failure
+the "never silently skip a missing file" convention exists for.
+
+### 7.4 Metrics
+
+`metrics.py` reduces the saved frame: SAIFI, SAIDI, CAIDI and CMI per policy
+per year (2.6), replication mean and percentile bands, horizon totals,
+customer-minutes avoided against the configured `baseline_policy`, and cost per
+customer-minute avoided.
+
+**Costs are reported both nominal and discounted.** Over a 30-year horizon,
+undiscounted totals overstate late spending, and cost per customer-minute
+avoided is hard to defend without a present-value figure since utility planning
+is done on that basis. The discount rate is a config knob; discounting is a
+reduction over the saved stream, so the kernel never sees it (2.7, Costs).
+
+**Metrics are computed from the saved frame, not returned by the kernel.** The
+kernel returns counts and spend; ratios are cheap and are derived once, in one
+place, from either implementation's output. That also means the oracle and the
+kernel are compared on the quantities they actually compute, rather than on
+ratios that could agree by cancellation.
+
+### 7.5 Plots
+
+`plots.py` holds the figures the notebooks and the app share: SAIDI and SAIFI
+trajectories with Monte Carlo bands, failures per year by class, planned and
+emergency spend against the budget line, and the policy comparison overlay.
+
+- **Plotly, one backend.** The comparison overlay is read by hovering a year
+  and comparing values, which a static image cannot do, and rendering the same
+  figure two ways for two front ends is the duplication this module exists to
+  remove. marimo and Shiny both render plotly figures.
+- **Plotting is an optional install.** `plots.py` imports plotly at module
+  scope, and plotly is declared as an optional extra, so installing the package
+  for the kernel alone does not pull a plotting stack and importing `plots`
+  without it fails immediately and says why.
+- **Every function takes a frame and returns a figure.** None reads a file and
+  none draws to a global figure, which is what lets a notebook and the app call
+  the same code.
+- One-off diagnostic plots stay in the notebook that needs them. A figure earns
+  a place here when a second front end wants it.
+
+### 7.6 Testing this layer
+
+- **Round-trip, with the schema asserted separately.** Writing a run and
+  reading it back proves little on its own: a writer and reader sharing a
+  mistake agree with each other. Assert the on-disk column names and dtypes
+  explicitly as well.
+- **Fixtures are generated in code**, so no parquet file is committed; tests
+  write into `tmp_path`.
+- **Plots are tested on their data, not their pixels.** Assert the trace count
+  and the values attached to each trace. Image snapshots fail on a library
+  upgrade and pass on a wrong number, which is the wrong way round.
+- **The reader's failure path is tested by deleting a run** from a sweep
+  directory and confirming it raises rather than returning a short frame.
+
+---
+
+## 8. Marimo notebooks
 
 Marimo is a good fit here: notebooks are plain `.py` (diffable, importable,
 runnable in CI), reactive (change a slider, dependent cells recompute), and
@@ -457,9 +1125,13 @@ notebook needs a function, it belongs in the package.
 |----------|---------|
 | `01_population.py` | Generate and inspect a synthetic population. Sliders for `n_segments` and class shares; show length, customer, and install-year distributions by class. Sanity check that main feeders carry far more customers than laterals. |
 | `02_weibull_fitting.py` | Censored MLE walkthrough. Slider for censoring fraction; show the likelihood surface, fitted vs true survival curve, and the recovery test result. Demonstrates *why* censoring must be handled. |
-| `03_three_phase.py` | The min-of-3 result made visual. Sliders for `k`, `lambda`, `n`; overlay conductor-level and segment-level survival curves against the empirical minimum of sampled draws. Shows the scale shrinking by `n^(-1/k)` while shape holds. |
+| `03_effective_scale.py` | The effective-scale reduction made visual (2.3). Sliders for `k`, `lambda`, `n` and length; overlay conductor-level and segment-level survival curves against the empirical minimum of sampled draws, and against draws for a longer segment. Shows scale shrinking by `(n * L/L_ref)^(-1/k)` while shape holds, which is the claim the recovery ladder's rung 3 tests numerically. |
 | `04_policy_explorer.py` | The headline demo. Sliders for annual budget, policy, and policy params; plot SAIDI/SAIFI trajectories over 30 years, spend, and failures by class. **This is the reliability-vs-budget curve** — the deliverable the original work produced. |
 | `05_oracle_and_bench.py` | Oracle-vs-Rust agreement plots plus the benchmark table (naive Python / vectorized NumPy / Rust single-threaded / Rust rayon). |
+
+Result figures come from `plots.py` (Section 7, Results, metrics, and
+reporting), so a notebook and the app render the same figure from the same
+code. One-off diagnostic plots stay in the notebook that needs them.
 
 Run with `marimo edit notebooks/04_policy_explorer.py`; export via
 `marimo export html`. Add a smoke test that executes each notebook headless so
@@ -467,7 +1139,7 @@ they cannot silently rot.
 
 ---
 
-## 8. Shiny application
+## 9. Shiny application
 
 A small Shiny for Python app that lets a user configure inputs, run a
 simulation, and see the result. This is the shareable artifact; the notebooks
@@ -528,25 +1200,28 @@ config field, which every UI-free test passes.
 
 ### Deployment
 
-Target Posit Connect or shinyapps.io, matching the deployment pattern of the
-other portfolio projects.
+**Posit Connect**, matching the deployment pattern of the other portfolio
+projects.
 
-⚠️ **Deployment constraint worth planning for early:** the Rust extension must
-install in the deploy environment. Build **abi3 wheels** (stable ABI, so one
-wheel covers multiple Python versions) and confirm the target platform can
-install them. Discovering this at deploy time is the most likely way this
-project stalls at the last step.
+⚠️ **Deployment constraint, and the reason the wheel moves earlier:** Connect
+installs the package into an environment it builds itself, so the Rust
+extension has to exist as an installable **abi3 wheel** (stable ABI, so one
+wheel covers multiple Python versions) that the target platform accepts.
+Building that wheel and proving it installs belongs to Phase 6 alongside the
+app, not to Phase 7 — the app is not deliverable without it, and discovering
+this at deploy time is the most likely way this project stalls at the last
+step.
 
 ---
 
-## 9. Continuous integration and branch protection
+## 10. Continuous integration and branch protection
 
 `main` is protected, and will only take merges whose tests passed once the
-required-check rule lands (§9.4, Branch protection on `main`). Set this up in
+required-check rule lands (§10.4, Branch protection on `main`). Set this up in
 Phase 0, before there is anything to protect — a rule added after the fact has
 to be applied to a history that never satisfied it.
 
-### 9.1 The workflow
+### 10.1 The workflow
 
 The workflow is `.github/workflows/test.yml`, on pull requests targeting
 `main` and on pushes to `main`. Read it there rather than from a copy here.
@@ -569,7 +1244,7 @@ The decisions behind it:
   a real browser takes minutes plus a browser download. Neither belongs on the
   critical path of every pull request.
 
-### 9.2 Notebook execution, on a slower cadence
+### 10.2 Notebook execution, on a slower cadence
 
 The headless notebook run (`uv run pytest -m notebooks`) is what stops the
 notebooks silently rotting, so it has to run somewhere. Put it in a second
@@ -594,7 +1269,7 @@ weekly notebook run.
 **This is not a required check.** A weekly schedule cannot report on a pull
 request, so requiring it would block every merge.
 
-### 9.3 Shiny app integration tests (Playwright)
+### 10.3 Shiny app integration tests (Playwright)
 
 The app has one failure mode worth building a browser for, and it is not
 "does a plot appear". The app's job is to turn UI controls into a config
@@ -652,7 +1327,7 @@ time is understood. Doing that means moving it onto `pull_request` first: a
 scheduled workflow cannot report on a pull request, so requiring it while it
 only runs on a schedule blocks every merge.
 
-### 9.4 Branch protection on `main`
+### 10.4 Branch protection on `main`
 
 Two checked-in GitHub rulesets, so what is applied is reproducible and
 reviewable, and so the required-check rule can arrive separately:
@@ -700,7 +1375,7 @@ Between them they set:
   blocked, then confirm a direct `git push origin main` is rejected. A
   protection rule nobody has watched refuse something is not known to work.
 
-### 9.5 What CI does not cover yet
+### 10.5 What CI does not cover yet
 
 Wheel building across platforms and Python versions belongs to Phase 7, where
 abi3 wheels and the Shiny deployment target settle what actually has to be
@@ -717,7 +1392,7 @@ request, not a revert-by-default.
 
 ---
 
-## 10. Phased roadmap
+## 11. Phased roadmap
 
 Each phase ends in a working, committed state.
 
@@ -727,7 +1402,7 @@ Each phase ends in a working, committed state.
 trivial `add(a, b)` and imports in Python. *Do not skip this smoke test.*
 
 `main` is already protected against direct pushes and merges without a pull
-request, so this phase lands through one. The remaining half of Section 9.4,
+request, so this phase lands through one. The remaining half of Section 10.4,
 Branch protection on `main` — the `test` check being *required* — waits until
 this phase has produced a green run of it, because a required check that has
 never reported green blocks every merge including the one that would fix it.
@@ -748,46 +1423,68 @@ a loud one:
 | a committed `.secrets.baseline` | `security-scan` treats a scan without an intact baseline as **invalid even when it exits cleanly**. Until it exists, every security phase is grep-only — which is fine if it is *said*, and misleading if it is not. |
 
 **Phase 1 — synthetic population**
-`population.py` generating the segment table from config. Notebook 01.
-Tests for class shares, customer-count ordering by class, reproducible seeding.
+`population.py` generating the segment table from config: class assignment,
+install year from the install-volume curve, technology from install year,
+per-type customer counts, and the effective-scale reduction of 2.3 folded into
+one `(shape, scale)` pair per segment. Notebook 01. Tests for class shares,
+customer-count ordering by class and by type, technology assignment covering
+the whole install-year range, and reproducible seeding.
 
-**Phase 2 — Weibull + MLE (Python)**
-`weibull.py`: hazard, conditional `p(t)`, `min_of_n` scale reduction, censored
-MLE. Tests: analytical checks and MLE recovery. Notebooks 02 and 03.
+**Phase 2 — Weibull, MLE, and the recovery ladder**
+`weibull.py`: conditional `p(t)`, the left-truncated lifetime draw, the
+effective-scale reduction, and the censored likelihood with covariates.
+`records.py`: the synthetic episode-grain record table. Tests: the analytical
+checks and every rung of the MLE recovery ladder (Section 6, Validation
+strategy), including the `lifelines` cross-check. Notebooks 02 and 03.
 
-**Phase 3 — Python oracle**
-`reference.py`: the full annual loop, correct and slow. `metrics.py` and
-`policies.py`. Tests for policy scoring and greedy budget allocation. First
-end-to-end reliability-vs-budget result, pure Python.
+This phase is where the length claim is either confirmed or abandoned, so it
+comes before anything depends on it.
+
+**Phase 3 — Python oracle, results, and reporting**
+`reference.py`: the full annual loop, correct and slow. `metrics.py`,
+`policies.py`, `results.py` and `plots.py`. Tests for policy scoring, greedy
+budget allocation, and the results round trip. First end-to-end
+reliability-vs-budget result, pure Python, saved to disk.
+
+`results.py` lands here rather than later because the parity work in Phase 4 is
+easier to diagnose against two saved runs than against two in-memory arrays.
 
 **Phase 4 — Rust kernel, single-threaded**
 Port the loop to `sim.rs` / `policy.rs` / `weibull.rs`. Bind with PyO3, build
-with maturin, use `rust-numpy` for zero-copy array passing. Pass the statistical
-parity test and the deterministic parity test against the oracle.
+with maturin, use `rust-numpy` for zero-copy array passing. Pass the
+statistical parity test and the deterministic parity test against the oracle.
+
+The indexed random-number scheme of 2.11 is decided here, not in Phase 5. It
+cannot be retrofitted once the loop is written.
 
 **Phase 5 — parallel + benchmarks**
-`py.allow_threads` + rayon over replications, per-rep seeding. Benchmark
-harness and notebook 05.
+`py.allow_threads` + rayon over replications. Benchmark harness against the
+batched NumPy baseline and notebook 05.
 
-**Phase 6 — Shiny app**
+**Phase 6 — Shiny app, and the wheel it needs**
 `app/` with config-override wiring, ExtendedTask + progress, cached default
 sweep, and policy comparison mode. Confirm a full interactive run completes in
 a few seconds at the reduced interactive defaults. Then `tests/app/` and
-`.github/workflows/app.yml` — the Playwright suite of Section 9.3, Shiny app
+`.github/workflows/app.yml` — the Playwright suite of Section 10.3, Shiny app
 integration tests, including the assertion that drives the UI and requires the
 result to match the package called directly with the same overrides and seed.
 
+**Build the abi3 wheel and prove it installs on the deployment target in this
+phase, not in Phase 7.** The app deploys to Posit Connect, which installs the
+package into its own environment, so a working wheel is a prerequisite for the
+app being deliverable at all. Section 9, Shiny application, has the constraint;
+discovering it at deploy time is the most likely way this project stalls at the
+last step.
+
 **Phase 7 — package and publish**
-Version, docs, abi3 wheels for portability, and deploy the Shiny app.
-Optional: publish to PyPI and tag a release. CI already runs tests, notebooks
-and the app suite from earlier phases; what this phase adds is the
-wheel-building matrix across platforms and Python versions (Section 9.5, What
-CI does not cover yet), which only becomes answerable once the deployment
-target is settled.
+Version, docs, and the wheel-building matrix across platforms and Python
+versions. Optional: publish to PyPI and tag a release. Phase 6 has already
+proven one wheel installs on one target; what this phase adds is the matrix and
+the release process (Section 10.5, What CI does not cover yet).
 
 ---
 
-## 11. PyO3 / maturin practicalities
+## 12. PyO3 / maturin practicalities
 
 - **Pin the PyO3 version and read that version's guide.** PyO3 migrated to the
   `Bound<'py, T>` smart-pointer API; older tutorials and Stack Overflow answers
@@ -798,38 +1495,75 @@ target is settled.
   out with zero copy — without it, arrays get copied across the boundary and
   the speedup evaporates.
 - Crates: `pyo3`, `numpy`, `rayon`, `rand`, `rand_distr`, `thiserror`.
+- **The random number scheme is addressable, not sequential** (2.11, Random
+  numbers and why policies must share them). The simplest form that satisfies
+  it is to seed a small fast generator from a hash of
+  `(seed, replication, segment, installation_index)` at the point of use, so
+  any draw can be reproduced without replaying the ones before it.
+  `rand_chacha`'s `set_stream` and `set_word_pos` are the alternative and cost
+  more bookkeeping. What does **not** work is one `StdRng` per replication
+  consumed in order, which is the obvious approach and silently defeats common
+  random numbers.
 - Confirm the Rust toolchain is installed (`rustup`) before Phase 0.
 
 ---
 
-## 12. Open questions to confirm before implementation
+## 13. Decisions, and what is still open
 
-1. **Timestep** — annual assumed throughout. Monthly would sharpen outage
-   timing but multiplies cost by 12. Annual is the right default; confirm.
-2. **Do emergency replacements consume the capital budget?** Currently a config
-   flag defaulting to `false` (separate O&M bucket). Confirm which matches how
-   the original study treated it.
-3. **Customer counts** — are they static per segment, or should load growth
-   escalate them over 30 years? Static assumed for now.
-4. **Do failed segments get replaced immediately?** Assumed yes, same year.
-   A repair-then-defer-replacement path is a possible extension.
-5. **Discounting** — should costs be reported in NPV terms as well as nominal?
-   Escalation is in the config; a discount rate is not yet.
-6. **Correlated conductor failure** — `iid` first, `shared_frailty` deferred.
-   Confirm that is acceptable for a v1.
-7. **Shiny deployment target** — Posit Connect or shinyapps.io? This determines
-   how the Rust wheel gets installed and should be settled before Phase 6, not
-   during it.
+### 13.1 Settled
+
+These were open questions and are now answered. They are recorded with their
+reasoning because the reasoning is what a later reader needs in order to
+reopen one deliberately rather than by accident.
+
+| Question | Decision | Why |
+|---|---|---|
+| Timestep | Continuous failure times, annual budget cycle (2.9) | Utilities budget annually, and lifetimes drawn per installation cost roughly one draw per segment per replication instead of thirty hazard evaluations |
+| Technology in the model | A real dimension keying the Weibull parameters (2.2) | Failure behavior follows insulation technology and vintage; class drives cost and exposure. Keying on technology also makes replacement well defined instead of inheriting the old cable's parameters |
+| Length in the failure model | Derived weakest-link reduction, fitted as a check (2.3) | The exponent is predicted at `-1/k` rather than estimated, which converts a modeling assumption into an analytical test |
+| Emergency spend | Separate operations bucket by default; `emergency_charged_to_budget` retained, and when true emergency is charged before the planned pass is scored (2.7) | Capital and operations are usually funded separately, and it keeps the sweep's horizontal axis purely planned capital. The ordering is pinned because it is what produces the crowding-out dynamic |
+| On failure | Replaced immediately, same year (2.9) | For underground cable a failure generally means digging up and replacing the section. Repair-then-defer stays an extension because splices are themselves a failure mode, and modeling them honestly needs per-splice hazard and a splice count in the segment state |
+| Customer counts over the horizon | Static per segment (2.5) | Growth affects every policy nearly identically, so it rescales the axis rather than changing which policy wins. Adding a growth rate later is a small change |
+| Discounting | A discount rate in config; costs reported nominal and present-value (7.4) | Over 30 years, undiscounted totals overstate late spending, and cost per customer-minute avoided is hard to defend without present value |
+| Conductor dependence | `iid` for v1, `shared_frailty` documented and deferred (2.3) | The dependent case needs a frailty or copula structure whose parameters nothing here could calibrate |
+| Plotting backend | Plotly for the shared figures, as an optional extra (7.5) | One backend for the notebooks and the app; the comparison overlay is read by hovering, which a static image cannot support |
+| Shiny deployment target | Posit Connect (Section 9, Shiny application) | Installs the package into its own environment, so the abi3 wheel moves into Phase 6 |
+| Baseline for "avoided" metrics | `run_to_failure`, set by `reporting.baseline_policy` (7.4) | Doing nothing is the comparison a budget request is actually argued against |
+| `build_out_curve` | Replaced by an explicit `install_volume` breakpoint map in config (Section 3) | A named curve with no definition is a value that cannot be checked or changed |
+
+### 13.2 Still open
+
+1. **Value-of-lost-load figures by customer type.** The values in
+   `configs/base.yaml` are placeholders. They need sourcing to published
+   interruption-cost estimates, recorded with the source and the outage
+   duration they were read at (2.5). The ranking these drive is the
+   deliverable, so a placeholder is a real liability rather than a detail.
+2. **Weibull parameters and vintage boundaries per technology.** Also
+   placeholders. The vintage ranges in particular assert when each technology
+   was in common use, which is a checkable historical claim.
+3. **Discount rate.** A number is in the config; it needs a stated basis, since
+   the present-value comparison is sensitive to it over a 30-year horizon.
+4. **Does the recovery ladder's rung 5 stay in the suite or move to a
+   notebook?** Fitting per-technology shape needs enough observed failures per
+   technology that the synthetic record table may be large enough to be slow.
+   Decide once it has been run and timed, not before.
+5. **Splice-driven failure.** 2.3, Effective scale, notes that a length
+   coefficient shrunk toward zero would indicate failures concentrating at
+   splices and terminations. Whether that becomes a modeled term or stays a
+   documented diagnostic is a v2 question.
 
 ---
 
-## 13. First actions in the next session
+## 14. First actions in the next session
 
-1. Verify `rustup` and `maturin` are installed.
-2. Phase 0 scaffold, ending with a trivial `add()` round-tripping through
-   `maturin develop`, then adding the required-check rule from Section 9.4,
-   Branch protection on `main` — watched refusing a failing pull request
-   before being trusted.
-3. Answer the Section 12 questions — Open questions to confirm before
-   implementation — updating `configs/base.yaml` as needed.
-4. Proceed to Phase 1.
+1. Verify the required-status-check ruleset from Section 10.4, Branch
+   protection on `main`, is applied, and confirm it by opening a pull request
+   with a deliberately failing test and watching the merge button refuse. A
+   protection rule nobody has watched refuse something is not known to work.
+2. Update `config.py` and `configs/base.yaml` to the schema in Section 3,
+   Configuration schema — technologies, per-type customer mix, per-type value
+   of lost load, `install_volume`, the discount rate, and the validators listed
+   there. Tests for each validator, each watched failing before it is trusted.
+3. Phase 1, the synthetic population.
+4. Source the placeholder numbers in 13.2, Still open, before any result is
+   presented as a finding rather than as a demonstration of the machinery.

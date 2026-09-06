@@ -39,9 +39,9 @@ wins on *how work is done here*.
   A fix that leaves the cause in place has to be made again.
 - **Ask, don't assume.** When requirements are ambiguous or several
   approaches exist, ask. Don't guess at intent or decide design alone.
-  `PLAN.md` §12, Open questions to confirm before implementation, lists the
-  questions still open; answer them with the user
-  rather than picking a default and moving on.
+  `PLAN.md` §13, Decisions and what is still open, records the questions that
+  are settled with their reasoning, and lists the ones that are not; answer
+  those with the user rather than picking a default and moving on.
 - **Verify by running, not by reading.** Any claim you can run is unverified
   until you have run it — yours and everyone else's. Never mark work complete
   without running the tests, building the extension, executing the command.
@@ -77,7 +77,7 @@ is the validation strategy rather than an accident:
 |---|---|---|
 | `cablesim/reference.py` | `src/sim.rs` | the annual replication loop |
 | `cablesim/policies.py` | `src/policy.rs` | candidate scoring |
-| `cablesim/weibull.py` | `src/weibull.rs` | hazard and conditional `p(t)` |
+| `cablesim/weibull.py` | `src/weibull.rs` | conditional `p(t)`, left-truncated lifetime draws |
 
 - **Never collapse the two sides.** Deleting the oracle deletes the only thing
   that validates the kernel. `simplify-audit` is told this explicitly so it
@@ -194,7 +194,12 @@ is the validation strategy rather than an accident:
   An analytical check is worth more than a parity check, because it can be
   wrong in only one way.
   - **MLE recovery is the test that earns its keep.** Simulate lifetimes from
-    known `(k, lambda)`, censor, refit, confirm recovery within CI.
+    known `(k, lambda)`, censor, refit, confirm the truth falls inside the
+    fitted CI. It is built as a ladder (`PLAN.md` §6, Validation strategy) so
+    each rung adds exactly one thing that can be wrong — censoring, then left
+    truncation, then length, then technology indicators, then per-technology
+    shape. A single test of the whole model says something is broken; the
+    ladder says what.
   - **Do not chase bit-exact RNG parity between Python and Rust.** Matching
     random streams across languages proves little and costs a great deal.
     Compare statistically, with a tolerance derived from replication standard
@@ -254,7 +259,7 @@ is the validation strategy rather than an accident:
   feature, not just the last commit on the branch.
 - **`main` is protected and takes no direct pushes.** Every change arrives
   through a squash-merged pull request. The ruleset is checked in at
-  `.github/rulesets/protect-main.json`, and `PLAN.md` §9.4, Branch protection
+  `.github/rulesets/protect-main.json`, and `PLAN.md` §10.4, Branch protection
   on `main`, has the setup and the ways branch protection goes wrong.
 - **The `test` check is not yet *required*, and that is temporary.** The
   applied ruleset is `.github/rulesets/protect-main.json`, which carries
@@ -273,7 +278,7 @@ is the validation strategy rather than an accident:
 - Review all commits for quality and style before pushing.
 - **Check for README updates** after changes affecting usage or the public API.
 - **Don't assume.** Verify against the codebase and ask rather than guessing.
-- **Each phase in `PLAN.md` §10, Phased roadmap, ends in a working,
+- **Each phase in `PLAN.md` §11, Phased roadmap, ends in a working,
   committed state.** A phase that does not build and does not pass its own
   tests is not finished.
 - **Versioning and publishing arrive at Phase 7**, not before. Until then
@@ -372,7 +377,7 @@ commit message; would this sentence still teach a new reader anything?**
 Point to durable references freely: a README section, another module, an
 external spec, and `PLAN.md` by section — it is checked in and is where the
 modeling decisions are argued. **Cite the number and the title**, as in
-"`PLAN.md` §2.3, Three-phase segments": inserting a section renumbers every
+"`PLAN.md` §2.3, Effective scale": inserting a section renumbers every
 one after it, and a bare number then points confidently at the wrong place,
 while a number plus a title shows the mismatch on sight.
 
