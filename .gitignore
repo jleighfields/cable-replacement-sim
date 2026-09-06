@@ -1,8 +1,8 @@
 # Quarto render output: `quarto render PLAN.md` writes PLAN.html beside a
-# PLAN_files/ sidecar of bootstrap CSS, JS and fonts. Ignoring the sidecar
-# directory rather than those extensions matters — the Shiny app ships static
-# assets under app/, and a repo-wide *.js would drop them without a word.
-*.html
+# PLAN_files/ sidecar of bootstrap CSS, JS and fonts. Named exactly rather than
+# by extension — the Shiny app ships static assets under app/, and a repo-wide
+# *.html or *.js would drop them without a word.
+/PLAN.html
 *_files/
 .quarto/
 

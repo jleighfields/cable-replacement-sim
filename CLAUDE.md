@@ -189,7 +189,8 @@ here.
   constructs a generator of its own (`PLAN.md` §6.3, Where a parity
   test's inputs come from).
 - **An analytical check is worth more than a parity check**, because it can be
-  wrong in only one way. `PLAN.md` §6 has the three layers in order of
+  wrong in only one way. `PLAN.md` §6, Validation strategy, has the three
+  layers in order of
   authority, with the assertions, tolerances and sample sizes; do not restate
   them here.
 - **A notebook may carry its own assertions.** Where a notebook has already

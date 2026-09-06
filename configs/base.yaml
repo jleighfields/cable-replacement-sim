@@ -16,8 +16,9 @@ simulation:
   seed: 20260902
   start_year: 2026      # year 0. Age is start_year - install_year, and every
                         # present value is measured at this year.
-  chunk_reps: 50        # replications per kernel call, sized so the draw array
-                        # stays around 500 MB
+  chunk_reps: 50        # replications per kernel call. Sizes the draw array at
+                        # chunk_reps * n_segments * (n_years + 1) * 8 bytes,
+                        # which is 149 MB here and 496 MB at 40,000 segments.
 
 population:
   n_segments: 12000

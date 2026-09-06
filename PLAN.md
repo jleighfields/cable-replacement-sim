@@ -184,12 +184,24 @@ Every other reading is a defect: a segment-level scale would already contain
 the conductor count and the length, and applying the reduction to it would
 apply them twice.
 
-**Parameters key on technology, not on class.** Insulation technology and
-vintage drive failure behavior — early solid-dielectric compounds water-tree
-and fail younger than tree-retardant ones — while class drives cost, conductor
-count, and customer exposure. Those are independent, so the configuration
-carries a Weibull pair per technology and assigns technology from install year
-(Section 3, Configuration schema).
+**Scale keys on technology.** Insulation technology and vintage drive failure
+behavior — early solid-dielectric compounds water-tree and fail younger than
+tree-retardant ones — while class drives cost and customer exposure. The
+configuration therefore carries a Weibull pair per technology and assigns
+technology from install year (Section 3, Configuration schema).
+
+**Shape may be overridden by class, because conductor size is a second axis.**
+Technology captures the compound and the vintage, not the cable. A large feeder
+conductor is a different product from the residential lateral cable of the same
+vintage in the same compound: longer runs, more accessories and heavier thermal
+loading spread its failures out rather than concentrating them, which is a
+lower shape rather than a shorter scale. A class naming no shape takes its
+technology's, so distribution and lateral segments of one vintage remain the
+same cable and differ only through the geometry of 2.3, Effective scale.
+
+Scale is deliberately not overridable this way. Splitting both parameters by
+class would leave technology decorative, and technology is what makes
+replacement mean something (below).
 
 Keying on technology is also what makes replacement well defined. A replaced
 segment is new cable of the current technology, so it takes that technology's
@@ -210,12 +222,21 @@ iid Weibull conductors with common shape `k` and scale `lambda`:
 S_seg(t) = [exp(-(t/lambda)^k)]^n = exp(-n*(t/lambda)^k)
 ```
 
-**Length.** A segment fails when any point along it fails. If failure sites
-arrive along the cable as a spatial process with rate proportional to length, a
-segment of length `L` behaves as `L/L_ref` unit-length pieces in series:
+**Length, sub-linearly.** A segment fails when any point along it fails. A
+spatial-Poisson argument would make the rate proportional to length, so a
+segment of length `L` behaves as `L/L_ref` pieces in series. That is too
+strong, on both physics and arithmetic. Physically, a large share of
+underground faults occur at splices, terminations and elbows, which scale with
+the count of accessories rather than with feet of run. Quantitatively, a linear
+term puts the composite ratio between a long three-phase feeder and a short
+lateral at about 10, fixing the ratio of their lives at `10^(1/k)` and needing
+a shape near 9 to bring the population into one plausible band.
+
+Length therefore enters raised to a configured exponent `beta`, where 1 is the
+spatial-Poisson case and 0 makes failure purely per-segment:
 
 ```
-S_seg(t) = exp( -(L/L_ref) * (t/lambda)^k )
+S_seg(t) = exp( -(L/L_ref)^beta * (t/lambda)^k )
 ```
 
 Both are the same weakest-link argument, so they compose into one reduction:
@@ -223,8 +244,16 @@ Both are the same weakest-link argument, so they compose into one reduction:
 ```
 S_seg(t) = exp( -(t/lambda_eff)^k )
 
-    where   lambda_eff = lambda * ( n * L/L_ref )^(-1/k)
+    where   lambda_eff = lambda * ( n * (L/L_ref)^beta )^(-1/k)
+    and     beta = population.length_exponent, 0.5 in the shipped defaults
 ```
+
+**What the conductor term implies cannot be tuned away.** A three-phase segment
+lives `3^(-1/k)` as long as an otherwise identical single-phase one — 1.22
+times at the shapes Section 3 configures — so laterals outlast three-phase
+segments by a factor no scale choice reverses. Both terms favour short
+single-phase segments, so **geometry alone cannot make laterals fail first**,
+and a model needing them to would need a driver this one does not carry.
 
 **The minimum of n iid Weibulls is Weibull with the same shape and a reduced
 scale**, and length enters the same way. Shape is unchanged throughout, which
@@ -260,8 +289,10 @@ effective scale sits between `lambda * n^(-1/k)` (iid) and `lambda` (perfect
 dependence).
 
 Fitting note: if failure records are observed at the **segment** level, an MLE
-fit recovers `lambda_eff` directly. Convert to unit-conductor, unit-length
-terms with `lambda = lambda_eff * (n * L/L_ref)^(1/k)`.
+fit recovers `lambda_eff` directly. Convert to unit-conductor,
+reference-length terms with `lambda = lambda_eff * ( n * (L/L_ref)^beta )^(1/k)`
+— the exponent belongs in the conversion too, and dropping it recovers a wrong
+`lambda` whenever `beta` is not 1.
 
 ### 2.4 Censored MLE and the failure-time regression
 
@@ -565,7 +596,8 @@ segments that failed earlier in the same year and nothing else.
 policies.** The budget is what limits how many get funded, and adding a
 threshold on top would be a second knob doing the same job with a different
 name. The consequence is that `risk_ranked` scores and sorts every in-service
-segment every year — 40,000 rows, 30 times, per replication — and that is the
+segment every year — 12,000 rows at the configured size, 30 times, per
+replication — and that is the
 dominant cost in the annual loop rather than an oversight (Section 6.5,
 Benchmarks).
 
@@ -822,8 +854,9 @@ avoids that, and passing an array is the simplest way to be indexed.
 
 - **Replications are processed in chunks**, and the kernel is called once per
   chunk rather than once per policy. The full array at 1000 replications,
-  40,000 segments and a 30-year horizon is 9.9 GB; `simulation.chunk_reps` at
-  50 makes it about 500 MB. Twenty crossings per policy costs nothing — the
+  12,000 segments and a 30-year horizon is 3.0 GB; `simulation.chunk_reps` at
+  50 makes it 149 MB. At 40,000 segments those become 9.9 GB and 496 MB, which
+  is what sets the knob's useful range. Twenty crossings per policy costs nothing — the
   rule that matters is never calling back into Python *inside* the loop, and
   that still holds.
 - **The draws come from the bit generator's raw stream, not from a
@@ -923,8 +956,9 @@ simulation:
   seed: 20260902
   start_year: 2026      # year 0. Age is start_year - install_year, and every
                         # present value is measured at this year.
-  chunk_reps: 50        # replications per kernel call, sized so the draw array
-                        # stays around 500 MB
+  chunk_reps: 50        # replications per kernel call. Sizes the draw array at
+                        # chunk_reps * n_segments * (n_years + 1) * 8 bytes,
+                        # which is 149 MB here and 496 MB at 40,000 segments.
 
 population:
   n_segments: 12000
@@ -1047,6 +1081,7 @@ policies:
 reporting:
   baseline_policy: run_to_failure   # what "avoided" is measured against
 ```
+
 
 Three generation rules the YAML cannot carry on its own:
 
@@ -1678,9 +1713,9 @@ implementations of the annual loop:
   each timing. Keeping the second off the config model is what stops it
   reading as part of the model.
 - **Both Python implementations chunk over replications, and the chunk size is
-  reported alongside the timing.** At 40,000 segments and 1,000 replications
-  the state is 40 million cells, so one f64 array is 320 MB and the working set
-  runs to a few gigabytes. Not having to chunk is one of the kernel's real
+  reported alongside the timing.** At the configured 12,000 segments and 1,000
+  replications the state is 12 million cells, so one f64 array is 96 MB; at
+  40,000 it is 320 MB and the working set runs to a few gigabytes. Not having to chunk is one of the kernel's real
   advantages, and it is a more defensible claim than saying loops are slow.
 - **polars has no addressable per-element generator**, so its uniforms are
   drawn in NumPy and attached as a column (2.11, Random numbers and why
@@ -1984,17 +2019,18 @@ the same kernel. One code path, three front ends.
 - Use Shiny's `ExtendedTask` so the run is async and the UI stays responsive,
   with a progress indicator.
 - **Interactive defaults are smaller than batch defaults** (for example 5,000
-  segments and 100 replications versus 40,000 and 1,000). State the accuracy
+  segments and 100 replications versus the configured 12,000 and 1,000). State
+  the accuracy
   tradeoff in the UI.
 - **`total_customers` scales with `n_segments`, or every index is wrong by the
   ratio.** SAIFI and SAIDI divide by the system customer count (2.6), which is
-  a constant in `configs/base.yaml` sized for the full 40,000-segment
-  population. Simulating 5,000 segments against that denominator understates
-  every index eightfold — a systematic bias, not the Monte Carlo error the
+  a constant in `configs/base.yaml` sized for the population that file
+  configures. Simulating fewer segments against that denominator understates
+  every index by the ratio — a systematic bias, not the Monte Carlo error the
   accuracy note describes. The override layer scales `total_customers` by the ratio of the requested
   population to the one in `configs/base.yaml` — the override's `n_segments`
-  over the base file's `population.n_segments`, which is one eighth at the
-  interactive default, so the denominator shrinks with the population — and a test asserts an index computed at interactive scale matches one
+  over the base file's `population.n_segments`, so the denominator shrinks with
+  the population — and a test asserts an index computed at interactive scale matches one
   at full scale within replication error. Full-size runs belong in batch scripts and notebooks.
 - Precompute one budget sweep and cache it so the landing view renders
   instantly rather than showing an empty plot.
@@ -2428,8 +2464,13 @@ the argument belongs beside the model it constrains.
    the lateral customer mix and the annual budget — were chosen together by
    running the population generator, and they satisfy the target at year zero:
    about 2% of segments fail in the first year under `run_to_failure`, the
-   budget funds 59% of that so the constraint binds, and the customers on
-   terminal laterals reconcile with the system total to within 2%. What is not
+   budget funds 141 replacements a year against 240 expected failures, which is
+   59% **measured at planned cost on the population mean**. Two other readings
+   of the same pair are lower and worth not confusing with it: failing segments
+   are longer and dearer than average, so the budget covers 36% of the year's
+   failures priced at planned cost and 14% of the emergency spend they incur at
+   the emergency multiplier. Customers on terminal laterals come to 97,089
+   against a configured 95,000, 2.2% high. What is not
    yet checked is the other 29 years. A population that ages faster than it is
    replaced drifts, and the failure rate at year 30 could be several times the
    rate at year 1 — which is a finding if it is the aging story, and a
