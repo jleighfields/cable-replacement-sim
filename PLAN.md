@@ -111,10 +111,12 @@ loop.**
 Two columns are derived from the customer table before the run starts, and 2.5,
 Customers served by type, gives the reason both are needed rather than one:
 
-| Derived                 | Meaning                                                        |
-|-------------------------|----------------------------------------------------------------|
-| `customers`             | total across types; contributes to the SAIFI and SAIDI numerators |
-| `outage_value_per_hour` | sum over types of count times that type's value of lost load    |
+| Derived | Meaning |
+|---|---|
+| `customers` | total across types; the count of customers interrupted, for SAIFI |
+| `customer_minutes_per_failure` | that count times this class's emergency restoration time, in minutes |
+| `customer_minutes_per_planned` | the same for planned work, zero where the class can be back-fed |
+| `outage_cost_per_failure` | value of lost load, in dollars, for one failure on this segment |
 
 ### 2.2 Weibull failure model
 
@@ -315,24 +317,64 @@ rather than averaged away.
 Counts are generated per segment per type from a heavy-tailed distribution
 (lognormal is the default), with a class-specific median for each type.
 
-**Two derived quantities, both required:**
+#### Restoration time, and why laterals are worst
+
+Outage duration varies by class, and it varies in the opposite direction from
+repair difficulty. **What the reliability indices measure is time to
+*restoration*, not time to repair.**
+
+- A **main feeder** is usually part of a loop. Crews isolate the fault and
+  back-feed from the other end, so customers are restored by switching, in
+  well under an hour, and the repair itself happens afterwards on de-energized
+  cable with nobody out.
+- A **three-phase distribution** segment is often, though less reliably,
+  switchable — partial restoration, then repair.
+- A **single-phase lateral** is radial. There is nothing to switch to, so
+  restoration time *is* repair time and every customer on it stays out for the
+  whole job.
+
+So the largest, most expensive, hardest-to-repair asset produces the shortest
+customer interruption, and the cheapest one produces the longest. Stating the
+mechanism matters because the ordering looks like an error otherwise, and a
+reviewer who sees feeders with short outages and no explanation will read it as
+a bug rather than as the consequence of network topology.
+
+The same argument applies to **planned** work, in the same direction: a looped
+feeder is switched out with no interruption at all, and a radial lateral's
+customers are out for the duration of the job. That is why
+`outage_hours_planned` is not zero for every class.
+
+Each class's duration is an average over the switchable and non-switchable
+cases within that class, not a claim that every feeder is looped.
+
+**Four derived quantities:**
 
 ```
-customers             = sum over types of count
-outage_value_per_hour = sum over types of count * voll[type]
+customers                     = sum over types of count
+customer_minutes_per_failure  = customers * 60 * outage_hours_emergency[class]
+customer_minutes_per_planned  = customers * 60 * outage_hours_planned[class]
+outage_cost_per_failure       = (sum over types of count * voll[type])
+                                  * outage_hours_emergency[class]
 ```
 
-`customers` feeds SAIFI and SAIDI **unweighted**, because those indices count
-every customer equally by definition — weighting them by value produces a
-number that is not SAIFI and that no regulator would recognize.
-`outage_value_per_hour` feeds policy scoring (2.8), where value is exactly what
-should drive the ranking.
+`customers` feeds SAIFI **unweighted**, because that index counts every
+customer equally by definition — weighting it by value produces a number that
+is not SAIFI and that no regulator would recognize. The customer-minute
+quantities feed SAIDI and CMI. `outage_cost_per_failure` feeds policy scoring
+(2.8), where value is exactly what should drive the ranking.
 
-**Both are computed in Python before the kernel is called**, the same design
-decision as the effective-scale reduction in 2.3: the kernel receives two
-scalars per segment and never learns that customer types exist. Adding a
-customer type then changes the population generator and the configuration and
-leaves the Rust side untouched.
+**Durations are configured in hours and converted to minutes here**, once, at
+the only place that does it. The reliability indices are defined in
+customer-minutes and a config file is more readable in hours, so the conversion
+has to happen somewhere; doing it at the boundary means the kernel accumulates
+minutes and every downstream name says which unit it carries.
+
+**All four are computed in Python before the kernel is called**, the same
+design decision as the effective-scale reduction in 2.3: the kernel receives
+four scalars per segment and never learns that customer types or restoration
+times exist. Adding a customer type, or changing how duration is modeled, then
+touches the population generator and the configuration and leaves the Rust side
+untouched.
 
 The value-of-lost-load figures in `configs/base.yaml` are placeholders. They
 need to come from published interruption-cost estimates by customer class,
@@ -351,6 +393,9 @@ CAIDI = SAIDI / SAIFI
 CMI   = sum over outages of (customers * outage_minutes)
 ```
 
+SAIFI's numerator is the count of customers interrupted, and SAIDI's is
+customer-minutes; the kernel returns both, because a count cannot be recovered
+from a duration-weighted sum once restoration time varies by class (2.5).
 These use the unweighted `customers` count from 2.5, Customers served by type.
 Value weighting belongs to policy scoring and to the cost reporting in
 Section 7, Results, metrics, and reporting, not to the reliability indices.
@@ -395,7 +440,7 @@ is exhausted. Policies to implement:
 |------------------|---------------------------------------------------------------|
 | `run_to_failure` | no planned replacement; baseline                              |
 | `age_threshold`  | eligible if `age >= threshold_years`; rank by age desc        |
-| `risk_ranked`    | `p(t) * outage_value_per_hour * outage_hours_emergency + p(t) * (emergency_cost - planned_cost)` |
+| `risk_ranked`    | `p(t) * outage_cost_per_failure + p(t) * (emergency_cost - planned_cost)` |
 | `worst_first`    | rank by `p(t)` alone, ignoring consequence                    |
 | `random`         | random eligible order; control for ranking value              |
 
@@ -443,14 +488,19 @@ warns about.
 
 Then for each year `y`:
 
-1. **Resolve failures** whose failure time falls in `[y, y+1)`. Record the
-   outage (`customers * outage_hours_emergency`), charge `emergency_cost`, and
-   replace the segment immediately: `age = 0`, the parameters of
-   `replacement_technology`, and a fresh lifetime drawn from the next
-   installation index for that segment (2.11).
+1. **Resolve failures** whose failure time falls in `[y, y+1)`. Accumulate
+   `customers` interrupted and `customer_minutes_per_failure`, charge
+   `emergency_cost`, and replace the segment immediately: `age = 0`, the
+   parameters of `replacement_technology`, and a fresh lifetime drawn from the
+   next installation index for that segment (2.11).
 2. **Planned replacement.** Score eligible segments, sort, and fund greedily
    until the annual budget is exhausted. Each funded segment resets the same
-   way as a failed one: `age = 0`, replacement technology, fresh lifetime.
+   way as a failed one: `age = 0`, replacement technology, fresh lifetime, and
+   accumulates `customer_minutes_per_planned` — zero for a class that is
+   switched out without interrupting anyone, and not zero for a radial one
+   (2.5). Planned work on laterals therefore costs SAIDI in the year it
+   happens while reducing it later, which is a real tradeoff the model should
+   show rather than assume away.
 3. **Accumulate** per-year metrics, keyed by segment class.
 
 Failures resolve before planned work so that a segment which failed this year
@@ -626,8 +676,19 @@ budget:
   emergency_charged_to_budget: false
 
 reliability:
-  outage_hours_emergency: 4.5
-  outage_hours_planned: 0.0
+  # Customer restoration time by class, in hours — time until the customer is
+  # back on, not time until the cable is repaired (2.5). A looped feeder is
+  # restored by switching and repaired afterwards; a radial lateral's customers
+  # are out for the whole job, so the ordering runs opposite to repair
+  # difficulty. PLACEHOLDERS.
+  outage_hours_emergency:
+    main_feeder: 1.8
+    distribution_3ph: 3.0
+    lateral_1ph: 5.0
+  outage_hours_planned:
+    main_feeder: 0.0        # back-fed, no interruption
+    distribution_3ph: 0.5   # brief switching
+    lateral_1ph: 4.0        # radial: customers out for the work
   # Value of lost load, dollars per customer-hour, by customer type (2.5).
   # PLACEHOLDERS. These need sourcing to published interruption-cost estimates
   # before any result is presented, and the source and outage duration they
@@ -658,6 +719,9 @@ failure that would otherwise surface as a wrong number rather than an error:
 - Technology vintage ranges partition `install_year_range` with no gap and no
   overlap, so technology assignment is total and unambiguous.
 - `replacement_technology` names a configured technology.
+- `outage_hours_emergency` and `outage_hours_planned` have exactly one entry
+  per configured class name. A class missing from either silently contributes a
+  zero-duration outage, which reads as a reliability improvement.
 - `baseline_policy` names a configured policy.
 - `install_volume` breakpoints lie inside `install_year_range` and include both
   endpoints, so interpolation never extrapolates.
@@ -772,7 +836,7 @@ question with a different answer.
 | Synthetic segment population | `population.py` | — | One-time, and it vectorizes well |
 | Synthetic failure records | `records.py` | — | One-time, and only the fit consumes it |
 | Effective-scale reduction (conductors, length) | `weibull.py` | — | Collapses to one `(shape, scale)` per segment before the call (2.3) |
-| Value-weighted customer rollup | `population.py` | — | Collapses to one scalar per segment; the kernel never learns customer types exist (2.5) |
+| Customer and restoration-time rollup | `population.py` | — | Collapses to four scalars per segment; the kernel never learns customer types or restoration times exist (2.5) |
 | Budget and cost escalation series | `config.py` → arrays | — | A rate written on both sides diverges silently |
 | Censored MLE and the AFT fit | `weibull.py` | — | A one-time fit over a modest table; porting it buys nothing (2.4) |
 | **Conditional `p(t)`** | `weibull.py` | `weibull.rs` | **Mirrored** |
@@ -814,16 +878,21 @@ out. **Never call back into Python inside the loop** — that erases the speedup
 ```rust
 #[pyfunction]
 #[pyo3(signature = (
-    length_ft, customers, outage_value_per_hour, class_index, n_conductors,
-    age0, shape, scale, replacement_shape, replacement_scale, cost_per_ft,
-    policy, budget, cost_escalation, n_years, n_reps, seed,
+    length_ft, customers, customer_minutes_per_failure,
+    customer_minutes_per_planned, outage_cost_per_failure, class_index,
+    n_conductors, age0, shape, scale, replacement_shape, replacement_scale,
+    cost_per_ft, policy, budget, cost_escalation, emergency_multiplier,
+    mobilization_per_segment, emergency_charged_to_budget, n_classes,
+    n_years, n_reps, seed,
 ))]
 fn simulate(
     py: Python<'_>,
     // per-segment arrays, all length n_segments
     length_ft:             PyReadonlyArray1<f64>,
-    customers:             PyReadonlyArray1<f64>,  // unweighted total (2.5)
-    outage_value_per_hour: PyReadonlyArray1<f64>,  // value-weighted (2.5)
+    customers:                    PyReadonlyArray1<f64>,  // count, for SAIFI
+    customer_minutes_per_failure: PyReadonlyArray1<f64>,  // count * duration (2.5)
+    customer_minutes_per_planned: PyReadonlyArray1<f64>,  // zero where back-fed
+    outage_cost_per_failure:      PyReadonlyArray1<f64>,  // dollars (2.5)
     class_index:           PyReadonlyArray1<u8>,   // the per-class result axis
     n_conductors:          PyReadonlyArray1<u8>,   // cost only; failure uses scale
     age0:                  PyReadonlyArray1<f64>,
@@ -836,15 +905,24 @@ fn simulate(
     policy:          PolicyConfig,
     budget:          PyReadonlyArray1<f64>,  // length n_years, escalation applied
     cost_escalation: PyReadonlyArray1<f64>,  // length n_years, multiplier
+    // cost and budget scalars the returned results cannot be computed without
+    emergency_multiplier:       f64,
+    mobilization_per_segment:   f64,
+    emergency_charged_to_budget: bool,
+    n_classes:       usize,                  // sizes the third result axis
     n_years:         usize,
     n_reps:          usize,
     seed:            u64,
 ) -> PyResult<SimResults>                    // #[pyclass] holding numpy arrays
 ```
 
-`SimResults` returns `(n_reps, n_years, n_classes)` arrays: `failures`, `cmi`,
-`planned_replacements`, `planned_spend`, `emergency_spend`, plus optional final
-`ages`.
+`SimResults` returns `(n_reps, n_years, n_classes)` arrays: `failures`,
+`customers_interrupted`, `customer_minutes`, `planned_replacements`,
+`planned_spend`, `emergency_spend`.
+
+`customers_interrupted` and `customer_minutes` are both returned because SAIFI
+needs a count and SAIDI needs a duration-weighted sum, and once restoration
+time varies by class (2.5) neither can be recovered from the other.
 
 Implementation notes:
 
@@ -1588,6 +1666,7 @@ reopen one deliberately rather than by accident.
 | Plotting backend | Plotly for the shared figures, as an optional extra (7.5) | One backend for the notebooks and the app; the comparison overlay is read by hovering, which a static image cannot support |
 | Shiny deployment target | Posit Connect (Section 9, Shiny application) | Installs the package into its own environment, so the abi3 wheel moves into Phase 6 |
 | Baseline for "avoided" metrics | `run_to_failure`, set by `reporting.baseline_policy` (7.4) | Doing nothing is the comparison a budget request is actually argued against |
+| Outage duration | Customer restoration time, configured per class, with laterals longest (2.5) | The indices measure time until the customer is back on, not time to repair. A looped feeder is restored by switching in minutes and repaired afterwards; a radial lateral's customers are out for the whole job. The ordering therefore runs opposite to repair difficulty, and the same argument makes planned work non-free on laterals |
 | Greedy stopping rule | Stop at the first candidate that does not fit (2.8) | It is what ranking and funding down a list means operationally, and it is the only rule a vectorized implementation can reproduce; the skip-ahead alternative is an unjustified knapsack heuristic and is inherently sequential |
 | The benchmark baseline | Separate from the reference — a batched NumPy implementation, with batched polars as a contender (6.C) | An optimized reference is no longer plainly correct, and an unoptimized baseline flatters the kernel |
 | `build_out_curve` | Replaced by an explicit `install_volume` breakpoint map in config (Section 3) | A named curve with no definition is a value that cannot be checked or changed |
@@ -1608,7 +1687,13 @@ reopen one deliberately rather than by accident.
    notebook?** Fitting per-technology shape needs enough observed failures per
    technology that the synthetic record table may be large enough to be slow.
    Decide once it has been run and timed, not before.
-5. **Splice-driven failure.** 2.3, Effective scale, notes that a length
+5. **Switchability as a class average.** Restoration time per class (2.5)
+   averages over the segments in that class that can be switched around and
+   those that cannot. Modeling it as a per-segment probability of having an
+   alternate feed would be more faithful and would widen the outage
+   distribution rather than only shifting its mean. Whether that is worth a
+   second random draw per failure is a v2 question.
+6. **Splice-driven failure.** 2.3, Effective scale, notes that a length
    coefficient shrunk toward zero would indicate failures concentrating at
    splices and terminations. Whether that becomes a modeled term or stays a
    documented diagnostic is a v2 question.
