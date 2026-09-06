@@ -11,9 +11,8 @@ wins on *how work is done here*.
 
 - **What this is:** a simulation of underground cable failure and replacement
   policy for an electric distribution utility, with a Rust compute kernel
-  exposed to Python via PyO3/maturin. Two goals weighted equally — learn
-  PyO3/maturin on a workload that justifies Rust, and produce a publishable
-  portfolio artifact.
+  exposed to Python via PyO3/maturin. Two goals — learn PyO3/maturin on a
+  workload that justifies Rust, and produce a publishable portfolio artifact.
 - **The population is fully synthetic.** No original utility data is used, and
   none should enter this repo. A file that appears to hold observed failure
   records is a problem, not an input.
@@ -21,13 +20,18 @@ wins on *how work is done here*.
   Simulation logic lives in `python/cablesim/` and the Rust crate in `src/`.
   Notebooks and the Shiny app import from the package and define no modeling
   logic of their own.
-- **How to verify a change:** `uv run pytest -n auto`, then `uv run ruff
-  check .`, then `cargo fmt --check`, `cargo clippy --all-targets
-  --no-default-features -- -D warnings` and `cargo test --no-default-features`
-  where Rust changed — the commands `.github/workflows/test.yml` runs.
-  Anything touching `src/` needs `maturin develop --release` first — a stale extension module makes the suite
-  report on code that is no longer in the diff, and a debug build makes every
-  timing number meaningless.
+- **How to verify a change:** the commands are in `README.md`, under Testing,
+  which is also what `.github/workflows/test.yml` runs. Two things about them
+  that are easy to skip and expensive to skip: anything touching `src/` needs
+  `maturin develop --release` first, or the suite reports on the extension
+  module currently installed rather than the one in the diff; and `--release`
+  is not optional for anything timed, because a debug build makes every timing
+  number meaningless.
+- **Where each kind of thing is written down.** `README.md` is how a person
+  runs this. `PLAN.md` is what the project is and why — the domain model, the
+  config schema, the kernel contract, the validation strategy, the roadmap.
+  This file is how work is done here. Rules belong in exactly one of the three,
+  and a rule restated in a second one drifts.
 
 ## Core principles
 
@@ -70,14 +74,11 @@ wins on *how work is done here*.
 
 ## The Python/Rust mirror
 
-The Python reference and the Rust kernel implement the same model twice, and that
-is the validation strategy rather than an accident:
-
-| Python | Rust | What it computes |
-|---|---|---|
-| `cablesim/reference.py` | `src/sim.rs` | the annual replication loop |
-| `cablesim/policies.py` | `src/policy.rs` | candidate scoring |
-| `cablesim/weibull.py` | `src/weibull.rs` | conditional `p(t)`, left-truncated lifetime draws |
+The Python reference and the Rust kernel implement the same model twice, and
+that is the validation strategy rather than an accident. **`PLAN.md` §5.1, What
+is implemented where, has the table** — which modules mirror each other, what
+lives only in Python, and the rule that decides the split. It is not repeated
+here.
 
 - **Never collapse the two sides.** Deleting the reference deletes the only thing
   that validates the kernel. `simplify-audit` is told this explicitly so it
@@ -91,10 +92,10 @@ is the validation strategy rather than an accident:
   into Python inside the loop; that erases the speedup this project exists to
   demonstrate. Random draws arrive as an array — the kernel neither seeds nor
   generates.
-- **Benchmarks compare against a properly vectorized NumPy reference**, not a
-  naive Python loop, and report single-threaded Rust and rayon-parallel Rust
-  separately. A 200x speedup over bad Python when NumPy gives 40x for free is
-  the self-deception to avoid.
+- **The reference implementation is not the benchmark baseline.** They are
+  different programs with different jobs, and comparing the kernel against the
+  scalar reference overstates the speedup. `PLAN.md` §6.C, Benchmarks, has the
+  four implementations and which one the claim is made against.
 
 ## Code style
 
@@ -190,10 +191,10 @@ is the validation strategy rather than an accident:
   reproducible from a seed, so a committed data blob has no reason to exist
   here. The suite reaches no network.
 - **The three validation layers, in order of authority** (`PLAN.md` §6,
-  Validation strategy):
-  analytical checks against the closed form, reference parity, then benchmarks.
-  An analytical check is worth more than a parity check, because it can be
-  wrong in only one way.
+  Validation strategy, which has the assertions, tolerances and sample sizes):
+  analytical checks against the closed form, parity between implementations,
+  then benchmarks. An analytical check is worth more than a parity check,
+  because it can be wrong in only one way.
   - **MLE recovery is what validates the fitting code.** Simulate lifetimes from
     known `(k, lambda)`, censor, refit, confirm the truth falls inside the
     fitted CI. It is built as a ladder (`PLAN.md` §6, Validation strategy) so

@@ -10,10 +10,11 @@ policies evaluated against customer reliability (SAIFI / SAIDI / CMI) over a
 30-year horizon. All inputs are parameterized via config; the cable population
 is fully synthetic.
 
-**Status: scaffolded.** The build pipeline works end to end — the Rust crate
-compiles, the extension module imports under Python, and the configuration
-schema validates the checked-in defaults. The simulation itself is not written
-yet. See [PLAN.md](PLAN.md) for the model and the phased roadmap.
+**Status: scaffolded.** The configuration schema validates the checked-in
+defaults, the continuous integration workflows run, and the extension module
+has been built and imports under Python. The simulation itself is not written
+yet. See [PLAN.md](PLAN.md) for the model, the decisions behind it, and the
+phased roadmap.
 
 ## Layout
 
@@ -23,6 +24,7 @@ yet. See [PLAN.md](PLAN.md) for the model and the phased roadmap.
 | `python/cablesim/` | the Python package: configuration, and the pure-Python reference implementation that mirrors the kernel |
 | `configs/base.yaml` | the documented default run configuration |
 | `tests/` | the test suite |
+| [PLAN.md](PLAN.md) | the model, the configuration schema, the kernel contract, and the roadmap |
 
 The Python reference and the Rust kernel implement the same model twice. That is
 deliberate: the parity tests between them are what validate the kernel, so
@@ -69,3 +71,16 @@ caused it.
 `cargo test` needs `--no-default-features` because the default build enables
 PyO3's `extension-module`, and a test binary linked against it cannot resolve
 the CPython symbols the interpreter supplies at import time.
+
+## Reading the plan
+
+`PLAN.md` is long and heavily cross-referenced. It renders to HTML with a
+table of contents:
+
+```bash
+quarto render PLAN.md      # writes PLAN.html; both it and PLAN_files/ are ignored
+```
+
+The table of contents comes from the front matter, so there is none to
+maintain in the file itself. A test checks that every section citation in the
+document resolves to a section that exists.
