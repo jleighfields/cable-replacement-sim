@@ -407,6 +407,21 @@ Ranking mode is a parameter: `rank_by: score | score_per_dollar`. The
 `score_per_dollar` variant is a greedy knapsack approximation and will usually
 beat raw score under a binding budget.
 
+**The greedy stops at the first candidate that does not fit.** Ranking and then
+funding down the list is what a capital plan does operationally, and it is the
+rule that vectorizes: take the cumulative cost in rank order and cut at the
+first row that exceeds the budget. The alternative — passing over an
+unaffordable candidate and continuing to fund cheaper ones below it — spends
+more of the budget, but it is an unjustified knapsack heuristic and it is
+inherently sequential, so no vectorized implementation can reproduce it.
+`rank_by: score_per_dollar` is what compensates for a cheap candidate being
+passed over, and it does so in the ranking rather than in the fill.
+
+The two rules give different answers, so every implementation has to use the
+same one. A divergence here can pass the statistical parity test and fail only
+the deterministic one, which is the case Section 6.B, Oracle parity, exists to
+catch.
+
 ### 2.9 Annual simulation loop
 
 Failure times are continuous and drawn once per installation; the budget cycle
@@ -693,7 +708,8 @@ cable-replacement-sim/
 │   ├── records.py              # synthetic censored failure records (fit input)
 │   ├── weibull.py              # censored MLE, effective-scale reduction
 │   ├── policies.py             # scoring functions (shared definitions)
-│   ├── reference.py            # pure-Python oracle simulator
+│   ├── reference.py            # pure-Python oracle simulator (correctness reference)
+│   ├── batched.py              # batched NumPy and polars loops; benchmark only
 │   ├── metrics.py              # SAIFI / SAIDI / CAIDI / CMI, discounting
 │   ├── results.py              # run directory layout, write and read
 │   └── plots.py                # shared figures; optional plotly extra
@@ -718,6 +734,7 @@ cable-replacement-sim/
 │   ├── test_effective_scale.py
 │   ├── test_policies.py
 │   ├── test_oracle_parity.py
+│   ├── test_batched_parity.py
 │   ├── test_results.py
 │   ├── test_plots.py
 │   ├── test_notebooks.py       # marker: notebooks
@@ -776,6 +793,12 @@ Three rules decide that table, and each is a rule rather than a preference:
 - **The kernel does no I/O and never calls back into Python.** It takes arrays
   and returns arrays. Everything about files, formats and figures is on the
   Python side of the boundary.
+
+Two further implementations of the annual loop exist **for the benchmark only**
+(`batched.py`, Section 6.C, Benchmarks): a batched NumPy baseline and a batched
+polars implementation. Neither is the correctness reference, nothing imports
+them outside the benchmark and their parity tests, and they arrive in Phase 5
+once the model has stopped moving.
 
 ### 5.2 The call
 
@@ -962,21 +985,46 @@ library's `(mu, sigma)` and this model's `(k, lambda)`.
 
 ### C. Benchmarks (honest baselines)
 
-- Baseline must be a **properly vectorized NumPy oracle**, not a naive Python
-  loop. Reporting a large speedup against bad Python when NumPy gives most of
-  it for free is exactly the self-deception to avoid. The honest baseline
-  batches replications as a second array axis, so the year loop runs 30 times
-  rather than 30,000, and vectorizes the greedy fill as sort, cumulative sum,
-  and search.
-- Report single-threaded Rust and rayon-parallel Rust separately, so the
-  language win and the parallelism win are not conflated.
+**The correctness reference and the benchmark baseline are different
+programs.** The oracle's job is to be plainly correct, so that a parity failure
+can be arbitrated against it. The baseline's job is to be as fast as competent
+Python gets, so that the speedup figure is honest. Optimizing the oracle
+destroys the property that makes it useful, and benchmarking against an
+unoptimized oracle flatters the kernel. There are therefore four
+implementations of the annual loop:
+
+| Implementation | Where | Job |
+|---|---|---|
+| Scalar oracle | `reference.py` | Correctness reference. One replication at a time, no vectorization, readable end to end |
+| Batched NumPy | `batched.py` | The honest baseline. State is a `(n_reps_chunk, n_segments)` array, so the year loop runs 30 times rather than 30,000 |
+| Batched polars | `batched.py` | Whether a frame-based implementation is competitive. Ranking and the greedy fill are `sort` plus `cum_sum().over("rep")`; metrics are a `group_by` |
+| Rust kernel | `src/` | Reported single-threaded and rayon-parallel separately, so the language win and the parallelism win are not conflated |
+
+- **Every implementation passes the same parity tests.** A baseline that has
+  not been checked against the oracle benchmarks something that may be wrong,
+  and a fast wrong answer is the easiest kind to produce.
+- **The greedy stopping rule of 2.8 is what makes the batched implementations
+  possible at all**, and it is why that rule is pinned rather than left to each
+  implementation to settle.
+- **Both Python implementations chunk over replications, and the chunk size is
+  reported alongside the timing.** At 40,000 segments and 1,000 replications
+  the state is 40 million cells, so one f64 array is 320 MB and the working set
+  runs to a few gigabytes. Not having to chunk is one of the kernel's real
+  advantages, and it is a more defensible claim than saying loops are slow.
+- **polars has no addressable per-element generator**, so its uniforms are
+  drawn in NumPy and attached as a column (2.11, Random numbers and why
+  policies must share them). The polars implementation is therefore not purely
+  polars, which is worth stating rather than leaving to be discovered.
+- **If polars loses, publish the number and delete the implementation.** The
+  measurement is the deliverable. Carrying a fourth mirror of the annual loop
+  to answer a question that has already been answered is not.
 - Always build with `maturin develop --release` before benchmarking; debug
   builds are slow enough to make timing numbers meaningless. Record the
-  measured ratio here once Phase 5 produces one — nothing has been measured
+  measured ratios here once Phase 5 produces them — nothing has been measured
   yet, so no number is quoted.
 - Drawing lifetimes rather than evaluating hazard every segment-year (2.9)
   removes most of the floating-point work and leaves the scoring, sort, and
-  greedy fill dominant. That changes what the benchmark is measuring, and it is
+  greedy fill dominant. That changes what the benchmark is measuring, which is
   a reason to measure rather than to predict.
 
 ---
@@ -1457,9 +1505,14 @@ statistical parity test and the deterministic parity test against the oracle.
 The indexed random-number scheme of 2.11 is decided here, not in Phase 5. It
 cannot be retrofitted once the loop is written.
 
-**Phase 5 — parallel + benchmarks**
-`py.allow_threads` + rayon over replications. Benchmark harness against the
-batched NumPy baseline and notebook 05.
+**Phase 5 — parallel, batched baselines, and benchmarks**
+`py.allow_threads` + rayon over replications. `batched.py`: the batched NumPy
+baseline and the batched polars implementation, both passing the same parity
+tests as the kernel. Benchmark harness and notebook 05.
+
+The batched implementations land here rather than in Phase 3 because each is
+another mirror of the annual loop and another place divergence can hide. The
+model has to have stopped moving first.
 
 **Phase 6 — Shiny app, and the wheel it needs**
 `app/` with config-override wiring, ExtendedTask + progress, cached default
@@ -1529,6 +1582,8 @@ reopen one deliberately rather than by accident.
 | Plotting backend | Plotly for the shared figures, as an optional extra (7.5) | One backend for the notebooks and the app; the comparison overlay is read by hovering, which a static image cannot support |
 | Shiny deployment target | Posit Connect (Section 9, Shiny application) | Installs the package into its own environment, so the abi3 wheel moves into Phase 6 |
 | Baseline for "avoided" metrics | `run_to_failure`, set by `reporting.baseline_policy` (7.4) | Doing nothing is the comparison a budget request is actually argued against |
+| Greedy stopping rule | Stop at the first candidate that does not fit (2.8) | It is what ranking and funding down a list means operationally, and it is the only rule a vectorized implementation can reproduce; the skip-ahead alternative is an unjustified knapsack heuristic and is inherently sequential |
+| The benchmark baseline | Separate from the oracle — a batched NumPy implementation, with batched polars as a contender (6.C) | An optimized oracle is no longer plainly correct, and an unoptimized baseline flatters the kernel |
 | `build_out_curve` | Replaced by an explicit `install_volume` breakpoint map in config (Section 3) | A named curve with no definition is a value that cannot be checked or changed |
 
 ### 13.2 Still open
