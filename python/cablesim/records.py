@@ -34,20 +34,25 @@ Censoring and truncation
 Two different things happen at the edges of the study window, and the words are
 not interchangeable.
 
-They describe different ends of an episode, and **one episode can have both**.
+**Left truncation is a missing row. Right censoring is a row with a missing
+end.** That is the whole distinction, and one episode can meet both.
 
-**Right censoring is about the exit.** The episode is in the table, you know it
-reached the study end, you do not know when it fails. It contributes ``S(t)``.
+Worked from the generator: a segment has cable installed in 1967, which fails
+in 1996 at age 29 and is replaced the same moment. The 1998 study sees one row
+— the replacement, installed 1996, still running at the 2026 study end.
 
-**Left truncation is about the entry.** The episode is only in the table
-because it was still running at the inventory date, so the sample of episodes
-installed before then holds survivors only. The likelihood conditions on that
-by dividing by ``S(entry age)``.
+The 1967 episode is the **missing row**. Not a row with an unknown age: no row
+at all. Nothing in the data says the 1996 cable is a replacement rather than an
+original install, and no term in the likelihood corresponds to it.
 
-A cable installed in 1992, inventoried in 1998 and still running at a 2026
-study end is truncated at age 6 and censored at age 34 — both at once, and
-neither statement contradicts the other. Truncation is not an alternative to
-censoring; it is a statement about which episodes reached the table.
+The surviving row is **right-censored** at the exit: in the table, still
+running, end unknown. It is also **left-truncated** at the entry, because it is
+in the table only by virtue of having lasted until the inventory — cable
+installed in 1996 that failed before 1998 would not be here, its own
+replacement would be. So the row is asked a conditional question: given it
+reached age 2, what did it then do? Answering that one instead of the
+unconditional one is the entire correction. The missing row is never added
+back; the rows present are asked something slightly different.
 
 The generator makes them in different places. It simulates each segment's
 complete history first, so every lifetime is drawn whether or not a record

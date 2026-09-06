@@ -318,16 +318,27 @@ unidentified shape; this is the design between them.
 **Censoring and truncation are different mechanisms, and the words are not
 interchangeable. One episode can have both.**
 
-- **Right censoring** is incomplete *observation* of an episode you have. The
-  cable is in the table, you know it reached the study end, you do not know
-  when it fails. `delta_i = 0` and it contributes accumulated hazard only.
-- **Left truncation** is about the *entry*. An episode already finished before
-  the inventory is absent — no row is missing a value, because there is no row.
-  Those present from before that date are there *because* they were still
-  running, so that part of the sample holds survivors only.
+- **Right censoring is a row with a missing end.** The cable is in the table,
+  it reached the study end, and when it fails is unknown. `delta_i = 0`, and it
+  contributes accumulated hazard only.
+- **Left truncation is a missing row.** Not a row with a blank field — no row.
 
-A cable installed in 1992, inventoried in 1998 and still running at a 2026
-study end is truncated at age 6 and censored at age 34. Both, at once.
+A worked case makes the pair concrete. A segment has cable installed in 1967,
+which fails in 1996 at age 29 and is replaced the same moment. A study starting
+in 1998 sees exactly one row: the replacement, installed 1996, still running in
+2026.
+
+The 1967 episode is the missing row, and **no term in the likelihood
+corresponds to it** — the sum has one term per row present and never more.
+Nothing in the data even reveals that the 1996 cable is a replacement.
+
+The surviving row is right-censored at its exit and left-truncated at its
+entry, both at once. Truncated because it is in the table only by virtue of
+lasting until the inventory: cable installed in 1996 that failed before 1998
+would not be here, its own replacement would be. The correction therefore asks
+it a conditional question — given it reached age 2, what did it then do — and
+the episodes that failed before age 2 drop out of that conditional probability
+by construction. Nothing counts the missing rows or needs to.
 
 Truncation is correctable here only because the asset register records install
 dates even where failures are not recorded, which is what makes an entry age
@@ -1119,11 +1130,11 @@ records:
   # A prospective follow-up: inventory what is in the ground at
   # monitoring_start, taking install dates from the asset register, then record
   # failures until study_end. The two edges do different things and an episode
-  # can meet both. monitoring_start LEFT-TRUNCATES at entry: an episode already
-  # finished before the inventory is absent, and its replacement is there
-  # instead. study_end RIGHT-CENSORS at exit: an episode still running is in
-  # the table with an unknown end. Cable installed 1992, inventoried 1998,
-  # still running in 2026 is truncated at age 6 and censored at age 34.
+  # can meet both. study_end RIGHT-CENSORS at exit: a row with a missing end.
+  # monitoring_start LEFT-TRUNCATES at entry: a MISSING ROW. Cable installed
+  # 1967 that failed in 1996 and was replaced leaves no row at all here — only
+  # its replacement appears, and nothing says it is a replacement. That
+  # surviving row is censored at exit and truncated at entry, both at once.
   monitoring_start: 1998
   study_end: 2026
 
@@ -1184,6 +1195,7 @@ policies:
 reporting:
   baseline_policy: run_to_failure   # what "avoided" is measured against
 ```
+
 
 
 

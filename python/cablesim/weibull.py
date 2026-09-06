@@ -175,19 +175,24 @@ def log_likelihood(
 
         loglik = sum_i [ observed_i * log h(t_i) ] - sum_i [ H(t_i) - H(a_i) ]
 
-    **Censoring and truncation enter in different places, and the difference
-    is not cosmetic.** Censoring is handled by ``observed``: an episode that
-    reached the study end without failing contributes only accumulated hazard,
-    not a failure. Truncation is handled by ``entry_age``: an episode is in the
-    sample partly because it survived long enough to be recorded, so the
-    ``+ H(a_i)`` divides its contribution by ``S(a_i)`` and conditions on that.
+    **Censoring and truncation enter in different places.** Censoring is handled
+    by ``observed``: an episode that reached the study end without failing
+    contributes accumulated hazard and no failure. Truncation is handled by
+    ``entry_age``: the ``+ H(a_i)`` divides that episode's contribution by
+    ``S(a_i)``.
 
-    Put the other way round: a censored episode is one you have but cannot see
-    the end of; a truncated one is an episode you never had. The correction
-    does not recover the ones you never had — it adjusts for the fact that the
-    ones you do have were selected for lasting long enough to be recorded. All
-    it needs is each surviving episode's age when observation began, which the
-    asset register supplies through the install date.
+    **A truncated episode is a missing row, and it is never a term in this
+    sum.** There is exactly one term per row present. Take a segment whose
+    cable was installed in 1967, failed in 1996 at age 29, and was replaced:
+    a study starting in 1998 has one row, the replacement, and nothing at all
+    for the 1967 cable. No term represents it and none can.
+
+    What the ``+ H(a_i)`` does is change the question asked of the rows that
+    *are* here. Unconditionally: what is the chance this cable did what it did?
+    Conditionally: given it reached age ``a_i``, what is the chance it did what
+    it did? The episodes that failed before ``a_i`` drop out of that conditional
+    probability by construction, which is why nothing here has to count them or
+    know anything about them.
 
     Charging each episode for hazard accumulated before anyone was watching
     counts exposure that could never have produced an observation, and biases
