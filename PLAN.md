@@ -260,8 +260,36 @@ loglik = sum_i [ delta_i * log h(t_i) ] - sum_i [ H(t_i) - H(a_i) ]
 
 **Covariates enter through scale.** The fit is an accelerated-failure-time
 model in the sense of R's `survreg`: shape is constant within a stratum and
-covariates scale `lambda`. `log(length_ft)` is the covariate that matters, and
-2.3, Effective scale, predicts its coefficient is `-1/k`.
+covariates scale `lambda`.
+
+**The two parameterizations, written out once so nothing has to transpose them
+from memory.** The accelerated-failure-time form and the hazard form above are
+the same model:
+
+```
+log(T) = mu + beta' x + sigma * W      (AFT; W is standard extreme value)
+S(t)   = exp(-(t/lambda)^k)            (hazard form, 2.2)
+
+    k      = 1 / sigma
+    lambda = exp(mu + beta' x)
+```
+
+**The length covariate is always `log(L / L_ref)`, never `log(length_ft)`.**
+They differ by a constant that is absorbed into the intercept, and using the
+ratio makes `exp(mu)` the scale of a reference-length segment, directly
+comparable to the technology scale configured in Section 3. With
+`log(length_ft)` the intercept means nothing on its own and cannot be asserted.
+
+Under that parameterization, 2.3, Effective scale, predicts the coefficient on
+`log(L / L_ref)` exactly:
+
+```
+lambda ∝ L^(-1/k)   =>   beta_len = -1/k = -sigma
+```
+
+State whichever form a test asserts in, and give the conversion beside it. This
+is the transposition the document warns about two paragraphs below, and writing
+the bridge down once is what stops it.
 
 **Stratify by technology rather than pooling.** A single AFT across all
 technologies forces one shape parameter on all of them, and differing failure
@@ -444,6 +472,33 @@ is exhausted. Policies to implement:
 | `worst_first`    | rank by `p(t)` alone, ignoring consequence                    |
 | `random`         | random eligible order; control for ranking value              |
 
+**Eligibility, in full**, because "score eligible segments" is otherwise
+defined for only one policy:
+
+| Policy | Eligible set | Ranked by |
+|---|---|---|
+| `run_to_failure` | empty; no planned work is ever funded | — |
+| `age_threshold` | `age >= threshold_years` | age, descending |
+| `risk_ranked` | every in-service segment | the score, or the score per dollar |
+| `worst_first` | every in-service segment | `p(t)`, descending |
+| `random` | every in-service segment | a random permutation, from its own stream (2.11) |
+
+A segment that failed earlier in the same year is never eligible, because it
+has already been replaced (2.9).
+
+**There is no minimum score or minimum age filter on the three whole-population
+policies.** The budget is what limits how many get funded, and adding a
+threshold on top would be a second knob doing the same job with a different
+name. The consequence is that `risk_ranked` scores and sorts every in-service
+segment every year — 40,000 rows, 30 times, per replication — and that is the
+dominant cost in the annual loop rather than an oversight (Section 6.C,
+Benchmarks).
+
+**`rank_by` is a `risk_ranked` parameter only.** `worst_first` ranks on `p(t)`
+alone by definition — that is what makes it a control for consequence
+weighting, and letting it divide by cost would blur the thing it controls for.
+`age_threshold` ranks on age, where a per-dollar variant has no meaning.
+
 `worst_first` and `random` exist as controls — they isolate how much of the
 benefit comes from *consequence weighting* rather than merely from spending.
 
@@ -515,6 +570,28 @@ instead of thirty hazard evaluations), which leaves the scoring, sort, and
 greedy fill as the dominant cost. Section 6, Validation strategy, records what
 that is actually worth once it is measured.
 
+**The sort key is total, so ties cannot decide the answer.** Candidates are
+ordered by `(score descending, segment_id ascending)`. Scores tie constantly —
+`age_threshold` ranks on an integer age shared by thousands of segments — and
+because the greedy stops at the first candidate that does not fit (2.8), which
+tied segment lands last decides what gets funded. A composite key that is
+unique makes the order total, so it does not matter whether an implementation's
+sort is stable, and Python's and Rust's default sorts agree. Without it the
+deterministic parity test fails for a reason nothing in the model explains.
+
+**Unspent budget does not carry forward.** Each year gets the amount in the
+budget series and no more. Real capital budgets sometimes do carry, but making
+year `y`'s available money depend on what earlier years happened to spend would
+decouple the swept parameter from the spending it is supposed to describe, and
+the reliability-against-budget curve is read as a function of that parameter.
+
+**A replacement enters service at the start of the following year.** A segment
+replaced in year `y`, whether after a failure or as planned work, has its new
+lifetime measured from `y+1`. So nothing can fail twice in one year, the
+year loop needs no inner iteration, and the deterministic parity test of
+Section 6.B remains well defined when lifetimes are forced to zero — without
+this rule that test does not terminate.
+
 **No event queue.** Because the budget cycle is annual, one `failure_time` per
 segment plus a scan per year is enough. A priority queue would be machinery
 for an ordering nothing consumes.
@@ -542,11 +619,40 @@ lifetime measured from 1998. Collapsing that to one row per segment either
 discards the failure or mismeasures the age at which it happened, and both bias
 the fit toward longer life.
 
-Fitting per technology needs enough failures in each technology's cell. A
-population whose newest technology has almost no observed failures cannot
-recover that technology's parameters, and the MLE recovery test in Section 6,
-Validation strategy, is what surfaces it rather than a plausible-looking
-number.
+**How the table is generated.** `records.py` draws it from the `records:`
+block of Section 3, Configuration schema, independently of the simulation
+population:
+
+1. Draw `n_records` segments: class, technology from install year, and length,
+   by the same rules `population.py` uses (Section 3).
+2. Draw a lifetime for the first installation from that technology's effective
+   scale (2.3), and set `failure_year = install_year + lifetime`.
+3. **Chain within a segment.** If that failure falls before `study_end`, the
+   segment is replaced in that year with `replacement_technology`, and a new
+   episode begins with its own lifetime draw. Repeat until an episode survives
+   past `study_end`. Each completed episode is one uncensored row; the last one
+   is right-censored.
+4. **Apply the observation window.** `entry_year = max(install_year,
+   monitoring_start)`, which is the left-truncation point. An episode that both
+   began and ended before `monitoring_start` is dropped entirely — it was never
+   observable, and dropping it is what the truncation correction in 2.4 exists
+   to compensate for.
+5. Censor every surviving episode at `study_end`.
+
+The censoring fraction is not configured directly. It falls out of
+`monitoring_start`, `study_end` and the technology parameters, and the
+generator reports it so a notebook can show what it came to. A knob that set it
+directly would have to fight the lifetimes that produced it.
+
+**Sizing is set by the fit, not by realism.** Recovering a shape parameter to a
+useful interval takes on the order of hundreds of *observed* failures in each
+technology's cell, and heavy censoring means most cable never fails inside the
+window. `n_records` is therefore chosen by running the recovery test and
+raising it until the intervals are tight enough, and the number that results is
+recorded in the config with that reasoning beside it. A population whose newest
+technology has almost no observed failures cannot recover that technology's
+parameters, and the MLE recovery test in Section 6, Validation strategy, is
+what surfaces it rather than a plausible-looking number.
 
 ### 2.11 Random numbers, and why policies must share them
 
@@ -601,6 +707,8 @@ simulation:
   n_years: 30
   n_reps: 1000
   seed: 20260902
+  start_year: 2026      # year 0. Age is start_year - install_year, and every
+                        # present value in Section 7 is measured at this year.
 
 population:
   n_segments: 40000
@@ -644,7 +752,7 @@ population:
       customer_mix:
         residential: {dist: lognormal, median: 12, sigma: 0.85}
         commercial:  {dist: lognormal, median: 1,  sigma: 1.10}
-        industrial:  {dist: lognormal, median: 0,  sigma: 1.30}
+        industrial:  {dist: lognormal, median: 0.4, sigma: 1.30}
 
   initial_age:
     dist: empirical_install_years
@@ -660,6 +768,14 @@ population:
       1995: 0.6
       2005: 0.5
       2020: 0.4
+
+# The censored failure history the MLE fits (2.10). Separate from the
+# population above: this table is sized by how many observed failures the
+# recovery test needs, not by how large a system is being modeled.
+records:
+  n_records: 20000
+  monitoring_start: 1998    # left-truncation point; no record exists before it
+  study_end: 2026           # right-censoring point
 
 failure:
   conductor_dependence: iid         # iid | shared_frailty (future)
@@ -709,6 +825,24 @@ reporting:
   baseline_policy: run_to_failure   # what "avoided" is measured against
 ```
 
+Three generation rules the YAML cannot carry on its own:
+
+- **Install year** is drawn by interpolating `install_volume` at every integer
+  year in `install_year_range`, normalizing those weights to a probability mass
+  function over years, and drawing from it **independently of class**. Class is
+  drawn from `share`, and the two are independent — vintage and class do not
+  correlate in this population.
+- **Customer counts are drawn as lognormal and rounded to the nearest
+  integer.** A median below 1 therefore yields mostly zeros, which is what
+  "laterals rarely serve an industrial customer" means quantitatively. A median
+  of exactly 0 is not a lognormal — it would need `log(0)` — so the schema
+  requires it to be positive, and a class-type pair that should almost never
+  occur gets a small median rather than a zero.
+- **Escalation and discounting are measured from year 0.** The multiplier for
+  year 0 is `1.0` for both `budget.escalation` and `costs.escalation_rate`, so
+  escalation first applies in year 1. Present values in Section 7, Results,
+  metrics, and reporting, are discounted to `simulation.start_year`.
+
 Validators the schema needs beyond field types and ranges, each guarding a
 failure that would otherwise surface as a wrong number rather than an error:
 
@@ -723,6 +857,15 @@ failure that would otherwise surface as a wrong number rather than an error:
   per configured class name. A class missing from either silently contributes a
   zero-duration outage, which reads as a reliability improvement.
 - `baseline_policy` names a configured policy.
+- `records.monitoring_start` and `records.study_end` lie inside
+  `install_year_range` and are ordered, and `study_end` is at or before
+  `simulation.start_year` — a study ending after the simulation begins would
+  fit on data the simulation is supposed to predict.
+- Each policy's `params` carries only the keys its `name` accepts:
+  `threshold_years` for `age_threshold`, `rank_by` for `risk_ranked`, and none
+  for the other three. An unrecognized key is rejected rather than ignored,
+  because a misspelled parameter that is silently dropped leaves the policy
+  running on its default and the run still looks fine.
 - `install_volume` breakpoints lie inside `install_year_range` and include both
   endpoints, so interpolation never extrapolates.
 
@@ -773,7 +916,7 @@ cable-replacement-sim/
 ├── python/cablesim/
 │   ├── __init__.py
 │   ├── config.py               # pydantic schema + loader
-│   ├── constants.py            # fixed values; overriding one is a bug
+│   ├── constants.py            # project paths, MINUTES_PER_HOUR, HOURS_PER_YEAR
 │   ├── population.py           # synthetic segment table (simulation input)
 │   ├── records.py              # synthetic censored failure records (fit input)
 │   ├── weibull.py              # censored MLE, effective-scale reduction
@@ -792,6 +935,7 @@ cable-replacement-sim/
 ├── app/                        # Shiny for Python
 │   ├── app.py                  # UI + server
 │   ├── overrides.py            # UI controls -> config overrides
+│   ├── sweep_cache.parquet     # committed; the landing view, no run required
 │   └── requirements.txt
 ├── tests/
 │   ├── __init__.py             # required, and in every subdirectory
@@ -815,6 +959,13 @@ cable-replacement-sim/
 └── benches/
     └── bench_sim.py
 ```
+
+`app/sweep_cache.parquet` is committed rather than generated at startup or read
+from `results/`. The deployment target builds its own environment and
+`results/` is not tracked, so anything the landing view needs has to travel
+with the app. A driver script produces it from `configs/base.yaml`, and it is
+small because it holds one precomputed budget sweep already summarized over
+replications rather than the per-replication frame of 7.2.
 
 `population.py` and `records.py` both generate synthetic data from config and a
 seed, and they are separate because they produce different tables for different
@@ -938,10 +1089,36 @@ Implementation notes:
   multiplier. Neither belongs as a scalar rate the kernel re-derives — a rate
   written on the pydantic model and again in Rust diverges silently.
 - **`PolicyConfig` is built in exactly one place**, a single function in
-  `policies.py` mapping the validated `PolicySpec` onto the Rust struct. The
-  Rust struct carries no default values of its own; a default written on both
-  sides is the defect the parity test would have to catch, and only the
-  deterministic case would.
+  `policies.py` mapping a validated `PolicySpec` — one entry of the `policies:`
+  list in Section 3 — onto the Rust struct below. The Rust struct carries no
+  default values of its own; a default written on both sides is the defect the
+  parity test would have to catch, and only the deterministic case would.
+
+  ```rust
+  /// The policy, resolved to what the annual loop needs.
+  #[derive(FromPyObject)]
+  struct PolicyConfig {
+      /// 0 run_to_failure, 1 age_threshold, 2 risk_ranked, 3 worst_first,
+      /// 4 random. An integer tag rather than a string, because it is compared
+      /// once per candidate per year.
+      kind: u8,
+      /// Eligibility age for `age_threshold` (2.8). `f64::INFINITY` for every
+      /// other policy, so one comparison serves all of them and eligibility
+      /// needs no branch on `kind`.
+      threshold_years: f64,
+      /// Divide the score by cost — `rank_by: score_per_dollar`. False for
+      /// every policy but `risk_ranked` (2.8).
+      rank_by_cost: bool,
+  }
+  ```
+
+  The unused fields carry explicit neutral values rather than `Option`, so the
+  loop keeps one code path and the choice of neutral value is made once, in
+  Python, where it can be read beside the schema it comes from.
+- **`class_index` follows the order classes appear in `configs/base.yaml`**,
+  and that order is what the third result axis means. `results.py` writes the
+  class *name* into the saved frame rather than the index (7.2), so nothing
+  downstream depends on that ordering surviving a config edit.
 - Wrap the compute in `py.allow_threads(|| ...)` and parallelize replications
   with `rayon`. Replications are independent — this is the natural axis.
 - **Uniforms are addressed by `(replication, segment, installation_index)`**,
@@ -982,6 +1159,23 @@ in only one way.
   a run that completes and curves that look plausible.
 - **Conditional annual probability `p(t)`** integrates to the correct survival
   curve over a 30-year horizon.
+
+**How these are asserted.** A statistical check with unstated parameters is the
+easiest kind to fool yourself with, so each one fixes its own:
+
+- **KS tests** run at 100,000 draws against the closed form, at `alpha = 0.001`,
+  on a pinned seed. The two are chosen together: the sample size gives power to
+  detect an exponent wrong in its second decimal, and the small `alpha` keeps a
+  correct implementation from failing the suite by chance. A KS test at a
+  million draws rejects on floating-point drift, and one at a hundred passes on
+  a wrong exponent, so neither end of the range is safe.
+- **`p(t)` against the survivor function is deterministic**, so it is asserted
+  exactly rather than statistically: the product of `(1 - p(t))` over the
+  horizon equals `S(30)` to `1e-12` relative.
+- **The left-truncated draw is checked at three entry ages** spanning the
+  range — young, middle-aged, and nearly worn out. The correction's error grows
+  with entry age, so a single young cohort passes even with the correction
+  missing entirely.
 
 ### The MLE recovery ladder
 
@@ -1031,9 +1225,11 @@ its own data to match its own specification.
 
 Two further requirements on how these are asserted:
 
-- **Assert the true value lies inside the fitted confidence interval**, at a
-  pinned seed — not that the point estimate is within a fixed epsilon. An
-  epsilon either flakes or is loose enough to prove nothing.
+- **Assert the true value lies inside the fitted 95% confidence interval**, at
+  a pinned seed — not that the point estimate is within a fixed epsilon. An
+  epsilon either flakes or is loose enough to prove nothing. Every parameter in
+  a rung must contain its truth *simultaneously*, so a rung with three
+  parameters is one assertion rather than three chances to pass.
 - **The coverage study belongs in notebook 02**, not in the suite. Refitting a
   hundred times to confirm roughly 95% of intervals contain the truth is a
   figure worth showing and minutes too slow to gate a merge.
@@ -1046,7 +1242,10 @@ window. The synthetic record table is therefore sized by what the fit needs
 
 **An independent implementation cross-checks the fit.**
 `lifelines.WeibullAFTFitter` fits the same data in the test suite and must
-agree. This is the same idea as the Python/Rust mirror applied to the
+agree on **point estimates to within a tenth of the fitted standard error**,
+after the conversion in 2.4. Point estimates rather than intervals, because
+comparing intervals would test the two libraries' interval machinery instead of
+the likelihood they both claim to maximize. This is the same idea as the Python/Rust mirror applied to the
 estimator: two implementations disagree loudly where one is silently wrong, and
 the failure it is aimed at is a parameterization transposed between an AFT
 library's `(mu, sigma)` and this model's `(k, lambda)`.
@@ -1091,7 +1290,13 @@ Which comparisons share random draws, and which do not:
   at any replication count.
 - Add one **deterministic** parity test with lifetimes forced to zero or to
   beyond the horizon, which removes randomness entirely and checks the policy
-  and budget logic exactly. This is where greedy-allocation bugs actually
+  and budget logic exactly. **Force them through the ordinary inputs, not a
+  test-only argument**: a technology scale near zero makes every segment fail
+  in its first year, and one far past the horizon makes none fail at all. Both
+  arrive in the same `scale` array every run uses, so the test exercises the
+  shipped path rather than a branch only tests reach. The replacement rule of
+  2.9 — new cable enters service the following year — is what keeps the
+  near-zero case terminating. This is where greedy-allocation bugs actually
   surface, and it is the only test that pins the emergency-spend ordering of
   2.7, Costs, when `emergency_charged_to_budget` is true.
 - **Parity is checked on saved runs**, not only in memory. Two runs written to
@@ -1121,6 +1326,10 @@ implementations of the annual loop:
 - **The greedy stopping rule of 2.8 is what makes the batched implementations
   possible at all**, and it is why that rule is pinned rather than left to each
   implementation to settle.
+- **Chunk size is an argument to the benchmark harness, not a config knob.**
+  It changes how much memory a run needs and how long it takes, and it changes
+  no result. Putting it on the config model would imply it were part of the
+  model; the harness sweeps it and reports the value beside each timing.
 - **Both Python implementations chunk over replications, and the chunk size is
   reported alongside the timing.** At 40,000 segments and 1,000 replications
   the state is 40 million cells, so one f64 array is 320 MB and the working set
@@ -1173,8 +1382,16 @@ results/<run_id>/
   build profile where it was the kernel, thread count, and wall time. A timing
   number without its build profile means nothing, which is the same point
   Section 6, Validation strategy, makes about benchmarks.
-- **`run_id` is a UTC timestamp.** It orders runs and does not collide within a
-  sweep driven from one process.
+- **`run_id` is a UTC timestamp** formatted `YYYYMMDDTHHMMSSffffff`. Ordering
+  runs is what it is for, and the microseconds are what keep two runs started
+  in the same second from colliding.
+
+**A run is one sweep point across every configured policy, not one policy.**
+The kernel is called once per policy inside it (5.2) and the results land in a
+single `results.parquet` with `policy` as a key column. So the run's
+`config.yaml` records the whole `policies:` list, and the sweep reader of 7.3
+hoists only the parameters that varied *between* runs — budget, seed, any other
+override — never `policy`, which varies within one.
 
 ### 7.2 The grain of what is saved
 
@@ -1198,8 +1415,10 @@ megabytes.
 **Parquet for storage, CSV only for export.** Parquet preserves dtypes and the
 schema, compresses, and can be scanned lazily so a sweep directory is queryable
 without loading it. CSV round-trips floats through text and loses the schema.
-The app's download button emits CSV because a person opens it in a spreadsheet;
-nothing in this project reads CSV back.
+The app offers both: CSV because a person opens it in a spreadsheet, and
+parquet because someone pulling the results back into polars should not have to
+round-trip through text. Nothing in this project *reads* CSV back — parquet is
+the format for that.
 
 ### 7.3 Reading a sweep back
 
@@ -1257,7 +1476,10 @@ emergency spend against the budget line, and the policy comparison overlay.
   none draws to a global figure, which is what lets a notebook and the app call
   the same code.
 - One-off diagnostic plots stay in the notebook that needs them. A figure earns
-  a place here when a second front end wants it.
+  a place here when a second front end wants it. Concretely, notebooks 02 and
+  03 draw likelihood surfaces and survival-curve overlays that appear nowhere
+  else, so those stay in the notebooks as matplotlib — which is also why those
+  notebooks do not depend on this module landing first.
 
 ### 7.6 Testing this layer
 
@@ -1290,7 +1512,7 @@ notebook needs a function, it belongs in the package.
 | `02_weibull_fitting.py` | Censored MLE walkthrough. Slider for censoring fraction; show the likelihood surface, fitted vs true survival curve, and the recovery test result. Demonstrates *why* censoring must be handled. |
 | `03_effective_scale.py` | The effective-scale reduction made visual (2.3). Sliders for `k`, `lambda`, `n` and length; overlay conductor-level and segment-level survival curves against the empirical minimum of sampled draws, and against draws for a longer segment. Shows scale shrinking by `(n * L/L_ref)^(-1/k)` while shape holds, which is the claim the recovery ladder's rung 3 tests numerically. |
 | `04_policy_explorer.py` | The headline demo. Sliders for annual budget, policy, and policy params; plot SAIDI/SAIFI trajectories over 30 years, spend, and failures by class. **This is the reliability-vs-budget curve** — the deliverable the original work produced. |
-| `05_parity_and_bench.py` | Reference-vs-Rust agreement plots plus the benchmark table (naive Python / vectorized NumPy / Rust single-threaded / Rust rayon). |
+| `05_parity_and_bench.py` | Reference-vs-Rust agreement plots plus the benchmark table. Its rows are the four implementations of Section 6.C — scalar reference, batched NumPy, batched polars, Rust single-threaded and Rust with rayon — at a stated chunk size. There is no naive-Python row: 6.C rules that baseline out as flattering. |
 
 **Each notebook walks the API layer by layer rather than making the top-level
 call.** A notebook that calls one function and plots what comes back teaches
@@ -1611,6 +1833,9 @@ a loud one:
 | a committed `.secrets.baseline` | `security-scan` treats a scan without an intact baseline as **invalid even when it exits cleanly**. Until it exists, every security phase is grep-only — which is fine if it is *said*, and misleading if it is not. |
 
 **Phase 1 — synthetic population**
+`weibull.py` begins here, with the effective-scale reduction of 2.3 and the
+lifetime draws of 2.2 — `population.py` needs the reduction, and Phase 2 adds
+fitting to the same module rather than creating it.
 `population.py` generating the segment table from config: class assignment,
 install year from the install-volume curve, technology from install year,
 per-type customer counts, and the effective-scale reduction of 2.3 folded into
@@ -1618,9 +1843,9 @@ one `(shape, scale)` pair per segment. Notebook 01. Tests for class shares,
 customer-count ordering by class and by type, technology assignment covering
 the whole install-year range, and reproducible seeding.
 
-**Phase 2 — Weibull, MLE, and the recovery ladder**
-`weibull.py`: conditional `p(t)`, the left-truncated lifetime draw, the
-effective-scale reduction, and the censored likelihood with covariates.
+**Phase 2 — MLE and the recovery ladder**
+`weibull.py` gains the censored likelihood with covariates and the fit itself;
+its reduction and draw functions landed in Phase 1.
 `records.py`: the synthetic episode-grain record table. Tests: the analytical
 checks and every rung of the MLE recovery ladder (Section 6, Validation
 strategy), including the `lifelines` cross-check. Notebooks 02 and 03.
@@ -1630,9 +1855,11 @@ comes before anything depends on it.
 
 **Phase 3 — Python reference, results, and reporting**
 `reference.py`: the full annual loop, correct and slow. `metrics.py`,
-`policies.py`, `results.py` and `plots.py`. Tests for policy scoring, greedy
-budget allocation, and the results round trip. First end-to-end
-reliability-vs-budget result, pure Python, saved to disk.
+`policies.py`, `results.py` and `plots.py`, and notebook 04 — the
+reliability-against-budget explorer, which is the headline result and is first
+producible here. Tests for policy scoring, greedy budget allocation, tie-break
+ordering, and the results round trip. First end-to-end result, pure Python,
+saved to disk.
 
 `results.py` lands here rather than later because the parity work in Phase 4 is
 easier to diagnose against two saved runs than against two in-memory arrays.
@@ -1723,6 +1950,10 @@ reopen one deliberately rather than by accident.
 | Shiny deployment target | Posit Connect (Section 9, Shiny application) | Installs the package into its own environment, so the abi3 wheel moves into Phase 6 |
 | Baseline for "avoided" metrics | `run_to_failure`, set by `reporting.baseline_policy` (7.4) | Doing nothing is the comparison a budget request is actually argued against |
 | Outage duration | Customer restoration time, configured per class, with laterals longest (2.5) | The indices measure time until the customer is back on, not time to repair. A looped feeder is restored by switching in minutes and repaired afterwards; a radial lateral's customers are out for the whole job. The ordering therefore runs opposite to repair difficulty, and the same argument makes planned work non-free on laterals |
+| Ranking ties | Sort on `(score descending, segment_id ascending)` (2.9) | Scores tie constantly, and because the greedy stops at the first candidate that does not fit, which tied segment lands last decides the answer. A unique composite key makes the order total, so no implementation's sort stability can change the result |
+| Unspent budget | Does not carry forward (2.9) | Letting year `y`'s money depend on what earlier years happened to spend would decouple the swept parameter from the spending it describes, and the curve is read as a function of that parameter |
+| When a replacement enters service | The start of the following year (2.9) | Nothing can then fail twice in one year, the year loop needs no inner iteration, and the deterministic parity test terminates when lifetimes are forced to zero |
+| Eligibility for the scoring policies | Every in-service segment, with no minimum score or age (2.8) | The budget is what limits how many get funded; a threshold on top would be a second knob doing the same job under a different name |
 | Greedy stopping rule | Stop at the first candidate that does not fit (2.8) | It is what ranking and funding down a list means operationally, and it is the only rule a vectorized implementation can reproduce; the skip-ahead alternative is an unjustified knapsack heuristic and is inherently sequential |
 | The benchmark baseline | Separate from the reference — a batched NumPy implementation, with batched polars as a contender (6.C) | An optimized reference is no longer plainly correct, and an unoptimized baseline flatters the kernel |
 | `build_out_curve` | Replaced by an explicit `install_volume` breakpoint map in config (Section 3) | A named curve with no definition is a value that cannot be checked or changed |
@@ -1762,10 +1993,16 @@ reopen one deliberately rather than by accident.
    protection on `main`, is applied, and confirm it by opening a pull request
    with a deliberately failing test and watching the merge button refuse. A
    protection rule nobody has watched refuse something is not known to work.
-2. Update `config.py` and `configs/base.yaml` to the schema in Section 3,
-   Configuration schema — technologies, per-type customer mix, per-type value
-   of lost load, `install_volume`, the discount rate, and the validators listed
-   there. Tests for each validator, each watched failing before it is trusted.
-3. Phase 1, the synthetic population.
-4. Source the placeholder numbers in 13.2, Still open, before any result is
+2. Install a Rust toolchain. `cargo` and `rustup` are absent, so four of the
+   six commands in the verification recipe cannot run and the committed
+   extension module cannot be rebuilt. This blocks Phase 4 and is invisible
+   until then, because the Python suite passes against the existing build.
+3. Update `config.py` and `configs/base.yaml` to the schema in Section 3,
+   Configuration schema — `simulation.start_year`, the technologies list,
+   per-type customer mix, per-class outage durations, per-type value of lost
+   load, `install_volume`, the `records:` block, the discount rate, and every
+   validator listed there. Tests for each validator, each watched failing
+   before it is trusted.
+4. Phase 1, the synthetic population.
+5. Source the placeholder numbers in 13.2, Still open, before any result is
    presented as a finding rather than as a demonstration of the machinery.
