@@ -8,7 +8,7 @@ Everything here fits; nothing simulates. The annual loop is the phase after.
 
 ## What it has to deliver
 
-- `records.py` — the synthetic episode-grain failure history.
+- `records.py` — the synthetic failure history, one row per installation episode.
 - `weibull.py` gains the censored, left-truncated log-likelihood and the fit.
 - Five rungs of the recovery ladder, plus a cross-check against an independent
   implementation.
@@ -26,7 +26,7 @@ all from the configuration, because rungs 1 to 3 need single-technology data
 with controlled lengths and the shipped `records:` block describes the full
 population mix. Only rungs 4 and 5 use the configured block.
 
-Grain is one row per **installation episode**, not per segment: a segment
+One row per **installation episode**, not per segment: a segment
 installed in 1972, failed in 2006 and still in service contributes two rows,
 one uncensored lifetime of 34 years and one censored at 20. Collapsing to one
 row per segment discards the failure or mismeasures its age, and both bias the

@@ -719,7 +719,7 @@ for an ordering nothing consumes.
 ### 2.10 Observed failure records, and the table the MLE fits
 
 Censored MLE (2.4) fits a different table from the one the simulation carries.
-Its grain is one row per **cable installation episode**:
+It holds **one row per cable installation episode**:
 
 | Column         | Meaning                                              |
 |----------------|------------------------------------------------------|
@@ -740,7 +740,7 @@ because they are calendar boundaries rather than measurements.
 
 `delta_i = 1` where `failure_year` is present and `0` where it is null.
 
-**The grain is the episode, not the segment.** A segment installed in 1972,
+**One row per episode, not per segment.** A segment installed in 1972,
 failed and replaced in 2006, and still in service at a study end of 2026
 contributes two observations: one uncensored lifetime of 34 years, and one
 right-censored lifetime of 20 years measured from 2006. Collapsing that to one row per segment either
@@ -1291,7 +1291,8 @@ replications rather than the per-replication frame of 7.2.
 seed, and they are separate because they produce different tables for different
 consumers. `population.py` emits the segment table the simulation runs on, and
 its size is set by how large a system is being modeled. `records.py` emits the
-episode-grain failure history the MLE fits (2.10), and its size is set by how
+failure history the MLE fits, one row per installation episode (2.10), and
+its size is set by how
 many observed failures the recovery test needs to have power — a different
 question with a different answer.
 
@@ -1855,7 +1856,7 @@ as a key column. So the run's
 hoists only the parameters that varied *between* runs — budget, seed, any other
 override — never `policy`, which varies within one.
 
-### 7.2 The grain of what is saved
+### 7.2 What one saved row is
 
 `results.parquet` holds one row per `(policy, replication, year, class)`, with
 one column for each of the seven arrays the kernel returns (5.2): `failures`,
@@ -1878,7 +1879,8 @@ paired difference is the entire reason for holding the draws fixed.
 **Class stays a key column.** The app plots failures by segment class, which is
 why the kernel returns that axis rather than a system total.
 
-Size is not a constraint at this grain: five policies, 1000 replications, 30
+Size is not a constraint at this level of detail: five policies, 1000
+replications, 30
 years and three classes is 450,000 rows, which parquet stores in a few
 megabytes.
 
@@ -2360,7 +2362,8 @@ the whole install-year range, and reproducible seeding.
 **Phase 2 — MLE and the recovery ladder**
 `weibull.py` gains the censored likelihood with covariates and the fit itself;
 its reduction and draw functions landed in Phase 1.
-`records.py`: the synthetic episode-grain record table. Tests: the analytical
+`records.py`: the synthetic record table, one row per installation episode.
+Tests: the analytical
 checks and every rung of the MLE recovery ladder (Section 6, Validation
 strategy), including the `lifelines` cross-check. Notebook 03.
 
