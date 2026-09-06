@@ -334,3 +334,38 @@ def geometry_covariates(
         ),
         ["log_n_conductors", "log_length_ratio"],
     )
+
+
+def technology_indicators(
+    table: pl.DataFrame, reference: str
+) -> tuple[np.ndarray, list[str]]:
+    """Builds reference-coded indicator columns for technology.
+
+    One technology carries no column of its own. An intercept plus an indicator
+    for every level is rank-deficient — the intercept and the coefficients are
+    not separately identifiable, and a solver either fails or returns one of
+    infinitely many answers that all fit equally well.
+
+    Under this coding the fitted intercept is the reference technology's value
+    and each coefficient is a log ratio against it.
+
+    Args:
+        table: The episode table.
+        reference: The technology to leave without a column.
+
+    Returns:
+        The indicator matrix and its column names.
+
+    Raises:
+        ValueError: If the reference technology does not appear in the table.
+    """
+    present = sorted(set(table["technology"].to_list()))
+    if reference not in present:
+        raise ValueError(f"reference {reference!r} is not in the table: {present}")
+
+    others = [name for name in present if name != reference]
+    values = table["technology"].to_numpy()
+    return (
+        np.column_stack([(values == name).astype(float) for name in others]),
+        [f"technology_{name}" for name in others],
+    )

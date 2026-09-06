@@ -325,6 +325,10 @@ class RegressionFit(NamedTuple):
         reference_scale_interval: Confidence interval for `exp(mu)`.
         coefficient_intervals: Confidence interval per covariate.
         log_likelihood: Value at the optimum.
+        ancillary_coefficients: Fitted coefficient per ancillary covariate,
+            empty where the shape is common. These are on the log scale, so
+            `shape * exp(coefficient)` is the shape where that covariate is 1.
+        ancillary_intervals: Confidence interval per ancillary covariate.
     """
 
     shape: float
@@ -334,6 +338,8 @@ class RegressionFit(NamedTuple):
     reference_scale_interval: tuple[float, float]
     coefficient_intervals: dict[str, tuple[float, float]]
     log_likelihood: float
+    ancillary_coefficients: dict[str, float] = {}
+    ancillary_intervals: dict[str, tuple[float, float]] = {}
 
 
 def fit_regression(
@@ -342,6 +348,8 @@ def fit_regression(
     observed: np.ndarray,
     covariates: np.ndarray,
     names: list[str],
+    ancillary: np.ndarray | None = None,
+    ancillary_names: list[str] | None = None,
     level: float = 0.95,
 ) -> RegressionFit:
     """Fits a Weibull whose scale depends on covariates.
@@ -355,18 +363,29 @@ def fit_regression(
     Each episode therefore has its own scale and they share a shape, which is
     what makes a single fit over a mixed population possible at all.
 
-    Only the scale is regressed. Letting the shape vary with a covariate too is
-    a different model, and the ladder reaches it in a later rung by adding
-    indicators to an ancillary term rather than by changing this function.
+    The shape is common unless an ancillary design matrix is given, in which
+    case it varies the same way::
+
+        shape_i = exp(alpha + gamma' z_i)
+
+    That is what R's `survreg` calls a stratum and `lifelines` exposes as an
+    ancillary fit. The two are different models rather than one with an
+    option: a common shape assumes every group's hazard rises at the same
+    rate, and fitting that to data where it does not recovers a compromise and
+    biases every scale — a failure that looks like a tolerance problem rather
+    than a misspecification.
 
     Args:
         age_at_end: Age at failure, or at the study end for a censored episode.
         entry_age: Age when observation began, zero where none.
         observed: 1 where the episode ended in a failure, 0 where censored.
-        covariates: Design matrix, one row per episode and one column per name.
-            No intercept column: `mu` is fitted separately, so a column of ones
-            would make the two unidentifiable.
+        covariates: Design matrix for the scale, one row per episode and one
+            column per name. No intercept column: `mu` is fitted separately, so
+            a column of ones would make the two unidentifiable.
         names: Column names, used to label the fitted coefficients.
+        ancillary: Design matrix for the shape, or None for a common shape.
+            Same rule about the intercept.
+        ancillary_names: Column names for the ancillary matrix.
         level: Confidence level for the intervals.
 
     Returns:
@@ -385,9 +404,17 @@ def fit_regression(
             f"({len(age_at_end)}, {len(names)})"
         )
 
-    def unpack(parameters: np.ndarray) -> tuple[float, np.ndarray]:
-        shape = float(np.exp(parameters[0]))
-        scale = np.exp(parameters[1] + covariates @ parameters[2:])
+    ancillary_names = list(ancillary_names or [])
+    width_shape = 1 + len(ancillary_names)
+
+    def unpack(parameters: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        if ancillary is None:
+            shape = np.exp(parameters[0])
+        else:
+            shape = np.exp(parameters[0] + ancillary @ parameters[1:width_shape])
+        scale = np.exp(
+            parameters[width_shape] + covariates @ parameters[width_shape + 1 :]
+        )
         return shape, scale
 
     def negative(parameters: np.ndarray) -> float:
@@ -403,18 +430,27 @@ def fit_regression(
         safe_entry = np.where(entry_age > 0.0, entry_ratio, 1.0)
         entry_term = np.where(entry_age > 0.0, entry_hazard * np.log(safe_entry), 0.0)
 
-        d_shape = np.sum(observed * (1.0 / shape + np.log(end_ratio))) - np.sum(
-            end_hazard * np.log(end_ratio) - entry_term
+        # Both blocks act through one per-episode quantity, because every
+        # parameter in a block shifts log(shape_i) or log(scale_i) identically.
+        by_shape = shape * (
+            observed * (1.0 / shape + np.log(end_ratio))
+            - (end_hazard * np.log(end_ratio) - entry_term)
         )
-        # Every scale parameter acts through the same per-episode quantity,
-        # because mu and each coefficient shift log(lambda_i) identically.
-        per_episode = shape * ((end_hazard - entry_hazard) - observed)
-        return -np.concatenate(
-            [[shape * d_shape], [np.sum(per_episode)], covariates.T @ per_episode]
-        )
+        by_scale = shape * ((end_hazard - entry_hazard) - observed)
+
+        blocks = [[np.sum(by_shape)]]
+        if ancillary is not None:
+            blocks.append(ancillary.T @ by_shape)
+        blocks.extend([[np.sum(by_scale)], covariates.T @ by_scale])
+        return -np.concatenate(blocks)
 
     start = np.concatenate(
-        [[0.0, np.log(float(np.mean(age_at_end)))], np.zeros(len(names))]
+        [
+            [0.0],
+            np.zeros(len(ancillary_names)),
+            [np.log(float(np.mean(age_at_end)))],
+            np.zeros(len(names)),
+        ]
     )
     result = optimize.minimize(negative, start, jac=gradient, method="BFGS")
     if not result.success:
@@ -424,17 +460,28 @@ def fit_regression(
     width = stats.norm.ppf(0.5 + level / 2.0)
     low, high = result.x - width * errors, result.x + width * errors
 
+    scale_at = width_shape
     return RegressionFit(
         shape=float(np.exp(result.x[0])),
-        reference_scale=float(np.exp(result.x[1])),
-        coefficients=dict(zip(names, result.x[2:], strict=True)),
+        reference_scale=float(np.exp(result.x[scale_at])),
+        coefficients=dict(zip(names, result.x[scale_at + 1 :], strict=True)),
         shape_interval=(float(np.exp(low[0])), float(np.exp(high[0]))),
-        reference_scale_interval=(float(np.exp(low[1])), float(np.exp(high[1]))),
+        reference_scale_interval=(
+            float(np.exp(low[scale_at])),
+            float(np.exp(high[scale_at])),
+        ),
         # Coefficients are already on the log-scale the model is linear in, so
         # their intervals are not exponentiated the way the two scales are.
         coefficient_intervals={
-            name: (float(low[2 + i]), float(high[2 + i]))
+            name: (float(low[scale_at + 1 + i]), float(high[scale_at + 1 + i]))
             for i, name in enumerate(names)
         },
         log_likelihood=float(-result.fun),
+        ancillary_coefficients=dict(
+            zip(ancillary_names, result.x[1:width_shape], strict=True)
+        ),
+        ancillary_intervals={
+            name: (float(low[1 + i]), float(high[1 + i]))
+            for i, name in enumerate(ancillary_names)
+        },
     )

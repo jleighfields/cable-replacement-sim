@@ -9,6 +9,7 @@ coverage question into a check that either passes or reveals a real error.
 """
 
 import numpy as np
+import polars as pl
 import pytest
 from cablesim import config, records, weibull
 
@@ -36,6 +37,62 @@ def one_technology_config() -> config.Config:
         settings.population.initial_age.install_year_range[0]
     )
     return settings
+
+
+def equal_exposure_config(
+    shapes: list[float], scales: list[float]
+) -> config.Config:
+    """A configuration where every technology has been in the ground as long.
+
+    Technology follows install year, so in the shipped population the newest
+    one is the youngest cable and produces almost no failures — ten in a table
+    of 180,000 segments. That is a property of the population rather than of
+    the estimator, and raising the sample does not fix it, because the binding
+    constraint is exposure time and not sample size.
+
+    Rungs four and five isolate the technology terms, so they need every
+    technology to have comparable exposure. A narrow, old install range split
+    three ways gives that: every episode is at least fifty years old by the
+    study end, whichever technology it carries.
+
+    Args:
+        shapes: Weibull shape per technology, in configured order.
+        scales: Weibull scale per technology, in configured order.
+
+    Returns:
+        A configuration with nothing truncated and the vintages rearranged.
+    """
+    raw = config.load_config().model_dump()
+    raw["population"]["initial_age"]["install_year_range"] = (1965, 1976)
+    raw["population"]["initial_age"]["install_volume"] = {1965: 1.0, 1976: 1.0}
+    vintages = [(1965, 1968), (1969, 1972), (1973, 1976)]
+    for technology, vintage, shape, scale in zip(
+        raw["population"]["technologies"], vintages, shapes, scales, strict=True
+    ):
+        technology["vintage"] = vintage
+        technology["weibull"]["shape"] = shape
+        technology["weibull"]["scale"] = scale
+    raw["records"]["monitoring_start"] = 1965
+    return config.Config.model_validate(raw)
+
+
+def fitted_table(settings: config.Config, n_segments: int):
+    """Generates a record table and the arrays a fit needs from it.
+
+    Args:
+        settings: The configuration to generate against.
+        n_segments: Segments to draw.
+
+    Returns:
+        The table, then age at end, entry age and the failure indicator.
+    """
+    table = records.episode_table(
+        settings,
+        length_ft=settings.population.length_ref_ft,
+        n_conductors=[1],
+        n_segments=n_segments,
+    )
+    return (table, *records.lifetimes(table, settings.records.study_end))
 
 
 def contains(interval: tuple[float, float], truth: float) -> bool:
@@ -245,3 +302,84 @@ def test_a_table_with_no_failures_is_rejected() -> None:
 
     with pytest.raises(ValueError, match="not identified"):
         weibull.fit_censored(ages, np.zeros_like(ages), np.zeros_like(ages))
+
+
+def test_rung_4_recovers_a_scale_per_technology_at_a_common_shape() -> None:
+    """The technology indicators, with the shape held common.
+
+    Reference coding: one technology carries no column and the fitted intercept
+    is its scale, with each remaining coefficient a log ratio against it. An
+    intercept plus an indicator for every level would be rank-deficient, and a
+    solver would either fail or return one of infinitely many equally good
+    answers.
+    """
+    shape = 5.5
+    scales = [45.0, 55.0, 68.0]
+    settings = equal_exposure_config([shape] * 3, scales)
+    table, end, entry, observed = fitted_table(settings, 12_000)
+
+    design, names = records.technology_indicators(table, reference="hmwpe")
+    per_technology = dict(
+        table.filter(pl.col("failure_year").is_not_null())
+        .group_by("technology")
+        .len()
+        .iter_rows()
+    )
+    assert min(per_technology.values()) > 200, per_technology
+
+    fit = weibull.fit_regression(end, entry, observed, design, names)
+
+    assert contains(fit.shape_interval, shape)
+    assert contains(fit.reference_scale_interval, scales[0])
+    for name, scale in zip(names, [scales[2], scales[1]], strict=True):
+        low, high = fit.coefficient_intervals[name]
+        assert contains((np.exp(low), np.exp(high)), scale / scales[0])
+
+
+def test_rung_5_recovers_a_shape_per_technology() -> None:
+    """Shape as an ancillary term, which rung 4 cannot reach.
+
+    A common-shape fit assumes every technology's hazard rises at the same
+    rate. Where it does not, that fit recovers a compromise and biases every
+    scale with it — and the failure presents as a tolerance problem rather than
+    as the misspecification it is, which is why this rung is separate.
+    """
+    shapes = [4.0, 5.5, 7.0]
+    scales = [45.0, 55.0, 68.0]
+    settings = equal_exposure_config(shapes, scales)
+    table, end, entry, observed = fitted_table(settings, 12_000)
+    design, names = records.technology_indicators(table, reference="hmwpe")
+
+    fit = weibull.fit_regression(
+        end, entry, observed, design, names, ancillary=design, ancillary_names=names
+    )
+
+    assert contains(fit.shape_interval, shapes[0])
+    assert contains(fit.reference_scale_interval, scales[0])
+    # Columns come back alphabetically: tr_xlpe then xlpe.
+    for name, shape in zip(names, [shapes[2], shapes[1]], strict=True):
+        low, high = fit.ancillary_intervals[name]
+        assert contains((np.exp(low), np.exp(high)), shape / shapes[0])
+
+
+def test_a_common_shape_fit_is_biased_when_the_shape_varies() -> None:
+    """Why rungs 4 and 5 are separate rather than one test with an option.
+
+    Fitting the common-shape model to data whose shapes differ returns a value
+    between them that matches none, and drags the scales with it. Nothing about
+    the output says the model was wrong.
+    """
+    shapes = [4.0, 5.5, 7.0]
+    scales = [45.0, 55.0, 68.0]
+    settings = equal_exposure_config(shapes, scales)
+    table, end, entry, observed = fitted_table(settings, 12_000)
+    design, names = records.technology_indicators(table, reference="hmwpe")
+
+    common = weibull.fit_regression(end, entry, observed, design, names)
+    varying = weibull.fit_regression(
+        end, entry, observed, design, names, ancillary=design, ancillary_names=names
+    )
+
+    assert not contains(common.shape_interval, shapes[0])
+    assert contains(varying.shape_interval, shapes[0])
+    assert varying.log_likelihood > common.log_likelihood
