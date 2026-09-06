@@ -12,8 +12,9 @@ is fully synthetic.
 
 **Status: scaffolded.** The configuration schema validates the checked-in
 defaults, the continuous integration workflows run, and the extension module
-has been built and imports under Python. The simulation itself is not written
-yet. See [PLAN.md](PLAN.md) for the model, the decisions behind it, and the
+has been built and imports under Python — though see `PLAN.md` §14, First
+actions in the next session, for what is not yet verified on a fresh machine.
+The simulation itself is not written yet. See [PLAN.md](PLAN.md) for the model, the decisions behind it, and the
 phased roadmap.
 
 ## Layout

@@ -129,9 +129,14 @@ here.
 - **Pin the PyO3 version and read that version's guide.** PyO3 migrated to the
   `Bound<'py, T>` smart-pointer API; older tutorials and answers found online
   will not compile against a current pin.
-- **Seed per replication** (`seed + rep_index`) via `StdRng::seed_from_u64`, so
-  results are reproducible and order-independent under rayon. Never share one
-  RNG across threads.
+- **The kernel neither seeds nor generates.** Every uniform arrives as an array
+  from NumPy (`PLAN.md` §2.11, Random numbers and why policies must share
+  them), so no random-number crate belongs in `Cargo.toml`, and results are
+  order-independent under rayon because each replication reads its own slice
+  rather than drawing from a shared stream.
+- **`f64` has no `Ord`.** The candidate sort needs a hand-written total
+  comparator with a stated position for NaN, not `partial_cmp` and a hope —
+  `PLAN.md` §12, PyO3 / maturin practicalities, has why NaN is reachable.
 - **`unsafe` belongs in PyO3 bindings and nowhere else.** One outside a
   binding needs a comment naming the invariant it upholds.
 - `cargo clippy` is the mechanical pass for Rust — ruff does not read `.rs`,
@@ -203,13 +208,13 @@ here.
     shape. A single test of the whole model says something is broken; the
     ladder says what.
   - **Know which comparisons are exact and which are statistical** (`PLAN.md`
-    §6, Validation strategy). Draws are addressable, so the uniform generator
-    is a pure function of four integers and is compared bit-exactly across
-    languages. The three Python implementations are compared exactly too, since
-    they share the draws and the arithmetic. Only Python against Rust is
-    statistical, because a last-place floating-point difference in a score
-    flips a sort and changes which candidate is funded last — use a tolerance
-    derived from replication standard error, never a fixed epsilon.
+    §6, Validation strategy, which has the tolerances). The draws are identical
+    by construction — one array, generated once and read by everything — so
+    there is no random-number stream to reconcile across languages. The three
+    Python implementations are compared exactly, since they share the
+    arithmetic too. Only Python against Rust is statistical, because a
+    last-place floating-point difference in a score flips a sort and changes
+    which candidate is funded last.
 - **Two opt-in marker groups, both excluded from a default run** because each
   costs minutes: `notebooks` (`uv run pytest -m notebooks`) executes every
   marimo notebook headless so they cannot silently rot, and `app`
@@ -221,15 +226,9 @@ here.
   computed it rather than rebuilding the setup under `tests/`. The boundary:
   an assertion about the *package* belongs in `tests/` where it runs in
   seconds; one about the *notebook* belongs in the notebook.
-- **The app suite tests wiring, not numbers.** Its one assertion worth the
-  browser drives the UI and then calls the package directly with the same
-  overrides and seed, requiring the two to agree — that is what catches a
-  control bound to the wrong config field, which every UI-free test passes.
-  Run it at interactive-scale defaults with a pinned seed.
-- **Never sleep in a browser test.** The app runs its simulation through
-  `ExtendedTask`, so results arrive asynchronously; use Playwright's
-  auto-waiting assertions with a generous timeout. Select on stable element
-  `id`s, never on rendered text or DOM position.
+- **The app suite tests wiring, not numbers**, and `PLAN.md` §10.3, Shiny app
+  integration tests, has how — the assertion that earns a browser, the element
+  selection rule, and why a fixed sleep is never the answer.
 
 ## Notebooks and the app
 
@@ -248,7 +247,10 @@ here.
   reactive inputs is unusable — an explicit Run button, `ExtendedTask` so the
   run is async, and a progress indicator.
 - **Interactive defaults are smaller than batch defaults**, and the UI says
-  so. Full-size runs belong in batch scripts and notebooks.
+  so. Full-size runs belong in batch scripts and notebooks. Scaling the
+  population down means scaling the reliability denominator with it — `PLAN.md`
+  §9, Shiny application, has why, and it is a systematic bias rather than
+  sampling noise.
 
 ## Git and tooling
 

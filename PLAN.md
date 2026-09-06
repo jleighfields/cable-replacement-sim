@@ -235,9 +235,9 @@ segment table**, so the Rust kernel receives one `(shape, scale)` pair per
 segment and never needs to know about conductor counts or length for failure
 purposes. Both still pass through to Rust for cost calculation.
 
-**The length exponent is a prediction, not a parameter.** Because the reduction
-is derived rather than fitted, an accelerated-failure-time fit that includes
-`log(length)` must recover a coefficient of `-1/k` on it (2.4, Censored MLE and
+**The exponent is a prediction, not a parameter.** Because the reduction is
+derived rather than fitted, an accelerated-failure-time fit that includes
+`log(n * L / L_ref)` must recover a coefficient of `-1/k` on it (2.4, Censored MLE and
 the failure-time regression). That turns a modeling assumption into an
 analytical check, and it is the kind Section 6, Validation strategy, ranks
 highest — it can be wrong in only one way.
@@ -315,10 +315,10 @@ raw feet makes `exp(mu)` the single-conductor, reference-length scale of the
 reference technology, directly comparable to what Section 3 configures.
 
 Under that parameterization, 2.3, Effective scale, predicts the coefficient on
-`log(L / L_ref)` exactly:
+`log(n * L / L_ref)` exactly:
 
 ```
-lambda ∝ L^(-1/k)   =>   beta_len = -1/k = -sigma
+lambda ∝ (n * L / L_ref)^(-1/k)   =>   gamma = -1/k = -sigma
 ```
 
 State whichever form a test asserts in, and give the conversion beside it. This
@@ -335,8 +335,8 @@ which keeps this one model rather than several while still yielding one
 `(k, lambda)` pair per technology, the shape the simulator consumes.
 
 Because shape then varies by technology and the weakest-link exponent is
-`-1/k`, the length coefficient has to vary with it: the model carries a
-technology-by-`log(L / L_ref)` interaction, and the prediction is
+`-1/k`, the coefficient has to vary with it: the model carries a
+technology-by-`log(n * L / L_ref)` interaction, and the prediction is
 `gamma_t = -sigma_t` for each technology. A single pooled length coefficient
 alongside per-technology shape is internally inconsistent, and Section 6's
 recovery ladder separates rungs 4 and 5 to catch exactly that.
@@ -387,6 +387,12 @@ rather than averaged away.
 
 Counts are generated per segment per type from a heavy-tailed distribution
 (lognormal is the default), with a class-specific median for each type.
+
+**Counts are static over the horizon.** Load growth would raise them year on
+year, and it is left out because it affects every policy almost identically —
+it rescales the axis rather than changing which policy wins — so carrying it
+would add an assumption without changing the answer. Adding a growth rate
+later is a single multiplier on the derived columns above.
 
 #### Restoration time, and why laterals are worst
 
@@ -617,8 +623,8 @@ storing an age instead would be wrong by `age0`, which ranges over decades.
 1. **Resolve failures** whose failure time falls in `[y, y+1)`. Accumulate
    `customers` interrupted and `customer_minutes_per_failure`, charge
    `emergency_cost`, and replace the segment immediately: `age = 0`, the
-   parameters of `replacement_technology`, and a fresh lifetime drawn from the
-   next installation index for that segment (2.11).
+   parameters of `replacement_technology`, and a fresh lifetime drawn from
+   `u(r, i, y+1)`, that segment's cell for the following year (2.11).
 2. **Planned replacement.** Score eligible segments, sort, and fund greedily
    until the annual budget is exhausted. Each funded segment resets the same
    way as a failed one: `age = 0`, replacement technology, fresh lifetime, and
@@ -680,7 +686,8 @@ Its grain is one row per **cable installation episode**:
 |----------------|------------------------------------------------------|
 | `segment_id`   | which segment the episode belongs to                 |
 | `technology`   | what was installed                                   |
-| `length_ft`    | the regression covariate (2.3)                       |
+| `length_ft`    | segment length |
+| `n_conductors` | 1 or 3; with `length_ft` it forms the covariate `log(n * L / L_ref)` (2.4) |
 | `install_year` | when the episode began                               |
 | `entry_year`   | when observation of this episode began; left truncation point |
 | `failure_year` | when it ended, or null if still in service at study end |
@@ -706,7 +713,7 @@ block of Section 3, Configuration schema, independently of the simulation
 population:
 
 1. Draw `records.n_segments` segments: class, technology from install year,
-   and length, by the same rules `population.py` uses (Section 3). The table
+   conductor count from class, and length, by the same rules `population.py` uses (Section 3). The table
    has **more rows than segments**, because step 3 chains an extra row for
    every replacement, so the knob is named for what it controls.
 2. Draw a lifetime for the first installation from that technology's effective
@@ -754,9 +761,9 @@ underlying draws removes that noise, because the policies then differ only in
 what they replace.
 
 **Every uniform is generated once in NumPy and passed in.** The draws are one
-array, `lifetime_uniforms[r, i, y]` — replication, segment, year — produced by
-`numpy.random.Generator` before any implementation runs and read by all four of
-them (Section 6.C, Benchmarks).
+array, `lifetime_uniforms[r, i, y]` — replication, segment, year — produced
+from `PCG64`'s raw stream by the recipe below, before any implementation runs,
+and read by all four of them (Section 6.C, Benchmarks).
 
 Index `y = 0` is the left-truncated draw made at the start of the run, and a
 replacement made in year `y` takes index `y + 1`. Years run `0 .. n_years - 1`,
@@ -818,8 +825,12 @@ avoids that, and passing an array is the simplest way to be indexed.
   ```python
   children = numpy.random.SeedSequence(seed).spawn(n_reps)   # one per replication
   raw = numpy.random.PCG64(children[r]).random_raw(n_segments * (n_years + 1))
-  uniforms = (raw >> numpy.uint64(11)) * 2.0**-53            # [0, 1), C order
+  block = ((raw >> numpy.uint64(11)) * 2.0**-53).reshape(n_segments, n_years + 1)
   ```
+
+  One `block` per replication, stacked in replication order into the
+  `(chunk_reps, n_segments, n_years + 1)` array 5.2 receives — C order
+  throughout, so one segment's draws are contiguous.
 
   **One `SeedSequence` child per replication is what makes a chunk
   addressable.** Chunk `c` builds replications `c * chunk_reps` onwards from
@@ -1085,7 +1096,7 @@ cable-replacement-sim/
 │       └── report.md
 ├── configs/
 │   └── base.yaml
-├── scripts/                    # config overrides + run.py; no modeling logic
+├── scripts/                    # build config overrides, call cablesim.run; no logic
 │   ├── budget_sweep.py
 │   ├── build_sweep_cache.py    # writes app/sweep_cache.parquet
 │   └── run_benchmarks.py
@@ -1107,7 +1118,7 @@ cable-replacement-sim/
 │   ├── batched.py              # batched NumPy and polars loops; benchmark only
 │   ├── metrics.py              # SAIFI / SAIDI / CAIDI / CMI, discounting
 │   ├── run.py                  # config -> run directory; the only writer
-│   ├── results.py              # run directory layout, write and read
+│   ├── results.py              # the directory format run.py writes, and the reader
 │   └── plots.py                # shared figures; optional plotly extra
 ├── notebooks/                  # marimo, all plain .py
 │   ├── 01_population.py
@@ -1137,13 +1148,12 @@ cable-replacement-sim/
 │   ├── test_run.py
 │   ├── test_results.py
 │   ├── test_plots.py
+│   ├── test_plan_document.py   # section citations in PLAN.md resolve
 │   ├── test_notebooks.py       # marker: notebooks
 │   └── app/                    # marker: app (Playwright)
 │       ├── __init__.py
 │       ├── conftest.py         # ShinyAppProc fixture, interactive-scale config
 │       └── test_app.py
-└── benches/
-    └── bench_sim.py
 ```
 
 `app/sweep_cache.parquet` is committed rather than generated at startup or read
@@ -1174,7 +1184,7 @@ question with a different answer.
 | Synthetic failure records | `records.py` | — | One-time, and only the fit consumes it |
 | Effective-scale reduction (conductors, length) | `weibull.py` | — | Collapses to one `(shape, scale)` per segment before the call (2.3) |
 | Customer and restoration-time rollup | `population.py` | — | Collapses to four scalars per segment; the kernel never learns customer types or restoration times exist (2.5) |
-| Random draws | `numpy.random.Generator` | — | Generated once per chunk and handed to every implementation, so cross-language parity of the draws cannot fail rather than being tested (2.11) |
+| Random draws | `PCG64.random_raw`, per replication | — | Built once per chunk and handed to every implementation, so cross-language parity of the draws cannot fail rather than being tested (2.11) |
 | Budget and cost escalation series | `config.py` → arrays | — | A rate written on both sides diverges silently |
 | Censored MLE and the AFT fit | `weibull.py` | — | A one-time fit over a modest table; porting it buys nothing (2.4) |
 | **Conditional `p(t)`** | `weibull.py` | `weibull.rs` | **Mirrored** |
@@ -1419,7 +1429,7 @@ you what.
 
 Rung 3 is where the length claim of 2.3, Effective scale, stops being an
 assumption. Because the reduction is derived rather than fitted, the fitted
-coefficient on `log(length)` has a predicted value, and recovering it confirms
+coefficient on `log(n * L / L_ref)` has a predicted value, and recovering it confirms
 the generator and the estimator agree about the same physics.
 
 **Technology enters as indicator variables**, which keeps this one model rather
@@ -1464,8 +1474,11 @@ Two further requirements on how these are asserted:
 - **Assert the true value lies inside the fitted 95% confidence interval**, at
   a pinned seed — not that the point estimate is within a fixed epsilon. An
   epsilon either flakes or is loose enough to prove nothing. Every parameter in
-  a rung must contain its truth *simultaneously*, so a rung with three
-  parameters is one assertion rather than three chances to pass.
+  a rung must contain its truth *simultaneously*. That is stricter than each
+  interval separately — three independent 95% intervals hold together only
+  about 86% of the time — and it is safe here only because the seed is pinned,
+  which turns a coverage question into a fixed check that either passes or
+  reveals a real error.
 - **The coverage study belongs in notebook 02**, not in the suite. Refitting a
   hundred times to confirm roughly 95% of intervals contain the truth is a
   figure worth showing and minutes too slow to gate a merge.
@@ -1535,10 +1548,13 @@ Which comparisons share random draws, and which do not:
   replication.** Because both sides consume the same draws, replication `r` in
   Python and replication `r` in Rust see identical lifetimes, so their results
   should differ only where a last-place floating-point difference in a score
-  flipped a sort and changed which candidate was funded last. Assert two things
-  over 1000 replications: the mean paired difference in each reported quantity
-  is within three standard errors of zero, and fewer than one percent of
-  replications differ by more than `1e-9` relative on any of them. A two-sample
+  flipped a sort and changed which candidate was funded last. Assert over 1000 replications that fewer
+  than one percent of replications differ by more than `1e-9` relative on any
+  reported quantity, and that the mean paired difference is within three
+  standard errors of zero **or** the differences are identically zero. The
+  second clause matters because exact agreement is the expected case — same
+  draws, same arithmetic — and a standard error of zero would otherwise make
+  the criterion a division by zero rather than a pass. A two-sample
   test treating the runs as independent would throw away the pairing and could
   only see a difference large enough to move a whole distribution.
 - **The three Python implementations are compared exactly**, because they share
@@ -1650,10 +1666,10 @@ drive both through one path.
 
 **Driver scripts live in `scripts/`** and do nothing but build config overrides
 and call `run.py` in a loop — the budget sweep, the cached sweep the app ships,
-the benchmark harness. The default grid for the headline figure is eight budget
-levels from zero to twice `budget.annual`, spaced geometrically above zero so
-the region near a binding constraint is sampled more densely than the flat
-region beyond it. Zero is included because every policy at zero budget must
+the benchmark harness. The default grid for the headline figure is zero plus seven levels spaced
+geometrically from one eighth of `budget.annual` to twice it, so the region
+near a binding constraint is sampled more densely than the flat region beyond
+it. Zero is included because every policy at zero budget must
 equal `run_to_failure` at any budget, which is a free end-to-end check.
 
 ### 7.1 What a run writes
@@ -1907,9 +1923,10 @@ the same kernel. One code path, three front ends.
   a constant in `configs/base.yaml` sized for the full 40,000-segment
   population. Simulating 5,000 segments against that denominator understates
   every index eightfold — a systematic bias, not the Monte Carlo error the
-  accuracy note describes. The override layer scales `total_customers` by
-  `n_segments / population.n_segments` whenever the UI changes the population
-  size, and a test asserts an index computed at interactive scale matches one
+  accuracy note describes. The override layer scales `total_customers` by the ratio of the requested
+  population to the one in `configs/base.yaml` — the override's `n_segments`
+  over the base file's `population.n_segments`, which is 8 at the interactive
+  default — and a test asserts an index computed at interactive scale matches one
   at full scale within replication error. Full-size runs belong in batch scripts and notebooks.
 - Precompute one budget sweep and cache it so the landing view renders
   instantly rather than showing an empty plot.
@@ -2187,10 +2204,12 @@ comes before anything depends on it.
 
 **Phase 3 — Python reference, results, and reporting**
 `reference.py`: the full annual loop, correct and slow. `metrics.py`,
-`policies.py`, `results.py` and `plots.py`, and notebook 04 — the
-reliability-against-budget explorer, which is first producible here. Tests for policy scoring, greedy budget allocation, tie-break
-ordering, and the results round trip. First end-to-end result, pure Python,
-saved to disk.
+`policies.py`, `results.py`, `plots.py` and `run.py`, plus
+`scripts/budget_sweep.py`, and notebook 04 — the reliability-against-budget
+explorer, which is first producible here. Tests for policy scoring, greedy
+budget allocation, tie-break ordering, the results round trip, and that a run
+reassembled from chunks equals the same run computed in one chunk. First
+end-to-end result, pure Python, saved to disk.
 
 `results.py` lands here rather than later because the parity work in Phase 4 is
 easier to diagnose against two saved runs than against two in-memory arrays.
@@ -2206,7 +2225,8 @@ run without it — so this phase consumes it rather than deciding it.
 **Phase 5 — parallel, batched baselines, and benchmarks**
 `py.allow_threads` + rayon over replications. `batched.py`: the batched NumPy
 baseline and the batched polars implementation, both passing the same parity
-tests as the kernel. Benchmark harness and notebook 05.
+tests as the kernel. The benchmark harness is
+`scripts/run_benchmarks.py`, and notebook 05 renders what it writes.
 
 The batched implementations land here rather than in Phase 3 because each is
 another mirror of the annual loop and another place divergence can hide. The
@@ -2308,6 +2328,13 @@ the argument belongs beside the model it constrains.
 
 ### 13.2 Still open
 
+1. **The size of the record table.** `records.n_segments` is a placeholder
+   with no reasoning recorded beside it, which 2.10 requires. It is also
+   coupled to the calibration in item 3: under the current short effective
+   lifetimes the newest technology accumulates plenty of observed failures,
+   and under any recalibration that fixes the flat curve it accumulates far
+   fewer, so the value has to be re-derived after the scales move rather than
+   before.
 1. **Value-of-lost-load figures by customer type.** The values in
    `configs/base.yaml` are placeholders. They need sourcing to published
    interruption-cost estimates, recorded with the source and the outage
@@ -2322,12 +2349,22 @@ the argument belongs beside the model it constrains.
    `length_ref_ft: 500`, a three-phase feeder of 1200 feet carries a composite
    `n * L / L_ref` of 7.2, so an early-technology scale of 38 years reduces to
    an effective 12.7 — a median life of about 10 years against starting ages
-   that reach 61. Meanwhile the mean planned replacement cost across the class
-   mix is roughly 76,000 dollars, so an annual budget of 4 million funds about
-   53 segments out of 40,000 in a year. Almost the whole three-phase population
+   that reach 61. Meanwhile the mean planned replacement cost across the
+   class mix is about 86,000 dollars — the lognormal *mean* length is
+   `median * exp(sigma^2/2)`, not the median, which is the arithmetic that is
+   easy to get wrong here — so an annual budget of 4 million funds roughly 46
+   segments out of 40,000 in a year. Almost the whole three-phase population
    fails early, almost none of it can be replaced, and every policy collapses
    onto `run_to_failure` — the reliability-against-budget curve, which is the
    deliverable, comes out flat.
+
+   **`total_customers` is a second coupled set, and it is inconsistent too.**
+   Laterals are 55% of 40,000 segments and their customer mix has a mean near
+   20 per segment, so the leaf level alone serves some 440,000 customers
+   against a configured system total of 95,000. The double-counting argument
+   of 2.6 does not cover this: laterals are terminal, so no customer sits on
+   two of them. `population.n_segments`, the `customer_mix` medians and
+   `total_customers` have to be picked together as well.
 
    The calibration target makes this checkable rather than a matter of taste:
    under `run_to_failure`, the first-year failure count should be a small
