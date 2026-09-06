@@ -2576,13 +2576,24 @@ the argument belongs beside the model it constrains.
 
 ### 13.2 Still open
 
-1. **The size of the record table.** `records.n_segments` is a placeholder
-   with no reasoning recorded beside it, which 2.10 requires. It is also coupled
-   to the calibration of the technology scales and the budget below: under the current short effective
-   lifetimes the newest technology accumulates plenty of observed failures,
-   and under any recalibration that fixes the flat curve it accumulates far
-   fewer, so the value has to be re-derived after the scales move rather than
-   before.
+1. **The newest technology cannot be identified from this study window, and
+   raising the sample does not help.** Technology follows install year, so the
+   newest one is also the youngest cable: `tr_xlpe` exists from 2005 and is at
+   most 21 years old at the study end, against a median life near 85. Observed
+   failures for it run 0 at 20,000 segments, 4 at 60,000 and 10 at 180,000 —
+   proportional to the sample and never near the several hundred per cell a
+   shape estimate needs. **The binding constraint is exposure time, not sample
+   size**, so `records.n_segments` is the wrong knob, and asking whether it
+   survived the calibration was the wrong question.
+
+   Real data has the same problem: a utility fitting a technology introduced
+   fifteen years ago has fifteen years of exposure whatever its asset count.
+   The ways out are to report that technology as weakly identified with an
+   interval that says so, to pool it with the previous technology and state
+   the assumption, or to carry a prior from accelerated-life testing. Which
+   one is chosen belongs to the point where the fit meets a population. The
+   recovery ladder sidesteps it with a fixture that gives every technology
+   equal exposure, and that is a fixture rather than a claim about any fleet.
 1. **Value-of-lost-load figures by customer type.** The values in
    `configs/base.yaml` are placeholders. They need sourcing to published
    interruption-cost estimates, recorded with the source and the outage
