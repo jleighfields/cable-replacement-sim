@@ -34,6 +34,7 @@ dev = [
     "pytest-xdist>=3.6",
     "ruff>=0.6",
     "detect-secrets>=1.5",
+    "lifelines>=0.30.3",
 ]
 notebooks = [
     "marimo>=0.9",

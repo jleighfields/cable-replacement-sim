@@ -383,3 +383,73 @@ def test_a_common_shape_fit_is_biased_when_the_shape_varies() -> None:
     assert not contains(common.shape_interval, shapes[0])
     assert contains(varying.shape_interval, shapes[0])
     assert varying.log_likelihood > common.log_likelihood
+
+
+def test_an_independent_implementation_agrees() -> None:
+    """`lifelines` fits the same data and must reach the same answer.
+
+    Every other check in this file uses one likelihood on both sides, so a
+    parameterisation transposed between the accelerated-failure-time form and
+    the hazard form would pass all of them: the generator and the fit would
+    agree with each other while both differed from what the configuration
+    means. A second implementation is the only thing that catches it.
+
+    The bridge is asserted rather than recalled. `lifelines` names the scale
+    `lambda_` and the shape `rho_`, regresses the log of the first on the
+    covariates and holds the second constant, which is this model exactly — but
+    that is worth a failing assertion rather than a comment, because the cost
+    of it being false is every number in the project being quietly wrong.
+
+    Point estimates rather than intervals: comparing intervals would test the
+    two libraries' standard-error machinery instead of the likelihood they both
+    claim to maximise.
+    """
+    pandas = pytest.importorskip("pandas")
+    fitters = pytest.importorskip("lifelines")
+
+    settings = one_technology_config()
+    table = records.episode_table(
+        settings,
+        technologies=[settings.population.technologies[0]],
+        n_conductors=[1, 3],
+        n_segments=15_000,
+    )
+    end, entry, observed = records.lifetimes(table, settings.records.study_end)
+    design, names = records.geometry_covariates(
+        table, settings.population.length_ref_ft
+    )
+
+    mine = weibull.fit_regression(end, entry, observed, design, names)
+    frame = pandas.DataFrame(
+        {
+            "T": end,
+            "E": observed,
+            "entry": entry,
+            **dict(zip(names, design.T, strict=True)),
+        }
+    )
+    theirs = fitters.WeibullAFTFitter().fit(
+        frame, duration_col="T", event_col="E", entry_col="entry"
+    )
+    errors = theirs.standard_errors_
+
+    def close(mine_value: float, theirs_value: float, error: float) -> bool:
+        """Whether two estimates agree to within a tenth of a standard error."""
+        return abs(mine_value - theirs_value) < 0.1 * error
+
+    assert close(
+        np.log(mine.shape),
+        theirs.params_["rho_"]["Intercept"],
+        errors["rho_"]["Intercept"],
+    )
+    assert close(
+        np.log(mine.reference_scale),
+        theirs.params_["lambda_"]["Intercept"],
+        errors["lambda_"]["Intercept"],
+    )
+    for name in names:
+        assert close(
+            mine.coefficients[name],
+            theirs.params_["lambda_"][name],
+            errors["lambda_"][name],
+        )
