@@ -162,7 +162,7 @@ step rather than directly.
 - **Skip the test suite only when the set holds no `.rs` either.** Phase 3 is
   where it runs. A suite that the change could not have affected tells you
   exactly what it told you at the last commit, at the same cost — but a
-  change under `src/` can affect it, so rebuild with `maturin develop
+  change under `src/` can affect it, so rebuild with `uv run maturin develop
   --release` and run it.
 - **Reduce Phase 3 to its README sweep.** It is a docstring, type-hint and
   inline-comment pass, and none of those exist to fix here — but prose in a
@@ -246,7 +246,7 @@ outright the one check none of them names:
   no mechanical pass at all. Run clippy with the same rule selection every
   time, and treat a `clippy::correctness` lint the way Phase 1 treats an
   `F821`. `test.yml` fails the build on both.
-- **Build once, before the suite.** `maturin develop --release` where the set
+- **Build once, before the suite.** `uv run maturin develop --release` where the set
   touches `src/`; a suite run against a stale extension module reports on code
   that is no longer in the diff. Release mode matters for any finding about
   timing — a debug build is slow enough that a benchmark claim measured
