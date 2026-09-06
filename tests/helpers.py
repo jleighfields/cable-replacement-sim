@@ -68,4 +68,9 @@ def section_citations(text: str) -> set[str]:
         The cited section numbers, for example `{"6", "10.4"}`.
     """
     flat = re.sub(r"\s+", " ", text)
-    return set(re.findall(r"(?:Section |§)(\d+(?:\.\d+)?)", flat))
+    prefixed = re.findall(r"(?:Section |§)(\d+(?:\.\d+)?)", flat)
+    # The document cites its own subsections far more often in the bare form
+    # "2.9, Annual simulation loop" than with a prefix, so an extractor that
+    # matches only the prefixed spellings leaves most references unchecked.
+    bare = re.findall(r"(?<![\w.])(\d+\.\d+), [A-Z]", flat)
+    return set(prefixed) | set(bare)

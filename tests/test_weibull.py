@@ -8,6 +8,7 @@ in only one way.
 
 import numpy as np
 from cablesim import streams, weibull
+from numpy.random import SeedSequence
 from scipy import stats
 
 KS_DRAWS: int = 100_000
@@ -21,7 +22,9 @@ the distribution far below the rejection threshold at any size used here.
 """
 
 
-def weibull_draws(source, shape: float, scale: float, n: int) -> np.ndarray:
+def weibull_draws(
+    source: SeedSequence, shape: float, scale: float, n: int
+) -> np.ndarray:
     """Draws lifetimes from a Weibull by inverting its survivor function.
 
     Args:
@@ -49,7 +52,7 @@ def test_min_of_n_matches_the_reduced_scale() -> None:
     )
 
     reduced = weibull.effective_scale(
-        np.array(scale), np.array(shape), np.array(3.0), np.array(500.0), 500.0, 1.0
+        np.array(shape), np.array(scale), np.array(3.0), np.array(500.0), 500.0, 1.0
     )
     result = stats.kstest(
         draws.min(axis=0), "weibull_min", args=(shape, 0.0, float(reduced))
@@ -67,8 +70,8 @@ def test_length_enters_through_the_exponent() -> None:
     shape, scale, n = 2.4, 55.0, KS_DRAWS
     length, reference, exponent = 2000.0, 500.0, 0.5
     reduced = weibull.effective_scale(
-        np.array(scale),
         np.array(shape),
+        np.array(scale),
         np.array(1.0),
         np.array(length),
         reference,

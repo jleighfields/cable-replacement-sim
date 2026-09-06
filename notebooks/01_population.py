@@ -45,7 +45,7 @@ def _():
 
     settings = config.load_config()
     settings.population.n_segments, settings.simulation.seed
-    return config, np, pl, population, settings, streams, weibull
+    return np, pl, population, settings, streams, weibull
 
 
 @app.cell
@@ -76,7 +76,7 @@ def _(mo):
 
 
 @app.cell
-def _(config, n_segments, population, seed, settings):
+def _(n_segments, population, seed, settings):
     scenario = settings.model_copy(deep=True)
     scenario.population.n_segments = n_segments.value
     scenario.simulation.seed = settings.simulation.seed + seed.value
@@ -252,6 +252,7 @@ def _(np, scenario, segments, weibull):
     # The reduction against its closed form, at one segment.
     _row = segments.row(0, named=True)
     _expected = weibull.effective_scale(
+        np.array(_row["shape"]),
         np.array(_row["scale"])
         * (
             _row["n_conductors"]
@@ -259,12 +260,12 @@ def _(np, scenario, segments, weibull):
             ** scenario.population.length_exponent
         )
         ** (1 / _row["shape"]),
-        np.array(_row["shape"]),
         np.array(_row["n_conductors"]),
         np.array(_row["length_ft"]),
         scenario.population.length_ref_ft,
         scenario.population.length_exponent,
     )
+    assert np.isclose(float(_expected), _row["scale"]), "reduction disagrees"
     float(_expected), _row["scale"]
     return
 
@@ -351,6 +352,7 @@ def _(np, population, scenario, segments, streams, weibull):
 
     _shape = segments["shape"].to_numpy()
     _reduced = weibull.effective_scale(
+        _shape,
         segments["scale"].to_numpy()
         * (
             segments["n_conductors"].to_numpy()
@@ -358,7 +360,6 @@ def _(np, population, scenario, segments, streams, weibull):
             ** scenario.population.length_exponent
         )
         ** (1 / _shape),
-        _shape,
         segments["n_conductors"].to_numpy(),
         _length,
         scenario.population.length_ref_ft,

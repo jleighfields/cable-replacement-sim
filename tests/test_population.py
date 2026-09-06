@@ -7,7 +7,7 @@ in code and nothing is committed.
 import numpy as np
 import polars as pl
 import pytest
-from cablesim import config, population
+from cablesim import config, constants, population, weibull
 
 
 @pytest.fixture(scope="module")
@@ -106,30 +106,59 @@ def test_three_phase_segments_have_a_shorter_effective_scale(
     Compared within one technology, because the technology carries its own
     scale and would otherwise confound the comparison.
     """
-    single, three = (
-        frame.filter(
-            (pl.col("technology") == "xlpe") & (pl.col("n_conductors") == count)
-        )["scale"].median()
-        for count in (1, 3)
+    # Compare at one technology, one class shape and one length, so the only
+    # thing differing is the conductor count. Comparing classes directly would
+    # confound it with their lengths and with the feeder shape override.
+    settings = config.load_config()
+    reference = frame.filter(pl.col("technology") == "xlpe").row(0, named=True)
+    geometry = (
+        np.array(reference["length_ft"]),
+        settings.population.length_ref_ft,
+        settings.population.length_exponent,
     )
+    shape = np.array(reference["shape"])
+    scale = np.array(settings.population.technologies[1].weibull.scale)
+
+    single = weibull.effective_scale(shape, scale, np.array(1), *geometry)
+    three = weibull.effective_scale(shape, scale, np.array(3), *geometry)
 
     assert three < single
+    assert float(three / single) == pytest.approx(3.0 ** (-1.0 / float(shape)))
 
 
 def test_derived_columns_follow_from_the_counts(frame: pl.DataFrame) -> None:
-    """The four derived columns are consistent with the per-type counts.
+    """The four derived columns equal the closed forms the design writes down.
 
     These are what the kernel reads, so an error here reaches every result
-    while leaving the inputs looking correct.
+    while leaving the inputs looking correct. Asserting only that they are
+    non-negative would pass with the wrong restoration time, or with the
+    hours-to-minutes conversion dropped entirely — a sixtyfold error in SAIDI.
     """
     settings = config.load_config()
     types = settings.population.customer_types
+    reliability = settings.reliability
 
-    assert frame["customers"].to_numpy() == pytest.approx(
-        frame.select(types).sum_horizontal().to_numpy()
+    emergency_hours = frame["class"].replace_strict(
+        reliability.outage_hours_emergency, return_dtype=pl.Float64
     )
-    assert (frame["customer_minutes_per_failure"] >= 0).all()
-    assert (frame["outage_cost_per_failure"] >= 0).all()
+    planned_hours = frame["class"].replace_strict(
+        reliability.outage_hours_planned, return_dtype=pl.Float64
+    )
+    customers = frame.select(types).sum_horizontal()
+    value_per_hour = sum(
+        frame[name] * reliability.voll_per_customer_hour[name] for name in types
+    )
+
+    assert frame["customers"].to_numpy() == pytest.approx(customers.to_numpy())
+    assert frame["customer_minutes_per_failure"].to_numpy() == pytest.approx(
+        (customers * constants.MINUTES_PER_HOUR * emergency_hours).to_numpy()
+    )
+    assert frame["customer_minutes_per_planned"].to_numpy() == pytest.approx(
+        (customers * constants.MINUTES_PER_HOUR * planned_hours).to_numpy()
+    )
+    assert frame["outage_cost_per_failure"].to_numpy() == pytest.approx(
+        (value_per_hour * emergency_hours).to_numpy()
+    )
 
     # Planned work on a looped feeder interrupts nobody; a radial lateral's
     # customers are out for the whole job.
@@ -140,3 +169,53 @@ def test_derived_columns_follow_from_the_counts(frame: pl.DataFrame) -> None:
     )
     assert by_class["main_feeder"] == 0.0
     assert by_class["lateral_1ph"] > 0.0
+
+
+def test_attributes_drawn_from_different_uniform_rows_are_independent(
+    frame: pl.DataFrame,
+) -> None:
+    """Length and customer counts do not move together.
+
+    Each attribute reads its own row of the shared uniform block. Reading the
+    same row twice would make two attributes exactly comonotonic — every long
+    segment also the one with most customers — which changes what a
+    consequence-weighted policy is ranking and looks entirely plausible in a
+    summary table.
+    """
+    laterals = frame.filter(pl.col("class") == "lateral_1ph")
+
+    for name in ("residential", "commercial", "industrial"):
+        correlation = laterals.select(
+            pl.corr("length_ft", name, method="spearman")
+        ).item()
+        assert abs(correlation) < 0.1, f"length is rank-correlated with {name}"
+
+
+def test_a_class_shape_override_reaches_the_segments(frame: pl.DataFrame) -> None:
+    """A class that names its own shape gets it; the others take technology's.
+
+    Conductor size is a second axis technology does not capture, so feeder
+    cable carries its own shape. Dropping the override leaves every class on
+    the technology default and changes every feeder's hazard.
+    """
+    settings = config.load_config()
+    overridden = {
+        c.name: c.weibull_shape
+        for c in settings.population.classes
+        if c.weibull_shape is not None
+    }
+    assert overridden, "no class overrides its shape; this test proves nothing"
+
+    for name, shape in overridden.items():
+        rows = frame.filter(pl.col("class") == name)
+        assert (rows["shape"] == shape).all()
+        assert (rows["replacement_shape"] == shape).all()
+
+    technology_shapes = {
+        t.name: t.weibull.shape for t in settings.population.technologies
+    }
+    plain = frame.filter(~pl.col("class").is_in(list(overridden)))
+    expected = plain["technology"].replace_strict(
+        technology_shapes, return_dtype=pl.Float64
+    )
+    assert (plain["shape"] == expected).all()

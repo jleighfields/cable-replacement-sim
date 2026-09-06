@@ -125,8 +125,9 @@ def generate(config: config_module.Config) -> pl.DataFrame:
     counts = {name: np.zeros(n) for name in types}
     for index, segment_class in enumerate(population.classes):
         rows = class_index == index
-        drawn_length = lognormal_from_uniforms(draws[2], segment_class.length_ft)
-        length_ft[rows] = drawn_length[rows]
+        length_ft[rows] = lognormal_from_uniforms(
+            draws[2][rows], segment_class.length_ft
+        )
         cost_per_ft[rows] = segment_class.cost_per_ft
         n_conductors[rows] = segment_class.n_conductors
         if segment_class.weibull_shape is not None:
@@ -138,10 +139,11 @@ def generate(config: config_module.Config) -> pl.DataFrame:
             segment_class.name
         ]
         for offset, name in enumerate(types):
-            drawn = lognormal_from_uniforms(
-                draws[3 + offset], segment_class.customer_mix[name]
+            counts[name][rows] = np.rint(
+                lognormal_from_uniforms(
+                    draws[3 + offset][rows], segment_class.customer_mix[name]
+                )
             )
-            counts[name][rows] = np.rint(drawn[rows])
 
     shapes = np.array([t.weibull.shape for t in population.technologies])
     scales = np.array([t.weibull.scale for t in population.technologies])
@@ -158,12 +160,12 @@ def generate(config: config_module.Config) -> pl.DataFrame:
 
     geometry = (n_conductors, length_ft, population.length_ref_ft,
                 population.length_exponent)
-    effective = weibull.effective_scale(scale, shape, *geometry)
+    effective = weibull.effective_scale(shape, scale, *geometry)
     replacement_shape = np.where(
         np.isnan(shape_override), replacement.weibull.shape, shape_override
     )
     replacement_effective = weibull.effective_scale(
-        np.full(n, replacement.weibull.scale), replacement_shape, *geometry
+        replacement_shape, np.full(n, replacement.weibull.scale), *geometry
     )
 
     customers = sum(counts.values())
@@ -183,7 +185,8 @@ def generate(config: config_module.Config) -> pl.DataFrame:
             "cost_per_ft": cost_per_ft,
             **{name: counts[name] for name in types},
             # SAIFI counts customers equally; the value-weighted figure drives
-            # scoring, and the minute figures drive SAIDI and CMI.
+            # scoring, and the minute figures drive SAIDI and customer minutes
+            # interrupted (CMI).
             "customers": customers,
             "customer_minutes_per_failure": customers
             * constants.MINUTES_PER_HOUR

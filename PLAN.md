@@ -7,8 +7,9 @@ number-sections: false
 # Cable Replacement Simulation — Project Plan
 
 Status: **Phase 1 is landing.** The configuration schema and its validators,
-the random streams, the Weibull forms and the population generator exist and
-are calibrated against a run of the generator itself; notebook 01 does not yet.
+the random streams, the Weibull forms, the population generator and notebook 01
+exist, and the configuration is calibrated against a run of the generator
+itself.
 The extension module has been built once and is not currently rebuildable,
 because the machine has no Rust toolchain (Section 14, First actions). This document is the pickup point for a fresh session — read it top to
 bottom before writing code, and read the roadmap in Section 11 for what each

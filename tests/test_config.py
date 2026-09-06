@@ -75,8 +75,7 @@ def test_an_unconfigured_replacement_technology_is_rejected() -> None:
 def test_a_missing_class_restoration_time_is_rejected() -> None:
     """A class absent from the map would contribute a zero-duration outage.
 
-    That reads as a reliability improvement, which is the worst way for a
-    configuration error to present.
+    That reads as a reliability improvement, so nothing downstream looks wrong.
     """
     broken = raw_config()
     del broken["reliability"]["outage_hours_emergency"]["lateral_1ph"]
@@ -126,7 +125,7 @@ def test_an_unimplemented_dependence_model_is_rejected() -> None:
     broken = raw_config()
     broken["failure"]["conductor_dependence"] = "shared_frailty"
 
-    with pytest.raises(pydantic.ValidationError):
+    with pytest.raises(pydantic.ValidationError, match="'iid'"):
         config.Config.model_validate(broken)
 
 
@@ -135,5 +134,72 @@ def test_a_lognormal_median_of_zero_is_rejected() -> None:
     broken = raw_config()
     broken["population"]["classes"][0]["length_ft"]["median"] = 0.0
 
-    with pytest.raises(pydantic.ValidationError):
+    with pytest.raises(pydantic.ValidationError, match="greater than 0"):
+        config.Config.model_validate(broken)
+
+
+def test_a_negative_value_of_lost_load_is_rejected() -> None:
+    """A negative value of lost load makes an interruption look beneficial.
+
+    ``outage_cost_per_failure`` is the product of the per-type counts, the
+    value of lost load and the restoration time, and a risk-ranked policy
+    maximises it. A negative entry therefore ranks the segments it applies to
+    as the ones most worth leaving in the ground, and nothing downstream
+    raises.
+    """
+    broken = raw_config()
+    broken["reliability"]["voll_per_customer_hour"]["residential"] = -8.0
+
+    with pytest.raises(pydantic.ValidationError, match="voll_per_customer_hour"):
+        config.Config.model_validate(broken)
+
+
+def test_a_negative_restoration_time_is_rejected() -> None:
+    """A negative restoration time drives SAIDI and CMI negative.
+
+    Both minute columns are the customer count times the configured hours, so
+    a negative entry subtracts from the reliability indices rather than adding
+    to them — an outage that improves the numbers.
+    """
+    broken = raw_config()
+    broken["reliability"]["outage_hours_emergency"]["lateral_1ph"] = -5.0
+
+    with pytest.raises(pydantic.ValidationError, match="outage_hours_emergency"):
+        config.Config.model_validate(broken)
+
+
+def test_install_years_after_the_simulation_starts_are_rejected() -> None:
+    """Cable cannot be installed after year 0 of the run.
+
+    Age is ``start_year - install_year``, so an install-year range reaching
+    past ``simulation.start_year`` gives some segments a negative age. Both
+    Weibull forms then raise a negative number to a fractional power and
+    return NaN, which propagates through every result behind a
+    ``RuntimeWarning`` and no exception.
+    """
+    broken = raw_config()
+    first, _ = broken["population"]["initial_age"]["install_year_range"]
+    beyond = broken["simulation"]["start_year"] + 10
+    broken["population"]["initial_age"]["install_year_range"] = (first, beyond)
+    broken["population"]["initial_age"]["install_volume"][beyond] = (
+        broken["population"]["initial_age"]["install_volume"].pop(2020)
+    )
+    broken["population"]["technologies"][-1]["vintage"] = (2005, beyond)
+
+    with pytest.raises(pydantic.ValidationError, match="start_year"):
+        config.Config.model_validate(broken)
+
+
+def test_a_policy_missing_a_parameter_it_requires_is_rejected() -> None:
+    """An omitted parameter leaves the policy on a default just as a typo does.
+
+    The whitelist rejects a key the policy does not take, which catches a
+    misspelling because the misspelled key is unexpected. Omitting the key
+    outright produces the same silent fallback and has to be rejected on the
+    same grounds.
+    """
+    broken = raw_config()
+    broken["policies"][1] = {"name": "age_threshold", "params": {}}
+
+    with pytest.raises(pydantic.ValidationError, match="threshold_years"):
         config.Config.model_validate(broken)

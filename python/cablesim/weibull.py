@@ -13,8 +13,8 @@ import numpy as np
 
 
 def effective_scale(
-    scale: np.ndarray,
     shape: np.ndarray,
+    scale: np.ndarray,
     n_conductors: np.ndarray,
     length_ft: np.ndarray,
     length_ref_ft: float,
@@ -46,12 +46,16 @@ def effective_scale(
 
     What the conductor term implies cannot be tuned away: a three-phase segment
     lives ``3 ** (-1 / shape)`` as long as an otherwise identical single-phase
-    one, so laterals outlast feeders by a factor no scale choice reaches below
-    about 1.25 even at implausibly sharp shapes.
+    one, so on conductor count alone a lateral outlasts a feeder by
+    ``3 ** (1 / shape)`` — 1.22 at a shape of 5.5 and 1.18 at 6.8, the range
+    ``configs/base.yaml`` configures. No choice of scale moves that factor;
+    only shape does, and it shrinks toward 1 as shape rises.
 
     Args:
+        shape: Weibull shape parameter. First, matching every other function
+            here — both parameters are positive floats, so a swapped call
+            would type-check, run, and return a plausible number.
         scale: Conductor-level Weibull scale at the reference length, in years.
-        shape: Weibull shape parameter.
         n_conductors: Conductors per segment.
         length_ft: Segment length, in feet.
         length_ref_ft: The reference length the configured scale describes.
@@ -80,7 +84,10 @@ def conditional_failure_probability(
         scale: Effective Weibull scale, in years.
 
     Returns:
-        The annual failure probability, on [0, 1).
+        The annual failure probability, on [0, 1]. It reaches exactly 1 once
+        the accumulated hazard passes about 745, where ``exp`` underflows —
+        an age far beyond anything this model simulates, but the bound is
+        closed rather than half-open.
     """
     accumulated = ((age + 1.0) / scale) ** shape - (age / scale) ** shape
     return -np.expm1(-accumulated)
@@ -110,10 +117,10 @@ def draw_remaining_life(
 
         T = scale * ((age/scale)**k - ln u) ** (1/k),   remaining = T - age
 
-    Drawing unconditionally here is the most likely correctness bug in this
-    model: it makes a population that starts partway through its life behave as
-    though it were new, which inflates every policy's apparent performance, and
-    it does so silently — the run completes and the curves look plausible.
+    Drawing unconditionally here makes a population that starts partway through
+    its life behave as though it were new, which inflates every policy's
+    apparent performance, and it does so silently — the run completes and the
+    curves look plausible.
 
     Args:
         u: Uniforms on [0, 1).

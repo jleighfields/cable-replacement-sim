@@ -10,11 +10,14 @@ policies evaluated against customer reliability (SAIFI / SAIDI / CMI) over a
 30-year horizon. All inputs are parameterized via config; the cable population
 is fully synthetic.
 
-**Status: scaffolded.** The configuration schema validates the checked-in
-defaults, the continuous integration workflows run, and the extension module
-has been built and imports under Python — though see `PLAN.md` §14, First
-actions in the next session, for what is not yet verified on a fresh machine.
-The simulation itself is not written yet. See [PLAN.md](PLAN.md) for the model, the decisions behind it, and the
+**Status: the population layer is built.** The configuration schema and its
+validators, the purpose-spawned random streams, the Weibull forms and the
+synthetic population generator exist, with a marimo notebook that walks them.
+The continuous integration workflows run, and the extension module has been
+built and imports under Python — though see `PLAN.md` §14, First actions in the
+next session, for what is not yet verified on a fresh machine. The annual
+simulation loop, the replacement policies and the Rust kernel are not written
+yet. See [PLAN.md](PLAN.md) for the model, the decisions behind it, and the
 phased roadmap.
 
 ## Layout
@@ -22,8 +25,9 @@ phased roadmap.
 | Path | What it holds |
 |---|---|
 | `src/` | the Rust crate: the compute kernel, built as a Python extension module |
-| `python/cablesim/` | the Python package: configuration, and the pure-Python reference implementation that mirrors the kernel |
+| `python/cablesim/` | the Python package: configuration, random streams, the Weibull forms, the population generator, and the pure-Python reference implementation that will mirror the kernel |
 | `configs/base.yaml` | the documented default run configuration |
+| `notebooks/` | marimo notebooks that walk the package interface layer by layer |
 | `tests/` | the test suite |
 | [PLAN.md](PLAN.md) | the model, the configuration schema, the kernel contract, and the roadmap |
 

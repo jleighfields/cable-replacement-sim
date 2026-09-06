@@ -13,7 +13,7 @@ policy on its default.
 """
 
 import pathlib
-from typing import Literal
+from typing import Annotated, Literal
 
 import pydantic
 import yaml
@@ -391,9 +391,12 @@ class ReliabilityConfig(pydantic.BaseModel):
             dollars per customer-hour.
     """
 
-    outage_hours_emergency: dict[str, float]
-    outage_hours_planned: dict[str, float]
-    voll_per_customer_hour: dict[str, float]
+    # Non-negative throughout: a risk-ranked policy maximises the product of
+    # these, so a negative entry ranks the segments it applies to as the ones
+    # most worth leaving in the ground, and nothing downstream would raise.
+    outage_hours_emergency: dict[str, Annotated[float, pydantic.Field(ge=0)]]
+    outage_hours_planned: dict[str, Annotated[float, pydantic.Field(ge=0)]]
+    voll_per_customer_hour: dict[str, Annotated[float, pydantic.Field(ge=0)]]
 
 
 class PolicySpec(pydantic.BaseModel):
@@ -437,11 +440,22 @@ class PolicySpec(pydantic.BaseModel):
             "worst_first": set(),
             "random": set(),
         }
+        # A parameter left out produces the same silent fallback to a default
+        # as one misspelled, so both are rejected. `rank_by` is absent here
+        # because ranking on the raw score is a meaningful default; an age
+        # threshold has none, since it is the policy.
+        required: dict[str, set[str]] = {"age_threshold": {"threshold_years"}}
+
         unexpected = set(self.params) - accepted[self.name]
         if unexpected:
             raise ValueError(
                 f"policy {self.name!r} does not take {sorted(unexpected)}; "
                 f"it accepts {sorted(accepted[self.name])}"
+            )
+        missing = required.get(self.name, set()) - set(self.params)
+        if missing:
+            raise ValueError(
+                f"policy {self.name!r} requires {sorted(missing)}"
             )
         rank_by = self.params.get("rank_by")
         if rank_by is not None and rank_by not in ("score", "score_per_dollar"):
@@ -512,6 +526,22 @@ class Config(pydantic.BaseModel):
                     f"entry per class: {sorted(class_names)}"
                 )
 
+        # A customer type sharing a name with a derived column would overwrite
+        # it: the frame would carry that type's count where the sum belongs,
+        # while the minute and cost columns still used the true sum.
+        derived = {
+            "customers",
+            "customer_minutes_per_failure",
+            "customer_minutes_per_planned",
+            "outage_cost_per_failure",
+        }
+        colliding = derived & set(self.population.customer_types)
+        if colliding:
+            raise ValueError(
+                f"customer types {sorted(colliding)} collide with derived column "
+                f"names and would overwrite them"
+            )
+
         types = set(self.population.customer_types)
         voll = set(self.reliability.voll_per_customer_hour)
         if voll != types:
@@ -521,6 +551,13 @@ class Config(pydantic.BaseModel):
             )
 
         first, last = self.population.initial_age.install_year_range
+        if last > self.simulation.start_year:
+            raise ValueError(
+                f"install_year_range ends at {last}, after simulation.start_year "
+                f"{self.simulation.start_year}: cable cannot be installed after "
+                f"year 0, and the negative age it produces makes every Weibull "
+                f"form return NaN rather than raising"
+            )
         if not first <= self.records.monitoring_start <= last:
             raise ValueError(
                 f"records.monitoring_start {self.records.monitoring_start} must lie "

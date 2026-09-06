@@ -68,6 +68,12 @@ def uniforms(source: SeedSequence, size: int) -> np.ndarray:
         source: The sequence to draw from.
         size: How many uniforms to produce.
 
+    Note:
+        Calling this twice on the same sequence returns the *same* array. A
+        sequence is a description of a stream rather than a position in one, so
+        two draws that must differ come from two children of it, never from two
+        calls.
+
     Returns:
         A one-dimensional array of ``size`` floats on [0, 1).
     """
