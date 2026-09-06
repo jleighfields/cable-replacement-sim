@@ -305,16 +305,29 @@ loglik = sum_i [ delta_i * log h(t_i) ] - sum_i H(t_i)
     where H(t) = (t/lambda)^k        (cumulative hazard)
 ```
 
+**The study design, stated because everything below depends on it.** This is a
+**prospective follow-up**: the utility inventories what is in the ground at
+`records.monitoring_start`, taking install dates from the asset register, and
+records failures from then until `records.study_end`. An episode already
+finished before the inventory is not in it — its replacement is there instead,
+and nothing in the data says the earlier one existed. A register carrying full
+history back to the first install year would have no truncation at all, and one
+listing current inventory with no failure log would have no failures and an
+unidentified shape; this is the design between them.
+
 **Censoring and truncation are different mechanisms, and the words are not
-interchangeable.**
+interchangeable. One episode can have both.**
 
 - **Right censoring** is incomplete *observation* of an episode you have. The
   cable is in the table, you know it reached the study end, you do not know
   when it fails. `delta_i = 0` and it contributes accumulated hazard only.
-- **Left truncation** is *selection* of which episodes you have at all. An
-  episode that failed before the failure records begin is absent — no row is
-  missing a value, because there is no row. The episodes present are there
-  partly *because* they lasted long enough to be recorded.
+- **Left truncation** is about the *entry*. An episode already finished before
+  the inventory is absent — no row is missing a value, because there is no row.
+  Those present from before that date are there *because* they were still
+  running, so that part of the sample holds survivors only.
+
+A cable installed in 1992, inventoried in 1998 and still running at a 2026
+study end is truncated at age 6 and censored at age 34. Both, at once.
 
 Truncation is correctable here only because the asset register records install
 dates even where failures are not recorded, which is what makes an entry age
@@ -1103,12 +1116,14 @@ population:
 # needs, not by how large a system is being modeled.
 records:
   n_segments: 20_000
-  # The two window edges do different things, and the difference is not
-  # cosmetic. study_end RIGHT-CENSORS: an episode still running is in the table
-  # with an unknown end. monitoring_start LEFT-TRUNCATES: an episode that
-  # already ended is absent from the table altogether, so nothing represents
-  # it. Install dates are known either way, which is what lets the likelihood
-  # compute how long a surviving episode had already run and condition on it.
+  # A prospective follow-up: inventory what is in the ground at
+  # monitoring_start, taking install dates from the asset register, then record
+  # failures until study_end. The two edges do different things and an episode
+  # can meet both. monitoring_start LEFT-TRUNCATES at entry: an episode already
+  # finished before the inventory is absent, and its replacement is there
+  # instead. study_end RIGHT-CENSORS at exit: an episode still running is in
+  # the table with an unknown end. Cable installed 1992, inventoried 1998,
+  # still running in 2026 is truncated at age 6 and censored at age 34.
   monitoring_start: 1998
   study_end: 2026
 
@@ -1169,6 +1184,7 @@ policies:
 reporting:
   baseline_policy: run_to_failure   # what "avoided" is measured against
 ```
+
 
 
 

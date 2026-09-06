@@ -8,23 +8,46 @@ Technologies, length and sample size are arguments rather than config lookups,
 because the early rungs of the recovery ladder need one technology and a fixed
 length while the configured record block describes the full population mix.
 
+The study design this assumes
+-----------------------------
+
+A **prospective follow-up**. The utility inventories what is in the ground in
+``monitoring_start`` — install dates come from the asset register, which keeps
+them whether or not failures were being tracked — and records failures from
+that date until ``study_end``.
+
+That is what makes an episode's history knowable. A cable installed in 1992 and
+inventoried in 1998 is known to exist and known to be six years old. A cable
+installed in 1990 that failed in 1995 is not in the inventory at all; its
+replacement is there instead, and nothing in the data says the earlier one ever
+existed.
+
+Two other designs would give different data, and neither is what this builds:
+an asset register carrying every install and replacement back to the first
+install year has no truncation, because nothing is missing; a register listing
+only current inventory with no failure log has no failures, and the shape is
+then unidentified.
+
 Censoring and truncation
 ------------------------
 
 Two different things happen at the edges of the study window, and the words are
 not interchangeable.
 
-**Right censoring** is incomplete *observation* of an episode you have. The
-cable is in the table, you know it reached the study end, and you do not know
-when it will fail. It contributes ``S(t)`` to the likelihood — the probability
-of lasting at least that long.
+They describe different ends of an episode, and **one episode can have both**.
 
-**Left truncation** is *selection* of which episodes you have at all. An
-episode that failed before the failure records begin is absent from the table
-entirely; nothing represents it, and no row is missing a value, because there
-is no row. The episodes you do have are in the sample partly *because* they
-lasted long enough to be seen, so the likelihood conditions on that survival by
-dividing by ``S(entry age)``.
+**Right censoring is about the exit.** The episode is in the table, you know it
+reached the study end, you do not know when it fails. It contributes ``S(t)``.
+
+**Left truncation is about the entry.** The episode is only in the table
+because it was still running at the inventory date, so the sample of episodes
+installed before then holds survivors only. The likelihood conditions on that
+by dividing by ``S(entry age)``.
+
+A cable installed in 1992, inventoried in 1998 and still running at a 2026
+study end is truncated at age 6 and censored at age 34 — both at once, and
+neither statement contradicts the other. Truncation is not an alternative to
+censoring; it is a statement about which episodes reached the table.
 
 The generator makes them in different places. It simulates each segment's
 complete history first, so every lifetime is drawn whether or not a record

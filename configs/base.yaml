@@ -124,12 +124,14 @@ population:
 # needs, not by how large a system is being modeled.
 records:
   n_segments: 20_000
-  # The two window edges do different things, and the difference is not
-  # cosmetic. study_end RIGHT-CENSORS: an episode still running is in the table
-  # with an unknown end. monitoring_start LEFT-TRUNCATES: an episode that
-  # already ended is absent from the table altogether, so nothing represents
-  # it. Install dates are known either way, which is what lets the likelihood
-  # compute how long a surviving episode had already run and condition on it.
+  # A prospective follow-up: inventory what is in the ground at
+  # monitoring_start, taking install dates from the asset register, then record
+  # failures until study_end. The two edges do different things and an episode
+  # can meet both. monitoring_start LEFT-TRUNCATES at entry: an episode already
+  # finished before the inventory is absent, and its replacement is there
+  # instead. study_end RIGHT-CENSORS at exit: an episode still running is in
+  # the table with an unknown end. Cable installed 1992, inventoried 1998,
+  # still running in 2026 is truncated at age 6 and censored at age 34.
   monitoring_start: 1998
   study_end: 2026
 
