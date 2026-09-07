@@ -175,22 +175,17 @@ if it is the ageing story and a miscalibration if `run_to_failure` runs away.
 
 The answer goes in `PLAN.md`, not only in a notebook.
 
-## Open questions to settle with the user
+## Questions that were open, and how they were settled
 
-1. **How scalar is `reference.py`?** §6.5, Benchmarks, calls it the "scalar
-   reference" and distinguishes it from the batched NumPy implementation that
-   arrives in Phase 5. Two readings, and they differ by orders of magnitude:
+1. **How scalar is `reference.py`?** Settled: **unbatched over replications,
+   vectorized over segments within a year.** One replication at a time, with
+   NumPy for the scoring, the sort and the cumulative-cost cut. The distinction
+   from the batched implementations of Phase 5 is the replication axis, which
+   is what "batched" names there anyway.
 
-   - *Scalar over segments too* — a Python loop over every segment every year.
-     Mirrors the Rust line for line.
-   - *Unbatched over replications, vectorized over segments within a year* —
-     one replication at a time, NumPy for the scoring, the sort and the
-     cumulative-cost cut. The distinction from `batched.py` is then the
-     replication axis, which is exactly what "batched" names.
-
-   **Measured rather than guessed**, on the per-year shape of the work — score
-   every in-service segment, sort, cumulative-cost cut, apply — at 12,000
-   segments over a 30-year horizon:
+   Measured on the per-year shape of the work — score every in-service segment,
+   sort, cumulative-cost cut, apply — at 12,000 segments over a 30-year
+   horizon:
 
    | Reading | Per replication | Full sweep, 50 reps | Full sweep, 1000 reps |
    |---|---|---|---|
@@ -199,34 +194,48 @@ The answer goes in `PLAN.md`, not only in a notebook.
 
    The sweep figures are eight budget levels times five policies. Both are
    lower bounds: the probe omits failure resolution, replacement draws and the
-   per-class accumulation, so the real loop costs more than this, in the same
-   ratio. A first probe put the gap at 7x rather than 14x by leaving scoring
-   vectorized and scalarizing only the greedy fill — which flatters the scalar
-   reading, because the fill breaks as soon as the budget is gone and never
-   sees most segments, while scoring sees all of them every year.
+   per-class accumulation, so the real loop costs more, in the same ratio. A
+   first probe put the gap at 7x rather than 14x by leaving scoring vectorized
+   and scalarizing only the greedy fill — which flatters the scalar reading,
+   because the fill breaks as soon as the budget is gone and never sees most
+   segments, while scoring sees all of them every year.
 
-   Recommendation: the second. It keeps the phase deliverable, it is still the
-   readable single-replication loop the parity tests want, and it preserves the
-   reduction-order distinction §6.4 relies on, since a per-replication loop
-   still accumulates across years sequentially.
+   The per-replication loop still accumulates across years sequentially, so the
+   reduction-order distinction §6.4, Implementation parity, relies on survives:
+   exact agreement on discrete outcomes, `1e-12` relative on money and minutes.
 
-2. **What size does the headline figure run at in this phase?** Eight budget
-   levels times five policies is forty runs. At full size — 1000 replications
-   and 12,000 segments — that is 26 minutes on the measurement above and more
-   once the omitted work is added, which is far more than a notebook should
-   carry, and §6.4 says outright never to run the scalar reference at full
-   size. At 50 replications it is 1.3 minutes, which a notebook can.
-   Options: run the sweep at reduced replications now and regenerate it at full
-   size in Phase 4 once the kernel exists; or ship the reduced figure as the
-   Phase 3 deliverable and label it. Either way the number belongs in the
-   notebook's own text, since a figure whose replication count is not stated
-   cannot be read.
+2. **What size does the headline figure run at?** The premise of the original
+   question was wrong. It asked what the continuous integration budget allows,
+   and the answer is that **the notebooks no longer run in continuous
+   integration at all** — that changed in its own branch while this plan was
+   being written, so nothing external constrains notebook 04's size.
 
-3. **Does `plots.py` earn its place before the app exists?** §7.5 says a figure
-   belongs there when a second front end wants it, and in this phase there is
-   one: notebook 04. The app arrives in Phase 6. Building it now is right if
-   the app is definitely coming; deferring the module and letting notebook 04
-   draw its own figure is the smaller step, at the cost of moving it later.
+   What actually constrains it: `results/` and `*.parquet` are both ignored, so
+   a notebook that loads a saved sweep has nothing to load on a fresh clone.
+   Notebook 04 therefore computes its own small sweep — enough to draw a real
+   figure and to exercise every layer — and **states in its own text the
+   replication count it ran at**, since a figure whose replication count is not
+   stated cannot be read.
+
+3. **What does `scripts/budget_sweep.py` default to?** Settled: **a reduced
+   default, with a flag to go full size.** The default should finish while
+   someone watches it. The cost of this choice is that the default stops
+   matching the shipped configuration once the Rust kernel makes full size
+   cheap, so Phase 4 should revisit it rather than inheriting it silently.
+
+4. **Does `plots.py` land here?** Settled: **yes.** The Shiny app is on the
+   roadmap as the second caller, and building the figure twice is what the
+   module exists to prevent. This adds plotly as an optional dependency group
+   in this phase.
+
+## Carried into Phase 4
+
+- Revisit the sweep script's reduced default once the kernel makes full size
+  affordable.
+- Regenerate the headline figure at full replication count.
+- The reference built here is what the kernel is validated against, so its
+  greedy fill, tie-break and replacement timing are the contract Phase 4 has to
+  match exactly, not approximately.
 
 ## Done when
 
