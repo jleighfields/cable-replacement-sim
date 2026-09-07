@@ -2641,10 +2641,10 @@ the argument belongs beside the model it constrains.
    numbers.
 4. **Discount rate.** A number is in the config; it needs a stated basis, since
    the present-value comparison is sensitive to it over a 30-year horizon.
-5. **Does the recovery ladder's rung 5 stay in the suite or move to a
-   notebook?** Fitting per-technology shape needs enough observed failures per
-   technology that the synthetic record table may be large enough to be slow.
-   Decide once it has been run and timed, not before.
+5. **Settled: rung 5 stays in the suite.** Fitting per-technology shape was
+   expected to need a record table large enough to be slow. Timed, the whole
+   suite runs in about five seconds, so the rung is nowhere near the cost that
+   would justify moving it to a notebook.
 6. **Switchability as a class average.** Restoration time per class (2.5)
    averages over the segments in that class that can be switched around and
    those that cannot. Modeling it as a per-segment probability of having an
@@ -2655,6 +2655,39 @@ the argument belongs beside the model it constrains.
    coefficient shrunk toward zero would indicate failures concentrating at
    splices and terminations. Whether that becomes a modeled term or stays a
    documented diagnostic is a v2 question.
+8. **Is there a polars implementation on the Rust side, as there is on the
+   Python side?** 6.5, Benchmarks, times a batched NumPy implementation against
+   a batched polars one, which asks whether a frame engine is competitive for
+   this work. The same question can be asked in Rust, and there is a reason to
+   want it: the Python pair cannot separate the two things it measures. The
+   Python polars package is a binding over the Rust polars crate, so a loss
+   there could be the engine being wrong for this shape of work or could be
+   interop, and the pair gives no way to tell which.
+
+   Two ways to answer it, and they differ by an order of magnitude in cost.
+
+   The expensive one is a sixth implementation of the annual loop, in polars
+   from Rust, held to the parity tests every other implementation passes. That
+   is the comparison stated plainly, and it carries the tax Phase 5 already
+   names for the batched implementations: each is another mirror of the loop
+   and another place divergence can hide. It would also inherit the limits the
+   Python polars implementation has — the greedy fill of 2.9 stops at the first
+   candidate that does not fit, which is sequential, and the uniforms have to
+   arrive from outside because polars has no addressable per-element generator
+   — so it would be a partial frame implementation benchmarked as a whole one.
+
+   The cheap one is to time the same polars expressions from both languages on
+   the grouping step alone: the `group_by` behind the metrics and the
+   `cum_sum().over("rep")` behind the greedy fill. Tens of lines, no parity
+   obligation because it implements none of the model, and it isolates
+   interop from engine cost directly. If the overhead turns out negligible,
+   the Python number already says what a Rust implementation would, and the
+   expensive option is answered without being built.
+
+   Do the cheap one first, and only then decide whether the row is worth it.
+   Either way this belongs in Phase 5 with the rest of the benchmark work,
+   for the reason that phase gives: the model has to have stopped moving
+   before another mirror of it is worth maintaining.
 
 ---
 
