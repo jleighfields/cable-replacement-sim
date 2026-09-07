@@ -2,8 +2,9 @@
 
 A notebook breaks when the package interface it imports changes, and nothing
 else notices. These run in minutes rather than seconds, so they carry the
-`notebooks` marker and are excluded from a default run; the workflow that
-executes them runs on pushes to the default branch and weekly.
+`notebooks` marker and are excluded from a default run. **Nothing runs them
+automatically**, so run `pytest -m notebooks` after changing any package
+interface a notebook imports.
 
 The notebooks carry their own assertions about what they compute. This module
 only asserts that they run at all.

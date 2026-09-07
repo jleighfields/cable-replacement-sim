@@ -10,20 +10,24 @@ policies evaluated against customer reliability (SAIFI / SAIDI / CMI) over a
 30-year horizon. All inputs are parameterized via config; the cable population
 is fully synthetic.
 
-**Status: the population layer is built, and the failure model can be fitted.**
+**Status: the simulation runs end to end in Python.**
 The configuration schema and its validators, the purpose-spawned sources of
 randomness, the Weibull forms and the synthetic population generator exist,
 along with the synthetic failure history and the censored, left-truncated
 maximum-likelihood fit that recovers the parameters it was generated from.
-Three marimo notebooks walk them. Every rung of the recovery ladder fits data
+Four marimo notebooks walk them. Every rung of the recovery ladder fits data
 generated at parameters the configuration states, and checks the estimates come
 back at them rather than checking that the generator and the estimator agree
 with each other; the confidence intervals have been checked for coverage rather
 than assumed.
 
-The continuous integration workflows run, and the extension module builds and
-imports under Python. The annual simulation loop, the replacement policies and
-the Rust kernel are not written yet. See [PLAN.md](PLAN.md) for the model, the decisions behind it, and the
+The annual simulation loop, the five replacement policies, the budget-constrained
+allocation, the reliability metrics and the shared figures all exist, and a
+budget sweep draws the reliability-against-budget curve — at zero budget every
+policy lands on the same point as run-to-failure, which is the end-to-end check
+that costs nothing to run. The continuous integration workflows run and the
+extension module builds and imports under Python; the Rust kernel that will
+replace the reference in the inner loop is not written yet. See [PLAN.md](PLAN.md) for the model, the decisions behind it, and the
 phased roadmap.
 
 ## Layout
@@ -31,7 +35,8 @@ phased roadmap.
 | Path | What it holds |
 |---|---|
 | `src/` | the Rust crate: the compute kernel, built as a Python extension module |
-| `python/cablesim/` | the Python package: configuration, the sources of randomness, the Weibull forms, the population generator, the synthetic failure history and its censored maximum-likelihood fit, and the pure-Python reference implementation that will mirror the kernel |
+| `python/cablesim/` | the Python package: configuration, the sources of randomness, the Weibull forms, the population generator, the synthetic failure history and its censored maximum-likelihood fit, the replacement policies, the annual loop that is the correctness reference for the kernel, and the run, metrics and figure layers above it |
+| `scripts/` | driver scripts that build configuration overrides and call the package in a loop; they hold no modelling logic |
 | `configs/base.yaml` | the documented default run configuration |
 | `notebooks/` | marimo notebooks that walk the package interface layer by layer |
 | `tests/` | the test suite |

@@ -6,11 +6,14 @@ number-sections: false
 
 # Cable Replacement Simulation — Project Plan
 
-Status: **Phase 2 is merged.** The configuration schema and its validators,
+Status: **Phase 3 is landing.** The configuration schema and its validators,
 the random streams, the Weibull forms, the population generator, the synthetic
-record table and the censored maximum-likelihood fit exist, with notebooks 01
-to 03, and the configuration is calibrated against a run of the generator
-itself. Phase 3, the Python reference and the annual loop, is next.
+record table and the censored maximum-likelihood fit exist, and so does the
+annual loop: policy scoring, the greedy budget fill, the reference simulation,
+the run directory, the reliability metrics, the shared figures and the budget
+sweep, with notebooks 01 to 04. The reliability-against-budget curve is
+drawable. Phase 4, the Rust kernel, is next, and this is what it will be
+validated against.
 `rust-toolchain.toml` pins the compiler a checkout and continuous integration
 both build against, so `maturin develop` rebuilds the extension module and the
 format, lint and test gates all run — rustup installs what that file names, so
@@ -2688,9 +2691,29 @@ the argument belongs beside the model it constrains.
    yet checked is the other 29 years. A population that ages faster than it is
    replaced drifts, and the failure rate at year 30 could be several times the
    rate at year 1 — which is a finding if it is the aging story, and a
-   miscalibration if `run_to_failure` runs away. Re-check once the reference
-   simulator exists, and record the horizon behaviour beside the year-zero
-   numbers.
+   miscalibration if `run_to_failure` runs away.
+
+   **Now measured, and it does not run away.** At the shipped size over 30
+   replications, `run_to_failure` fails 1.97% of the fleet in year 0 — the
+   figure the configuration was tuned to — falls to about 1.20% by year 9,
+   and returns to 1.81% by year 29. Year 29 against year 0 is 0.92x, so the
+   horizon ends slightly quieter than it began rather than several times
+   louder.
+
+   The dip and return is the replacement wave rather than noise: the oldest
+   cable fails first and is replaced with new cable, which empties the high
+   hazard end of the age distribution and then refills it as that cable ages.
+   It is a damped echo of the installation history in 3, Configuration schema,
+   and it is the reason a 30-year horizon shows a different picture from a
+   10-year one.
+
+   One number in `configs/base.yaml` is a population-mean statement and reads
+   as a prediction. The budget funds about 141 replacements a year *at the mean
+   segment's planned cost*; `risk_ranked` actually funds around 68 to 120 a
+   year, because the segments it ranks first are main feeders whose value at
+   risk dominates the score and which cost roughly twice the population mean.
+   The comment already makes that distinction for the segments that *fail*; it
+   does not yet make it for the segments a policy *chooses*.
 4. **Discount rate.** A number is in the config; it needs a stated basis, since
    the present-value comparison is sensitive to it over a 30-year horizon.
 5. **Settled: rung 5 stays in the suite.** Fitting per-technology shape was
