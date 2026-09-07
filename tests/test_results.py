@@ -11,8 +11,10 @@ seed, so a stored data blob has no reason to exist here.
 """
 
 import datetime
+import functools
 import json
 import pathlib
+import subprocess
 
 import numpy as np
 import polars as pl
@@ -178,10 +180,7 @@ def test_the_saved_config_is_the_one_that_ran(tmp_path: pathlib.Path) -> None:
     the convention.
     """
     settings = config.load_config(constants.DEFAULT_CONFIG_PATH)
-    overridden = config.Config.model_validate(
-        {**settings.model_dump(), "budget": {**settings.budget.model_dump(),
-                                             "annual": 1_234.0}}
-    )
+    overridden = config.overridden(settings, {"budget.annual": 1_234.0})
     frame = results.to_frame(chunk(), "risk_ranked", CLASS_NAMES)
 
     directory = results.write_run(
@@ -301,3 +300,29 @@ def test_git_provenance_reads_this_repository() -> None:
     assert commit is not None
     assert len(commit) == 40
     assert isinstance(dirty, bool)
+
+
+def test_the_dirty_flag_tracks_whether_the_tree_was_clean(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A result built from uncommitted work is not reproducible from the commit.
+
+    So the flag has to be right, not merely present: asserting only that it is
+    a boolean passes against a function that always answers the same way.
+    """
+    run_git = functools.partial(
+        subprocess.run, cwd=tmp_path, check=True, capture_output=True
+    )
+    run_git(["git", "init", "-q"])
+    run_git(["git", "config", "user.email", "test@example.invalid"])
+    run_git(["git", "config", "user.name", "test"])
+    (tmp_path / "a.txt").write_text("one")
+    run_git(["git", "add", "a.txt"])
+    run_git(["git", "commit", "-q", "-m", "first"])
+
+    _, clean = results.git_provenance(tmp_path)
+    (tmp_path / "a.txt").write_text("two")
+    _, modified = results.git_provenance(tmp_path)
+
+    assert clean is False
+    assert modified is True

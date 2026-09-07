@@ -23,7 +23,7 @@ import datetime
 import logging
 import pathlib
 import time
-from typing import Protocol
+from collections.abc import Callable
 
 import numpy as np
 import polars as pl
@@ -35,6 +35,18 @@ log = logging.getLogger(__name__)
 
 DEFAULT_BATCH_SIZE = 50
 """Replications per call, which trades memory against time and nothing else."""
+
+GRID_LOW = 0.125
+GRID_HIGH = 2.0
+GRID_LEVELS = 7
+"""The default budget sweep: zero, then this many levels from this fraction of
+the configured budget to this multiple of it.
+
+Geometric rather than linear, so the region near a binding constraint is
+sampled more densely than the flat region beyond it. In the package rather than
+in a driver script because it is the sweep's design, and a notebook and a
+script that each spell it out are two designs that drift.
+"""
 
 SEGMENT_COLUMNS: tuple[str, ...] = (
     "length_ft",
@@ -59,19 +71,35 @@ reads without interpreting.
 """
 
 
-class Implementation(Protocol):
-    """What ``run`` needs of an implementation of the annual loop."""
+Implementation = Callable[..., simulate.Results]
+"""An annual loop: the reference, or the compute kernel, called by keyword.
 
-    def __call__(self, **arguments: object) -> simulate.Results:
-        """Runs one chunk of replications under one policy.
+Deliberately not a Protocol spelling out the call. One that wrote
+``__call__(**arguments: object)`` would accept any callable at all, which is
+what a bare alias already says with less ceremony; one that pinned all
+twenty-odd argument names would be the contract worth having, and that contract
+lives in ``PLAN.md`` section 5.2, The call, where both languages read it.
+"""
 
-        Args:
-            **arguments: The per-segment arrays, draws, series and scalars.
 
-        Returns:
-            The seven per-year, per-class arrays.
-        """
-        ...
+def budget_grid(annual: float, levels: int = GRID_LEVELS) -> list[float]:
+    """Builds the swept budget levels for the deliverable figure.
+
+    **Zero is in the grid deliberately.** No policy funds anything there, so
+    every one of them must land on exactly the same point as run-to-failure —
+    an end-to-end check on the population, the draws, the scoring, the fill,
+    the loop and the reduction, for the cost of a point that was worth plotting
+    anyway.
+
+    Args:
+        annual: The configured annual budget, which the grid brackets.
+        levels: How many non-zero levels to place.
+
+    Returns:
+        Zero followed by geometrically spaced levels.
+    """
+    spaced = np.geomspace(annual * GRID_LOW, annual * GRID_HIGH, levels)
+    return [0.0, *spaced.tolist()]
 
 
 def escalation_series(rate: float, n_years: int) -> np.ndarray:
@@ -199,6 +227,7 @@ def run(
     root: pathlib.Path,
     implementation: Implementation = simulate.simulate,
     implementation_name: str = "reference",
+    build_profile: str | None = None,
     batch_size: int = DEFAULT_BATCH_SIZE,
     swept: dict[str, float] | None = None,
 ) -> pathlib.Path:
@@ -209,6 +238,9 @@ def run(
         root: Where run directories are written.
         implementation: The annual loop to call.
         implementation_name: Which implementation that is, for the manifest.
+        build_profile: The Rust build profile, where the kernel ran. Pure
+            Python has none, so it stays absent rather than being invented; a
+            timing from the kernel without one means nothing.
         batch_size: Replications per call.
         swept: Values that vary between the runs of a sweep, written into the
             saved rows as columns. A frame carrying its own parameters is
@@ -251,7 +283,7 @@ def run(
             git_commit=commit,
             git_dirty=dirty,
             implementation=implementation_name,
-            build_profile=None,
+            build_profile=build_profile,
             threads=1,
             batch_size=batch_size,
             wall_seconds=time.perf_counter() - started,

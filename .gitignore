@@ -51,3 +51,17 @@ results/
 !.env.example
 !.env.template
 !.env.sample
+
+# Credentials. Nothing here authenticates to anything and no key should ever
+# exist in this tree, which is exactly why these are ignored: the cost is zero
+# and the failure they prevent — committing a key, which then has to be rotated
+# rather than merely deleted — is not recoverable by editing the working tree.
+*.pem
+*.key
+*.pfx
+*.p12
+id_rsa
+id_dsa
+credentials.json
+.netrc
+.pgpass

@@ -378,3 +378,67 @@ def test_the_value_of_lost_load_escalates_with_construction_cost() -> None:
 
     assert results.planned_replacements[0, 0].tolist() == [1.0, 0.0]
     assert results.planned_spend[0, 0].tolist() == pytest.approx([4_000.0, 0.0])
+
+
+def test_a_replacement_reads_the_draw_for_the_year_it_enters_service() -> None:
+    """Index ``y + 1`` for a replacement made in year ``y``, not index ``y``.
+
+    That indexing is what makes the draw array bounded and addressable, and it
+    is what two implementations have to agree on. Nothing else pins it: the
+    deterministic cases use one uniform everywhere, and comparing two runs that
+    both read the wrong cell is comparing a thing against itself.
+
+    Here every segment fails in year 0, and the cells differ sharply — the
+    year-0 cell would give a replacement lasting decades, the year-1 cell one
+    lasting months. Which cell is read decides whether anything fails again.
+    """
+    draws = np.full((1, N_SEGMENTS, N_YEARS + 1), 0.5)
+    # A tiny uniform is a short lifetime under the inverse transform, so the
+    # cell for year 1 sends the replacement back into failure almost at once.
+    # The year-0 cell keeps its 0.5, which ends an 80-year-old segment inside
+    # year 0 and, read as a fresh lifetime instead, would last about 19 years —
+    # past the horizon, so the two cells give opposite answers.
+    draws[0, :, 1] = 1e-12
+
+    results = simulate.simulate(
+        **inputs(
+            age0=np.full(N_SEGMENTS, 80.0),
+            lifetime_uniforms=draws,
+            replacement_scale=np.full(N_SEGMENTS, 20.0),
+            replacement_shape=np.full(N_SEGMENTS, 6.2),
+        )
+    )
+
+    assert results.failures[0, 0].sum() == N_SEGMENTS, "everything fails in year 0"
+    assert results.failures[0, 1].sum() == N_SEGMENTS, (
+        "the replacement should read the year-1 cell, whose tiny uniform makes "
+        "it fail again immediately"
+    )
+
+
+def test_a_replaced_segment_is_scored_at_age_zero_not_age_one() -> None:
+    """The rule is age 0 in ``y + 1`` and age 1 in ``y + 2``.
+
+    Off by one, a segment replaced last year is already old enough for a
+    one-year threshold and is funded again immediately.
+
+    The budget deliberately covers every segment, so the difference shows in
+    how many are funded rather than in which. With a budget for only one, a
+    just-replaced segment is the youngest either way and ranks last either way,
+    so being wrongly eligible costs it nothing and the error is invisible.
+    """
+    results = simulate.simulate(
+        **inputs(
+            policy=resolved("age_threshold", threshold_years=1),
+            age0=np.full(N_SEGMENTS, 40.0),
+            budget=np.full(N_YEARS, 1e9),
+            scale=np.full(N_SEGMENTS, NEVER_FAILS),
+            replacement_scale=np.full(N_SEGMENTS, NEVER_FAILS),
+        )
+    )
+
+    # Year 0 replaces all four. In year 1 every one of them is age 0, below the
+    # threshold, so nothing is eligible; by year 2 they are age 1 and all four
+    # are funded again. At age 1 in year 1, all four would be funded then too.
+    funded = [results.planned_replacements[0, year].sum() for year in range(N_YEARS)]
+    assert funded == [4.0, 0.0, 4.0]

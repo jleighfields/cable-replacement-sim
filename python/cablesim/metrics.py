@@ -16,9 +16,32 @@ outage. The customer-minutes planned work does cost are reported beside them
 instead of being dropped — a customer out for four hours does not care that the
 work was scheduled — so aggressive replacement shows as a customer-minute cost
 now against a reliability gain later, with neither distorting the other.
+
+The four index columns carry their standard utility names, spelled out here
+once because the column names are the abbreviations alone::
+
+    saifi  System Average Interruption Frequency Index
+           interruptions per customer served in the year
+    saidi  System Average Interruption Duration Index
+           customer-minutes interrupted per customer served in the year
+    caidi  Customer Average Interruption Duration Index
+           SAIDI / SAIFI: minutes per customer actually interrupted
+    cmi    Customer Minutes Interrupted, the undivided total
+
+``PLAN.md`` section 2.6, Reliability metrics, argues the definitions and why
+the denominator is a configured system total rather than a sum over segments.
 """
 
 import polars as pl
+
+QUANTILES: tuple[float, float] = (0.1, 0.9)
+"""The band's lower and upper quantiles.
+
+Not a parameter. ``plots.trajectory`` builds the column names it reads as
+``_p10`` and ``_p90`` literally, so any other pair produces columns it raises
+on — a knob with one usable value. Changing the band means changing both, which
+is why they sit together.
+"""
 
 UNPLANNED_COLUMNS: tuple[str, ...] = (
     "failures",
@@ -28,7 +51,9 @@ UNPLANNED_COLUMNS: tuple[str, ...] = (
 """What the reliability indices are built from."""
 
 
-def per_replication(frame: pl.LazyFrame, total_customers: float) -> pl.LazyFrame:
+def per_replication(
+    frame: pl.LazyFrame, total_customers: float, by: tuple[str, ...] = ()
+) -> pl.LazyFrame:
     """Totals over segment classes and forms the indices, per replication year.
 
     The class axis is summed away here rather than in an implementation,
@@ -44,12 +69,35 @@ def per_replication(frame: pl.LazyFrame, total_customers: float) -> pl.LazyFrame
         frame: Saved rows, as a run wrote them.
         total_customers: System-wide customers served, the denominator of both
             indices.
+        by: Extra columns to keep as grouping keys, for a frame holding more
+            than one run. A sweep's rows differ only in a swept column, so
+            without naming it here two budget levels for one policy,
+            replication and year are summed into a single row: nothing raises,
+            the shape stays plausible, and the swept column disappears.
 
     Returns:
-        One row per policy, replication and year, carrying the indices and the
-        totals they came from.
+        One row per policy, replication and year, carrying the seven saved
+        quantities summed over classes plus ``saifi``, ``saidi``, ``cmi``,
+        ``caidi`` and ``total_spend``.
+
+    Examples:
+        The input is the saved frame, one row per class::
+
+            >>> saved.select("policy", "replication", "year", "class",
+            ...              "customers_interrupted", "customer_minutes")
+            risk_ranked  0  0  main_feeder  100.0  6000.0
+            risk_ranked  0  0  lateral_1ph  150.0  1500.0
+
+            >>> per_replication(saved.lazy(), 1000.0).collect().select(
+            ...     "customers_interrupted", "saifi", "saidi", "caidi")
+            250.0  0.25  7.5  30.0
+
+        The class axis is gone and the keys that survive are exactly
+        ``policy``, ``replication`` and ``year`` — so a frame holding more
+        than one run, as ``results.read_sweep`` returns, has its runs summed
+        together rather than kept apart.
     """
-    keys = ["policy", "replication", "year"]
+    keys = ["policy", "replication", "year", *by]
     totals = frame.group_by(keys).agg(
         pl.col(
             *UNPLANNED_COLUMNS,
@@ -62,7 +110,9 @@ def per_replication(frame: pl.LazyFrame, total_customers: float) -> pl.LazyFrame
     return totals.with_columns(
         saifi=pl.col("customers_interrupted") / total_customers,
         saidi=pl.col("customer_minutes") / total_customers,
-        cmi=pl.col("customer_minutes"),
+        # Customer-minutes interrupted is the saved `customer_minutes` column
+        # unchanged, so it is read under that name rather than copied under
+        # another one.
         total_spend=pl.col("planned_spend") + pl.col("emergency_spend"),
     ).with_columns(
         # Average duration per customer interrupted. Undefined rather than zero
@@ -102,7 +152,7 @@ def discount(frame: pl.LazyFrame, rate: float) -> pl.LazyFrame:
 
 
 def bands(
-    frame: pl.LazyFrame, columns: list[str], quantiles: tuple[float, float] = (0.1, 0.9)
+    frame: pl.LazyFrame, columns: list[str], by: tuple[str, ...] = ()
 ) -> pl.LazyFrame:
     """Summarizes across replications into a mean and an interval.
 
@@ -113,14 +163,17 @@ def bands(
     Args:
         frame: Per-replication rows.
         columns: Which quantities to summarize.
-        quantiles: Lower and upper quantile for the band.
+        by: Extra columns to keep as grouping keys, as in ``per_replication``.
 
     Returns:
-        One row per policy and year.
+        One row per policy and year. Each name in ``columns`` becomes three:
+        ``<name>_mean``, and ``<name>_p<lower>`` / ``<name>_p<upper>`` named
+        for the quantiles as whole percents, so the default pair yields
+        ``_p10`` and ``_p90`` — which is what ``plots.trajectory`` looks for.
     """
-    lower, upper = quantiles
+    lower, upper = QUANTILES
     return (
-        frame.group_by(["policy", "year"])
+        frame.group_by(["policy", "year", *by])
         .agg(
             [pl.col(name).mean().alias(f"{name}_mean") for name in columns]
             + [
@@ -132,11 +185,11 @@ def bands(
                 for name in columns
             ]
         )
-        .sort(["policy", "year"])
+        .sort(["policy", "year", *by])
     )
 
 
-def horizon_totals(frame: pl.LazyFrame, rate: float) -> pl.LazyFrame:
+def horizon_totals(frame: pl.LazyFrame, by: tuple[str, ...] = ()) -> pl.LazyFrame:
     """Sums each replication over the whole horizon, then averages.
 
     Summing before averaging is what keeps the replication as the unit: the
@@ -145,12 +198,12 @@ def horizon_totals(frame: pl.LazyFrame, rate: float) -> pl.LazyFrame:
 
     Args:
         frame: Per-replication rows, already discounted.
-        rate: Annual discount rate, used only to name what was applied.
+        by: Extra columns to keep as grouping keys, as in ``per_replication``.
 
     Returns:
-        One row per policy.
+        One row per policy, and per extra grouping key.
     """
-    summed = frame.group_by(["policy", "replication"]).agg(
+    summed = frame.group_by(["policy", "replication", *by]).agg(
         pl.col(
             "failures",
             "customer_minutes",
@@ -165,14 +218,15 @@ def horizon_totals(frame: pl.LazyFrame, rate: float) -> pl.LazyFrame:
         ).sum()
     )
     return (
-        summed.group_by("policy")
-        .agg(pl.exclude("policy", "replication").mean())
-        .with_columns(discount_rate=pl.lit(rate))
-        .sort("policy")
+        summed.group_by(["policy", *by])
+        .agg(pl.exclude("policy", "replication", *by).mean())
+        .sort(["policy", *by])
     )
 
 
-def against_baseline(totals: pl.LazyFrame, baseline_policy: str) -> pl.LazyFrame:
+def against_baseline(
+    totals: pl.LazyFrame, baseline_policy: str, by: tuple[str, ...] = ()
+) -> pl.LazyFrame:
     """Measures each policy against the one avoided quantities are relative to.
 
     The comparison is a difference of means over the same draws rather than an
@@ -184,10 +238,20 @@ def against_baseline(totals: pl.LazyFrame, baseline_policy: str) -> pl.LazyFrame
     Args:
         totals: Horizon totals, one row per policy.
         baseline_policy: What "avoided" is measured against.
+        by: Extra grouping keys the totals carry. Each level gets its own
+            baseline row, because a policy at one budget level is not measured
+            against run-to-failure at a different one.
 
     Returns:
         The totals with avoided customer-minutes, avoided failures, and cost
         per customer-minute avoided.
+
+        **Cost per customer-minute avoided is negative where prevention pays
+        for itself**, and that is a result rather than an error: replacing a
+        segment before it fails costs the planned price where letting it fail
+        costs a multiple of it, so a modest programme can avoid more emergency
+        spend than the planned work it buys. It turns positive once the cheap
+        opportunities are used up.
 
     Raises:
         ValueError: If the baseline policy is not among the rows, which would
@@ -195,22 +259,42 @@ def against_baseline(totals: pl.LazyFrame, baseline_policy: str) -> pl.LazyFrame
     """
     collected = totals.collect()
     matching = collected.filter(pl.col("policy") == baseline_policy)
-    if matching.height != 1:
+    expected = collected.select(by).unique().height if by else 1
+    if matching.height != expected:
         raise ValueError(
-            f"baseline policy {baseline_policy!r} is not in these results "
-            f"({collected['policy'].to_list()}); every avoided quantity would "
-            f"be null"
+            f"baseline policy {baseline_policy!r} appears {matching.height} "
+            f"times in these results and should appear {expected} "
+            f"({collected['policy'].unique().to_list()}); every avoided "
+            f"quantity would be null"
         )
-    baseline = matching.row(0, named=True)
+
+    # Joined on the extra keys rather than read as scalars, so each swept level
+    # is measured against its own baseline. Comparing a policy at one budget
+    # level against run-to-failure at another would attribute the difference
+    # between two budgets to the difference between two policies.
+    reference = matching.select(
+        [*by, "customer_minutes", "failures", "total_spend_discounted"]
+    ).rename(
+        {
+            "customer_minutes": "baseline_customer_minutes",
+            "failures": "baseline_failures",
+            "total_spend_discounted": "baseline_total_spend_discounted",
+        }
+    )
+    joined = (
+        collected.join(reference, on=list(by), how="cross" if not by else "inner")
+        if by
+        else collected.join(reference, how="cross")
+    )
 
     return (
-        collected.lazy()
+        joined.lazy()
         .with_columns(
-            customer_minutes_avoided=pl.lit(baseline["customer_minutes"])
+            customer_minutes_avoided=pl.col("baseline_customer_minutes")
             - pl.col("customer_minutes"),
-            failures_avoided=pl.lit(baseline["failures"]) - pl.col("failures"),
+            failures_avoided=pl.col("baseline_failures") - pl.col("failures"),
             additional_spend_discounted=pl.col("total_spend_discounted")
-            - pl.lit(baseline["total_spend_discounted"]),
+            - pl.col("baseline_total_spend_discounted"),
         )
         .with_columns(
             # Undefined where a policy avoided nothing, rather than infinite or
@@ -224,5 +308,10 @@ def against_baseline(totals: pl.LazyFrame, baseline_policy: str) -> pl.LazyFrame
                 / pl.col("customer_minutes_avoided")
             )
             .otherwise(None)
+        )
+        .drop(
+            "baseline_customer_minutes",
+            "baseline_failures",
+            "baseline_total_spend_discounted",
         )
     )

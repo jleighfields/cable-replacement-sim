@@ -608,3 +608,76 @@ def load_config(path: pathlib.Path | None = None) -> Config:
     with config_path.open(encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
     return Config.model_validate(raw)
+
+
+def overridden(settings: Config, values: dict[str, object]) -> Config:
+    """Rebuilds a configuration with some values replaced.
+
+    Sweeps override configuration from a driver script or a notebook rather
+    than by editing the checked-in file, which stays the one documented
+    default. Every override goes back through validation, so a sweep cannot
+    reach a combination the schema forbids.
+
+    Args:
+        settings: The configuration to start from.
+        values: Dotted paths to new values, as in
+            ``{"budget.annual": 1e6, "simulation.n_reps": 40}``. A path of one
+            segment replaces a whole top-level section.
+
+    Returns:
+        The rebuilt, validated configuration.
+
+    Raises:
+        KeyError: If a path names a section that does not exist. Silently
+            adding one would leave the override with no effect and the run
+            looking fine.
+        pydantic.ValidationError: If the result does not satisfy the schema.
+    """
+    raw = settings.model_dump()
+    for path, value in values.items():
+        section, _, key = path.partition(".")
+        if section not in raw:
+            raise KeyError(f"no configuration section {section!r} in {sorted(raw)}")
+        if not key:
+            raw[section] = value
+        elif key not in raw[section]:
+            raise KeyError(f"no key {key!r} in section {section!r}")
+        else:
+            raw[section][key] = value
+    return Config.model_validate(raw)
+
+
+def resized(settings: Config, n_segments: int, n_reps: int | None = None) -> Config:
+    """Shrinks the population, keeping the reliability indices comparable.
+
+    **The customer denominator has to move with the population or every index
+    is wrong by the ratio.** SAIFI and SAIDI divide interrupted customers by
+    ``total_customers``, which is a system-level figure rather than the sum
+    over segments. Simulating a fifth of the fleet against the whole system's
+    customers understates both indices roughly fivefold — a systematic bias
+    rather than sampling noise, and one that leaves the curves looking
+    entirely plausible.
+
+    Args:
+        settings: The configuration to shrink.
+        n_segments: How many segments to simulate.
+        n_reps: Replications, unchanged if omitted.
+
+    Returns:
+        The rebuilt configuration, with ``total_customers`` scaled by the same
+        ratio as the segment count.
+
+    Raises:
+        ValueError: If the segment count is not positive.
+    """
+    if n_segments < 1:
+        raise ValueError(f"n_segments must be at least 1, got {n_segments}")
+    ratio = n_segments / settings.population.n_segments
+    scaled = max(1, round(settings.population.total_customers * ratio))
+    values: dict[str, object] = {
+        "population.n_segments": n_segments,
+        "population.total_customers": scaled,
+    }
+    if n_reps is not None:
+        values["simulation.n_reps"] = n_reps
+    return overridden(settings, values)

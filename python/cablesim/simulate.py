@@ -132,10 +132,12 @@ def simulate(
         The seven per-year, per-class arrays for this chunk.
 
     Raises:
-        ValueError: If the draw array's year axis is not ``n_years + 1``. A
-            short axis is worth its own check: it raises only when a
-            replacement happens to occur in the final year, so a run can
-            complete on a wrong array and be wrong nowhere visible.
+        ValueError: If the draw array's shape is not ``(replications,
+            segments, n_years + 1)``. The year axis is why the check exists: a
+            short one raises on its own only when a replacement happens to fall
+            in the final year, so a run can complete against a wrong array and
+            be wrong nowhere visible. The other two axes are checked with it
+            because they cost nothing to compare.
     """
     n_reps, n_segments = policy_uniforms.shape
     if lifetime_uniforms.shape != (n_reps, n_segments, n_years + 1):
@@ -203,10 +205,13 @@ def simulate(
             # 2. Planned replacement, funded greedily down the ranked order.
             available = budget[year]
             if emergency_charged_to_budget:
-                # Charged before the planned pass is scored, which is what
-                # produces the loop where failures crowd out prevention. The
-                # floor stops a heavy failure year handing the next pass a
-                # negative budget rather than simply nothing.
+                # Charged before this year's planned pass is scored, which is
+                # what produces the loop where failures crowd out prevention.
+                # The floor keeps a failure year dearer than the budget from
+                # handing that pass a negative number rather than zero; it
+                # changes nothing, since every planned cost is positive and the
+                # greedy fill funds nothing at either value, and it stops a
+                # negative from reading as a debt the year carries.
                 available = max(0.0, available - float(emergency_now.sum()))
 
             candidates = np.flatnonzero(policies.eligible(policy, age, replaced))

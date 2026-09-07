@@ -62,8 +62,12 @@ uv run pytest                      # run the suite
 Plotting is an extra rather than a dependency, so installing this package for
 the compute kernel alone does not pull a plotting stack. `cablesim.plots`
 imports plotly at module scope and fails at the import without it, saying what
-is missing; leave `--extra plots` off and its tests are the only ones that
-cannot run.
+is missing. Without `--extra plots` the default suite loses
+`tests/test_plots.py` to a collection error, and the notebook suite loses
+notebook 04, which imports the module. **`uv sync` installs exactly what it is
+asked for and removes the rest**, so every later sync has to name the extra
+again — `uv sync --extra plots --group notebooks`, not `uv sync --group
+notebooks`, which uninstalls plotly.
 
 `--release` is not optional for anything timed: the parity tests run many
 replications, and a debug build is slow enough to dominate the run. Rebuild
@@ -83,9 +87,12 @@ cargo test --no-default-features
 Two suites are excluded from a default run because each costs minutes:
 
 ```bash
-uv sync --group notebooks && uv run pytest -m notebooks   # executes every marimo notebook
-uv sync --group app && uv run pytest -m app               # drives the Shiny app in a browser
+uv sync --extra plots --group notebooks && uv run pytest -m notebooks  # every notebook
+uv sync --extra plots --group app && uv run pytest -m app              # the app, in a browser
 ```
+
+Both name `--extra plots` as well as their group: `uv sync` removes whatever it
+is not asked for, and notebook 04 imports `cablesim.plots`.
 
 Neither gates a merge. The app suite runs weekly and on pushes to `main`, so a
 break in it surfaces within a week. **Nothing runs the notebooks for you** —

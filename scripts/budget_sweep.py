@@ -23,30 +23,18 @@ import argparse
 import logging
 import pathlib
 
-import numpy as np
 from cablesim import config, constants, run
 
 log = logging.getLogger("budget_sweep")
 
 REDUCED_REPS = 40
 REDUCED_SEGMENTS = 2_000
-GRID_LOW = 0.125
-GRID_HIGH = 2.0
-GRID_LEVELS = 7
+"""The default size, small enough to finish while someone watches it.
 
-
-def budget_grid(annual: float, levels: int = GRID_LEVELS) -> list[float]:
-    """Builds the swept budget levels.
-
-    Args:
-        annual: The configured annual budget, which the grid brackets.
-        levels: How many non-zero levels to place.
-
-    Returns:
-        Zero followed by geometrically spaced levels.
-    """
-    spaced = np.geomspace(annual * GRID_LOW, annual * GRID_HIGH, levels)
-    return [0.0, *spaced.tolist()]
+Reducing the population also scales the customer denominator, which is what
+``config.resized`` is for: leaving it at the system total would understate
+every reliability index by the population ratio.
+"""
 
 
 def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
@@ -88,39 +76,25 @@ def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     arguments = parse_arguments(argv)
 
-    settings = config.load_config(constants.DEFAULT_CONFIG_PATH)
+    shipped = config.load_config(constants.DEFAULT_CONFIG_PATH)
+    settings = shipped
     if not arguments.full:
-        settings = config.Config.model_validate(
-            {
-                **settings.model_dump(),
-                "simulation": {
-                    **settings.simulation.model_dump(),
-                    "n_reps": REDUCED_REPS,
-                },
-                "population": {
-                    **settings.population.model_dump(),
-                    "n_segments": REDUCED_SEGMENTS,
-                },
-            }
-        )
+        settings = config.resized(shipped, REDUCED_SEGMENTS, n_reps=REDUCED_REPS)
         log.info(
-            "reduced size: %d replications, %d segments. Pass --full for the "
-            "configured %d and %d.",
-            REDUCED_REPS,
-            REDUCED_SEGMENTS,
-            config.load_config(constants.DEFAULT_CONFIG_PATH).simulation.n_reps,
-            config.load_config(constants.DEFAULT_CONFIG_PATH).population.n_segments,
+            "reduced size: %d replications, %d segments, %d customers. Pass "
+            "--full for the configured %d, %d and %d.",
+            settings.simulation.n_reps,
+            settings.population.n_segments,
+            settings.population.total_customers,
+            shipped.simulation.n_reps,
+            shipped.population.n_segments,
+            shipped.population.total_customers,
         )
 
-    grid = budget_grid(settings.budget.annual)
+    grid = run.budget_grid(settings.budget.annual)
     log.info("sweeping %d budget levels into %s", len(grid), arguments.out)
     for index, level in enumerate(grid, start=1):
-        point = config.Config.model_validate(
-            {
-                **settings.model_dump(),
-                "budget": {**settings.budget.model_dump(), "annual": level},
-            }
-        )
+        point = config.overridden(settings, {"budget.annual": level})
         directory = run.run(
             point,
             arguments.out,

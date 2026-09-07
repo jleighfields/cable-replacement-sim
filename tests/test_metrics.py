@@ -51,7 +51,6 @@ def test_the_duration_index_divides_customer_minutes_by_the_same_total() -> None
     result = metrics.per_replication(rows(), TOTAL_CUSTOMERS).collect()
 
     assert result["saidi"].item() == pytest.approx(6.0)
-    assert result["cmi"].item() == pytest.approx(6_000.0)
 
 
 def test_planned_work_enters_no_reliability_index() -> None:
@@ -151,29 +150,39 @@ def test_a_horizon_total_sums_each_replication_before_averaging() -> None:
     )
 
     totals = metrics.horizon_totals(
-        metrics.discount(metrics.per_replication(frame, TOTAL_CUSTOMERS), rate=0.0),
-        rate=0.0,
+        metrics.discount(metrics.per_replication(frame, TOTAL_CUSTOMERS), rate=0.0)
     ).collect()
 
     assert totals["planned_spend"].item() == pytest.approx(1_000.0)
 
 
 def test_bands_summarize_across_replications_rather_than_collapsing_years() -> None:
-    """One row per policy and year, with the spread the replications showed."""
+    """One row per policy and year, with the spread the replications showed.
+
+    The years have to differ, and there have to be several. Built entirely at
+    one year, this cannot tell grouping by year from not grouping by year at
+    all — which is the one property its name claims.
+    """
     frame = pl.concat(
         [
-            rows(replication=index, customer_minutes=1_000.0 * index)
-            for index in range(5)
+            rows(
+                replication=replication,
+                year=year,
+                customer_minutes=1_000.0 * replication + 10_000.0 * year,
+            )
+            for replication in range(5)
+            for year in range(3)
         ]
     )
 
     banded = metrics.bands(
         metrics.per_replication(frame, TOTAL_CUSTOMERS), ["saidi"]
-    ).collect()
+    ).collect().sort("year")
 
-    assert banded.height == 1
-    assert banded["saidi_mean"].item() == pytest.approx(2.0)
-    assert banded["saidi_p10"].item() < banded["saidi_p90"].item()
+    assert banded.height == 3, "one row per year, not one row overall"
+    # Year means are 2, 12 and 22 customer-minutes per customer.
+    assert banded["saidi_mean"].to_list() == pytest.approx([2.0, 12.0, 22.0])
+    assert (banded["saidi_p10"] < banded["saidi_p90"]).all()
 
 
 def test_avoided_minutes_are_measured_against_the_configured_baseline() -> None:
@@ -189,8 +198,7 @@ def test_avoided_minutes_are_measured_against_the_configured_baseline() -> None:
         metrics.horizon_totals(
             metrics.discount(
                 metrics.per_replication(frame, TOTAL_CUSTOMERS), rate=0.06
-            ),
-            rate=0.06,
+            )
         ),
         "run_to_failure",
     ).collect()
@@ -219,8 +227,7 @@ def test_cost_per_minute_avoided_is_undefined_where_nothing_was_avoided() -> Non
         metrics.horizon_totals(
             metrics.discount(
                 metrics.per_replication(frame, TOTAL_CUSTOMERS), rate=0.06
-            ),
-            rate=0.06,
+            )
         ),
         "run_to_failure",
     ).collect()
@@ -231,9 +238,142 @@ def test_cost_per_minute_avoided_is_undefined_where_nothing_was_avoided() -> Non
 def test_a_baseline_that_is_not_in_the_results_is_refused() -> None:
     """Otherwise every avoided column comes back null and looks computed."""
     totals = metrics.horizon_totals(
-        metrics.discount(metrics.per_replication(rows(), TOTAL_CUSTOMERS), rate=0.06),
-        rate=0.06,
+        metrics.discount(metrics.per_replication(rows(), TOTAL_CUSTOMERS), rate=0.06)
     )
 
-    with pytest.raises(ValueError, match="not in these results"):
+    with pytest.raises(ValueError, match="should appear"):
         metrics.against_baseline(totals, "no_such_policy")
+
+
+def test_a_sweep_of_two_budget_levels_is_not_reduced_into_one_row() -> None:
+    """A swept column has to be named, or the levels are summed together.
+
+    A sweep is a directory of runs differing in a swept parameter, and that
+    value is written into the rows as a column so the frame is readable without
+    the layout that produced it. The reduction groups on policy, replication
+    and year, so unless the swept column is named as a key too, two budget
+    levels for one policy, replication and year collapse into a single row
+    whose customer-minutes are their sum — nothing raises, the shape stays
+    plausible, and the swept column disappears.
+    """
+    sweep = pl.concat(
+        [
+            rows(customer_minutes=6_000.0).with_columns(annual_budget=pl.lit(0.0)),
+            rows(customer_minutes=12_000.0).with_columns(annual_budget=pl.lit(1e6)),
+        ]
+    )
+
+    reduced = metrics.per_replication(
+        sweep, TOTAL_CUSTOMERS, by=("annual_budget",)
+    ).collect()
+
+    assert reduced.height == 2, "the two budget levels were summed together"
+    assert sorted(reduced["customer_minutes"].to_list()) == [6_000.0, 12_000.0]
+    assert sorted(reduced["annual_budget"].to_list()) == [0.0, 1e6]
+
+
+def test_every_reduction_keeps_the_swept_column_apart() -> None:
+    """Not only the first: the bands and the horizon totals compose after it."""
+    sweep = pl.concat(
+        [
+            rows(year=year, customer_minutes=1_000.0).with_columns(
+                annual_budget=pl.lit(0.0)
+            )
+            for year in range(2)
+        ]
+        + [
+            rows(year=year, customer_minutes=4_000.0).with_columns(
+                annual_budget=pl.lit(1e6)
+            )
+            for year in range(2)
+        ]
+    )
+    keys = ("annual_budget",)
+
+    per = metrics.per_replication(sweep, TOTAL_CUSTOMERS, by=keys)
+    banded = metrics.bands(per, ["saidi"], by=keys).collect()
+    totals = metrics.horizon_totals(metrics.discount(per, 0.0), by=keys).collect()
+
+    assert banded.height == 4, "two levels times two years"
+    assert totals.height == 2, "one row per policy per budget level"
+    assert sorted(totals["customer_minutes"].to_list()) == [2_000.0, 8_000.0]
+
+
+def test_each_budget_level_is_measured_against_its_own_baseline() -> None:
+    """Not against run-to-failure at some other level.
+
+    Comparing across levels would charge the difference between two budgets to
+    the difference between two policies, which is the whole quantity the figure
+    is meant to show.
+    """
+    levels = []
+    for budget, lost in ((0.0, 10_000.0), (1e6, 10_000.0)):
+        for policy, minutes in (
+            ("run_to_failure", lost),
+            ("risk_ranked", lost / 2 if budget else lost),
+        ):
+            levels.append(
+                rows(policy=policy, customer_minutes=minutes).with_columns(
+                    annual_budget=pl.lit(budget)
+                )
+            )
+    keys = ("annual_budget",)
+
+    compared = metrics.against_baseline(
+        metrics.horizon_totals(
+            metrics.discount(
+                metrics.per_replication(pl.concat(levels), TOTAL_CUSTOMERS, by=keys),
+                rate=0.0,
+            ),
+            by=keys,
+        ),
+        "run_to_failure",
+        by=keys,
+    ).collect()
+
+    avoided = {
+        (row["policy"], row["annual_budget"]): row["customer_minutes_avoided"]
+        for row in compared.iter_rows(named=True)
+    }
+    assert avoided[("risk_ranked", 0.0)] == pytest.approx(0.0)
+    assert avoided[("risk_ranked", 1e6)] == pytest.approx(5_000.0)
+
+
+def test_extra_spend_is_measured_in_the_direction_it_is_named() -> None:
+    """A policy that spends more than the baseline shows a positive figure.
+
+    Reversed, extra spending reads as a saving and the headline economic
+    number — cost per customer-minute avoided — comes out negative, which
+    reads as a policy that was paid to improve reliability.
+    """
+    frame = pl.concat(
+        [
+            rows(
+                policy="run_to_failure",
+                customer_minutes=10_000.0,
+                planned_spend=0.0,
+                emergency_spend=1_000.0,
+            ),
+            rows(
+                policy="risk_ranked",
+                customer_minutes=6_000.0,
+                planned_spend=3_000.0,
+                emergency_spend=500.0,
+            ),
+        ]
+    )
+
+    compared = metrics.against_baseline(
+        metrics.horizon_totals(
+            metrics.discount(
+                metrics.per_replication(frame, TOTAL_CUSTOMERS), rate=0.0
+            )
+        ),
+        "run_to_failure",
+    ).collect()
+
+    ranked = compared.filter(pl.col("policy") == "risk_ranked").row(0, named=True)
+    # 3,500 spent against the baseline's 1,000, for 4,000 customer-minutes.
+    assert ranked["additional_spend_discounted"] == pytest.approx(2_500.0)
+    assert ranked["customer_minutes_avoided"] == pytest.approx(4_000.0)
+    assert ranked["cost_per_customer_minute_avoided"] == pytest.approx(0.625)

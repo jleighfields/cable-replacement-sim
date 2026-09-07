@@ -65,19 +65,11 @@ def _():
     N_REPS = 40
     N_SEGMENTS = 2_000
 
-    settings = config.Config.model_validate(
-        {
-            **config.load_config().model_dump(),
-            "simulation": {
-                **config.load_config().simulation.model_dump(),
-                "n_reps": N_REPS,
-            },
-            "population": {
-                **config.load_config().population.model_dump(),
-                "n_segments": N_SEGMENTS,
-            },
-        }
-    )
+    # `resized` scales the customer denominator with the population. Left at
+    # the system total, every reliability index below would be understated by
+    # the population ratio -- a systematic bias rather than sampling noise, and
+    # one that leaves the curves looking entirely plausible.
+    settings = config.resized(config.load_config(), N_SEGMENTS, n_reps=N_REPS)
     segments = population.generate(settings)
     segments.select(
         "segment_id", "class", "technology", "age", "length_ft", "customers", "scale"
@@ -277,37 +269,40 @@ def _(mo):
 
 
 @app.cell
-def _(banded, plots):
+def _(N_REPS, banded, plots):
     plots.trajectory(
         banded,
         "saidi",
-        "Duration index over the horizon (40 replications, mean and 10-90% band)",
+        f"Duration index over the horizon ({N_REPS} replications, mean and "
+        f"10-90% band)",
         "Customer-minutes per customer",
     )
     return
 
 
 @app.cell
-def _(banded, plots):
+def _(N_REPS, banded, plots):
     plots.trajectory(
         banded,
         "saifi",
-        "Interruption frequency (40 replications, mean and 10-90% band)",
+        f"Interruption frequency ({N_REPS} replications, mean and 10-90% band)",
         "Interruptions per customer",
     )
     return
 
 
 @app.cell
-def _(banded, np, run, settings):
+def _(plots, saved):
+    plots.failures_by_class(saved, "risk_ranked")
+    return
+
+
+@app.cell
+def _(banded, plots, run, settings):
     _budget = settings.budget.annual * run.escalation_series(
         settings.budget.escalation, settings.simulation.n_years
     )
-    _spend_figure = None
-    import cablesim.plots as _plots
-
-    _spend_figure = _plots.spend_against_budget(banded, _budget.tolist(), "risk_ranked")
-    _spend_figure
+    plots.spend_against_budget(banded, _budget.tolist(), "risk_ranked")
     return
 
 
@@ -332,38 +327,34 @@ def _(mo):
 
 
 @app.cell
-def _(config, metrics, pl, results, run, settings):
-    import numpy as _np
-
-    _levels = [0.0, *_np.geomspace(
-        settings.budget.annual * 0.125, settings.budget.annual * 2.0, 7
-    ).tolist()]
-
-    _rows = []
-    for _level in _levels:
-        _point = config.Config.model_validate(
-            {
-                **settings.model_dump(),
-                "budget": {**settings.budget.model_dump(), "annual": _level},
-            }
+def _(config, metrics, pathlib, results, run, settings, tempfile):
+    # Every level writes into one directory, which is what a sweep is, and the
+    # package reads it back. Reading each run by hand instead would skip the
+    # check that refuses a sweep missing a level, and a curve short one point
+    # still draws.
+    _root = pathlib.Path(tempfile.mkdtemp(prefix="cablesim_04_sweep_"))
+    for _level in run.budget_grid(settings.budget.annual):
+        run.run(
+            config.overridden(settings, {"budget.annual": _level}),
+            _root,
+            swept={"annual_budget": _level},
         )
-        _frame = pl.read_parquet(
-            run.run(_point, __import__("pathlib").Path(
-                __import__("tempfile").mkdtemp(prefix="cablesim_04_sweep_")
-            )) / results.RESULTS_NAME
-        )
-        _totals = metrics.horizon_totals(
-            metrics.discount(
-                metrics.per_replication(
-                    _frame.lazy(), settings.population.total_customers
-                ),
-                settings.costs.discount_rate,
+
+    # The swept column has to be named as a grouping key. Without it the levels
+    # are summed together: nothing raises, and the frame keeps the shape of a
+    # legitimate result.
+    _keys = ("annual_budget",)
+    sweep = metrics.horizon_totals(
+        metrics.discount(
+            metrics.per_replication(
+                results.read_sweep(_root),
+                settings.population.total_customers,
+                by=_keys,
             ),
             settings.costs.discount_rate,
-        ).collect()
-        _rows.append(_totals.with_columns(annual_budget=pl.lit(_level)))
-
-    sweep = pl.concat(_rows)
+        ),
+        by=_keys,
+    ).collect()
     sweep.select("annual_budget", "policy", "customer_minutes", "failures").head(10)
     return (sweep,)
 
@@ -421,7 +412,73 @@ def _(mo):
     **An age threshold saturates.** Past a certain budget it has no eligible
     segments left to fund, so more money buys nothing — the curve goes flat
     while the whole-population policies keep improving.
+
+    And one the figure does not show, which falls out of the cost comparison:
+    **the first tranche of preventive replacement pays for itself.** Replacing
+    a segment before it fails costs the planned price; letting it fail costs
+    the emergency price, which is a multiple of it. At low budgets the premium
+    avoided is larger than the planned work bought, so the policy is both
+    cheaper and more reliable than run-to-failure and the cost per
+    customer-minute avoided is *negative*. It turns positive once the cheap
+    opportunities are used up, and from there each further minute avoided costs
+    real money — which is the point where the question stops being "should we
+    do this at all" and starts being "how much is a customer-minute worth".
     """
+    )
+    return
+
+
+@app.cell
+def _(metrics, settings, sweep):
+    # What each policy avoids against the configured baseline, at each budget
+    # level. Each level is measured against its own baseline row: comparing a
+    # policy at one budget against run-to-failure at another would charge the
+    # difference between two budgets to the difference between two policies.
+    avoided = metrics.against_baseline(
+        sweep.lazy(), settings.reporting.baseline_policy, by=("annual_budget",)
+    ).collect()
+    avoided.filter(avoided["customer_minutes_avoided"] > 0).select(
+        "annual_budget",
+        "policy",
+        "customer_minutes_avoided",
+        "additional_spend_discounted",
+        "cost_per_customer_minute_avoided",
+    ).sort("annual_budget", "policy").head(12)
+    return (avoided,)
+
+
+@app.cell
+def _(avoided, pl):
+    # Cost per customer-minute avoided rises with the budget, and it starts
+    # negative: below a certain level, preventive replacement costs less in
+    # total than running to failure, because the emergency premium it avoids is
+    # larger than the planned work it pays for. Past that level the cheap
+    # opportunities are exhausted and each further minute avoided costs real
+    # money.
+    _priced = (
+        avoided.filter(
+            (pl.col("policy") == "risk_ranked")
+            & pl.col("cost_per_customer_minute_avoided").is_not_null()
+        )
+        .sort("annual_budget")
+    )
+    _cost = _priced["cost_per_customer_minute_avoided"].to_list()
+
+    assert len(_cost) >= 4, "too few priced levels to read a trend from"
+    assert _cost[0] < 0, (
+        "at the smallest non-zero budget, prevention should more than pay for "
+        "itself against the emergency spend it avoids"
+    )
+    assert _cost[-1] > 0, "at the largest budget it should have stopped paying"
+    assert _cost == sorted(_cost), (
+        "cost per customer-minute avoided should rise with the budget as the "
+        "cheap opportunities are used up"
+    )
+    _priced.select(
+        "annual_budget",
+        "customer_minutes_avoided",
+        "additional_spend_discounted",
+        "cost_per_customer_minute_avoided",
     )
     return
 
@@ -464,10 +521,11 @@ def _(mo):
     and the curves move, which is the point of having them in one validated
     configuration rather than scattered through the code.
 
-    The figures above are drawn at 40 replications and 2,000 segments so this
-    notebook runs in seconds. The driver script `scripts/budget_sweep.py`
-    writes a sweep at the configured size, and takes `--full` for the shipped
-    replication count and population.
+    The figures above are drawn at a reduced size so this notebook runs in
+    seconds, and the customer denominator is scaled with the population so the
+    indices stay comparable with a full-size run. The driver script
+    `scripts/budget_sweep.py` writes a sweep to disk, and takes `--full` for
+    the shipped replication count and population.
     """
     )
     return

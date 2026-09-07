@@ -19,17 +19,22 @@ def small(**overrides: object) -> config.Config:
     """A configuration small enough to run in a test, in seconds.
 
     Args:
-        **overrides: Top-level configuration sections to replace.
+        **overrides: Dotted configuration paths to replace.
 
     Returns:
         The validated configuration.
     """
-    base = config.load_config(constants.DEFAULT_CONFIG_PATH).model_dump()
-    base["simulation"] = {**base["simulation"], "n_reps": 6, "n_years": 4}
-    base["population"] = {**base["population"], "n_segments": 200}
-    base["policies"] = [{"name": "run_to_failure"}, {"name": "risk_ranked"}]
-    base.update(overrides)
-    return config.Config.model_validate(base)
+    settings = config.resized(
+        config.load_config(constants.DEFAULT_CONFIG_PATH), 200, n_reps=6
+    )
+    return config.overridden(
+        settings,
+        {
+            "simulation.n_years": 4,
+            "policies": [{"name": "run_to_failure"}, {"name": "risk_ranked"}],
+            **overrides,
+        },
+    )
 
 
 def test_a_run_reassembled_from_chunks_equals_one_computed_whole(
@@ -258,3 +263,45 @@ def test_the_run_takes_policy_priorities_from_the_policy_stream(
     assert not np.array_equal(
         captured["policy_uniforms"], captured["lifetime_uniforms"][:, :, 0]
     )
+
+
+def test_the_budget_series_uses_the_budget_rate_and_not_the_cost_rate(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Two rates that happen to be equal in the shipped file are not one rate.
+
+    Both are 3% in the checked-in configuration and every test builds from it,
+    so swapping them changes nothing anywhere. A sweep holding the budget flat
+    in nominal terms — a natural thing to sweep — would then silently get 3%
+    growth, and the axis of the deliverable figure would not be the axis it
+    claims.
+    """
+    settings = config.overridden(
+        small(), {"budget.escalation": 0.0, "costs.escalation_rate": 0.10}
+    )
+    captured: dict[str, np.ndarray] = {}
+
+    def capturing(**arguments: object) -> simulate.Results:
+        captured.update(
+            budget=arguments["budget"], cost_escalation=arguments["cost_escalation"]
+        )
+        return simulate.simulate(**arguments)
+
+    run.run(settings, tmp_path, implementation=capturing)
+
+    assert captured["budget"].tolist() == pytest.approx(
+        [settings.budget.annual] * settings.simulation.n_years
+    ), "a flat budget must stay flat"
+    assert captured["cost_escalation"].tolist() == pytest.approx(
+        [1.10**year for year in range(settings.simulation.n_years)]
+    )
+
+
+def test_the_swept_budget_grid_starts_at_zero() -> None:
+    """The zero point is what makes the left-hand end an end-to-end check."""
+    grid = run.budget_grid(1_000.0, levels=3)
+
+    assert grid[0] == 0.0
+    assert len(grid) == 4
+    assert grid[1:] == pytest.approx([125.0, 500.0, 2_000.0])
+    assert grid == sorted(grid), "a geometric grid should already be ascending"

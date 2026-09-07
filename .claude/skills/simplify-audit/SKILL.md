@@ -46,9 +46,9 @@ Source of Truth for Parameter Values** section.
   `[dependencies]` is compiled into the extension module. Check both against
   what is actually imported and `use`d.
 - **The Python reference and the Rust kernel duplicate each other on purpose,
-  and neither side is a finding.** `python/cablesim/reference.py` reimplements
-  what `src/sim.rs` computes, and `python/cablesim/policies.py` mirrors the
-  scoring in `src/policy.rs`. The parity tests are the only thing that
+  and neither side is a finding.** `python/cablesim/simulate.py` reimplements
+  what `src/simulate.rs` computes, and `python/cablesim/policies.py` mirrors the
+  scoring in `src/policies.rs`. The parity tests are the only thing that
   validates the kernel, so deleting either side deletes the validation.
   Report a *divergence* between the two — the parity test is what catches it
   — but never propose collapsing them.

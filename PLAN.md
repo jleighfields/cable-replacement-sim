@@ -2709,11 +2709,14 @@ the argument belongs beside the model it constrains.
 
    One number in `configs/base.yaml` is a population-mean statement and reads
    as a prediction. The budget funds about 141 replacements a year *at the mean
-   segment's planned cost*; `risk_ranked` actually funds around 68 to 120 a
-   year, because the segments it ranks first are main feeders whose value at
-   risk dominates the score and which cost roughly twice the population mean.
-   The comment already makes that distinction for the segments that *fail*; it
-   does not yet make it for the segments a policy *chooses*.
+   segment's planned cost*. `risk_ranked` ranking per dollar actually funds 68
+   in year 0, rising to a mid-horizon peak of 172 and averaging 114 over the
+   horizon, because the segments it ranks first are main feeders whose value at
+   risk dominates the score and which cost about 1.95 times the population
+   mean. The peak is the same replacement wave the paragraph above describes,
+   seen from the spending side rather than the failure side. The comment
+   already makes the mean-versus-chosen distinction for the segments that
+   *fail*; it does not yet make it for the segments a policy *chooses*.
 4. **Discount rate.** A number is in the config; it needs a stated basis, since
    the present-value comparison is sensitive to it over a 30-year horizon.
 5. **Settled: rung 5 stays in the suite.** Fitting per-technology shape was
