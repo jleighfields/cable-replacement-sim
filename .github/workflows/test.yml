@@ -74,8 +74,11 @@ jobs:
       # --locked fails when uv.lock does not match pyproject.toml, instead of
       # resolving something else and testing a dependency set the repo does
       # not claim.
+      # --extra plots because `cablesim.plots` imports plotly at module scope
+      # and its tests would otherwise be untestable here, which is the half of
+      # an optional dependency that usually goes unchecked.
       - name: Install dependencies
-        run: uv sync --locked
+        run: uv sync --locked --extra plots
 
       # --release because the parity tests run many replications, and a debug
       # build is slow enough that they dominate the job. Any timing measured

@@ -49,10 +49,16 @@ in `rust-toolchain.toml` — and each tool installs what its file names on first
 use, so neither needs choosing.
 
 ```bash
-uv sync                            # create the environment
+uv sync --extra plots              # create the environment
 uv run maturin develop --release   # build and install the extension module
 uv run pytest                      # run the suite
 ```
+
+Plotting is an extra rather than a dependency, so installing this package for
+the compute kernel alone does not pull a plotting stack. `cablesim.plots`
+imports plotly at module scope and fails at the import without it, saying what
+is missing; leave `--extra plots` off and its tests are the only ones that
+cannot run.
 
 `--release` is not optional for anything timed: the parity tests run many
 replications, and a debug build is slow enough to dominate the run. Rebuild

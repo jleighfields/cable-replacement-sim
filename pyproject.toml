@@ -16,6 +16,15 @@ dependencies = [
     "scipy>=1.17.1",
 ]
 
+[project.optional-dependencies]
+# Plotting is an extra so that installing this package for the compute kernel
+# alone does not pull a plotting stack. `cablesim.plots` imports plotly at
+# module scope, so importing it without this extra fails immediately and says
+# what is missing, rather than failing later inside a figure.
+plots = [
+    "plotly>=5.24",
+]
+
 [tool.maturin]
 # The Rust extension is built into the `cablesim` package rather than sitting
 # beside it, so `python/` holds the whole importable package and the crate
