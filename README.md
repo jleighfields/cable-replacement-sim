@@ -42,27 +42,37 @@ anywhere — which takes deliberate care rather than luck, because floating-poin
 addition is not associative and the year's emergency bill decides which segment
 the budget reaches last.
 
-What the timings say, at 12,000 segments over 30 years under `risk_ranked`, on
-a release build with 48 cores available:
+What the timings say, at 12,000 segments over 30 years, on a release build with
+48 cores available. Seconds per replication, mean of 2 runs:
 
-| Implementation | Seconds per replication |
-|---|---|
-| Scalar Python reference | 0.0410 |
-| Batched NumPy | 0.0444 |
-| Rust kernel, 1 thread | 0.0418 |
-| **Rust kernel, 48 threads** | **0.0020** |
+| Implementation | `run_to_failure` | `age_threshold` | `risk_ranked` |
+|---|---|---|---|
+| Scalar Python reference | 0.00393 | 0.01700 | 0.04101 |
+| Batched NumPy | 0.00376 | 0.02304 | 0.04387 |
+| Batched polars | 0.01238 | 0.03149 | 0.05226 |
+| Rust kernel, 1 thread | 0.00258 | 0.00340 | 0.04134 |
+| **Rust kernel, 48 threads** | **0.00027** | **0.00029** | **0.00201** |
+| Rust polars, 1 thread | 0.01145 | 0.03210 | 0.05961 |
+| **Fastest Python, beaten by** | **14.1x** | **58.5x** | **20.4x** |
 
-**On one thread the kernel is level with Python for this policy**, because the
-reference's NumPy expressions are already compiled loops over the same arrays.
-The win is the replication axis: they are independent, the interpreter lock is
-released for the whole computation, and no Python implementation follows
-without multiprocessing. Where a policy makes only part of the population
-eligible the single-threaded kernel does pull ahead — 7.9x under
-`age_threshold` — because it scores the candidates rather than everything.
+The three policies differ in how much of the population they make eligible each
+year — none, 655 of 12,000, and all of it — and that turns out to matter more
+than anything else here.
+
+**On one thread the kernel is not reliably faster than Python.** It is level
+under `risk_ranked`, where every segment is a candidate and the reference's
+array expressions are already compiled loops over the same data. It pulls ahead
+where the candidate set is small, because it scores only the candidates.
+
+**The win is the replication axis.** They are independent, the interpreter lock
+is released for the whole computation, and no Python implementation follows
+without multiprocessing. That is a fact about the axis rather than about Rust;
+what Rust contributes is that the compiler refused the first version, which
+shared its working buffers between workers.
 
 Run the table yourself with `uv run python scripts/run_benchmarks.py`, after
 building with `--release`. See [PLAN.md](PLAN.md) for the model, the decisions
-behind it, the rest of the table, and the phased roadmap.
+behind it, what the frame implementations measure, and the phased roadmap.
 
 ## Layout
 

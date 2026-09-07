@@ -1974,62 +1974,96 @@ it is the only implementation there is.
 - Always build with `maturin develop --release` before benchmarking; debug
   builds are slow enough to make timing numbers meaningless.
 
-**The measured table.** 12,000 segments over a 30-year horizon under
-`risk_ranked`, release build, 48 cores available, polars 1.44.1, reported as
+**The measured table.** 12,000 segments over a 30-year horizon, release build,
+48 cores available, polars 1.44.1 with its own 48-thread pool, mean of 2 runs,
 seconds per replication. **Every row reproduced the reference exactly**, which
-is asserted rather than observed: the benchmark harness checks agreement in the
-same pass that times, because timing an implementation that has drifted
-measures something else being computed.
+is asserted rather than observed: the harness checks agreement in the same pass
+that times, because timing an implementation that has drifted measures
+something else being computed.
 
-| Implementation | s/replication | Against the fastest Python |
-|---|---|---|
-| Scalar reference | 0.0410 | 1.00 |
-| Batched NumPy | 0.0444 | 0.92 |
-| Batched polars | 0.1430 | 0.29 |
-| Rust kernel, 1 thread | 0.0418 | 0.98 |
-| Rust kernel, 48 threads | 0.0020 | **20.2** |
-| Rust polars, 1 thread | 0.1443 | 0.28 |
+The three policies are shown together because the answer depends on them more
+than on anything else in the table. What varies is how much of the population a
+policy makes eligible each year: `run_to_failure` funds nothing, `age_threshold`
+at 45 years makes 655 of 12,000 eligible, and `risk_ranked` makes every segment
+a candidate.
 
-Four things in that table were not what this section anticipated, and each is a
-finding rather than a disappointment:
+| Implementation | `run_to_failure` | `age_threshold` | `risk_ranked` |
+|---|---|---|---|
+| Scalar reference | 0.00393 | **0.01700** | **0.04101** |
+| Batched NumPy | **0.00376** | 0.02304 | 0.04387 |
+| Batched polars | 0.01238 | 0.03149 | 0.05226 |
+| Rust kernel, 1 thread | 0.00258 | 0.00340 | 0.04134 |
+| **Rust kernel, 48 threads** | **0.00027** | **0.00029** | **0.00201** |
+| Rust polars, 1 thread | 0.01145 | 0.03210 | 0.05961 |
+| **Fastest Python, beaten by** | **14.1x** | **58.5x** | **20.4x** |
 
-- **Single-threaded, the Rust kernel is level with Python** for a policy that
-  scores every segment. It is not a language win at all there. The reference's
-  NumPy expressions are already compiled loops over the same arrays, and the
-  kernel's advantage — scoring only the candidates — is worth nothing when
-  every segment is one. The kernel reaches 1.7x under `run_to_failure` and 7.9x
-  under `age_threshold`, where the candidate set is empty or a small fraction.
-- **The whole win is the replication axis.** 20x on 48 threads, and that is the
-  claim this project can actually make: replications are embarrassingly
-  parallel, the interpreter lock is released for the entire computation, and no
-  Python implementation can follow without multiprocessing.
-- **Batching does not reliably beat the scalar reference.** The greedy fill's
-  candidate set differs per replication, so a compacted form would be ragged
-  and the batched loop sorts every segment where the reference sorts only the
-  candidates. Under `age_threshold`, 655 of 12,000 are eligible and the
-  reference wins by about a quarter. So a speedup quoted only against
-  `batched.py` is flattered whenever the reference beats it, and the benchmark
-  reports a second ratio against whichever Python implementation was actually
-  fastest. **That is the ratio an outside claim should use.**
-- **The two frame implementations land within one percent of each other.** If
-  driving the engine from Python were expensive, the Rust one would be far
-  ahead; they share a query engine, so the gap between them is the cost of
-  getting there, and it is nearly nothing. What the frame form loses — about
-  three and a half times against the array form — it loses inside the engine.
+Bold marks the fastest Python implementation in each column, which is the
+denominator of the last row. It is not always the same one, which is the reason
+that row exists — see below.
 
-**The batched baseline has to be written as carefully as the kernel**, which is
-a rule this table produced rather than assumed. As first written it was slower
-than the reference on every policy by up to 3.8x, for two reasons that were its
-own rather than batching's: it drew a replacement lifetime for every segment
-when a few percent are replaced in a year, and it rearranged whole arrays to
-total quantities only the funded cells contribute to. Anything gratuitously
-slow in the baseline flatters every speedup measured against it, so the
-baseline is the implementation where a wasted pass is a correctness problem for
-the *claim*.
-- Drawing lifetimes rather than evaluating hazard every segment-year (2.9)
-  removes most of the floating-point work and leaves the scoring, sort, and
-  greedy fill dominant. That changes what the benchmark is measuring, which is
-  a reason to measure rather than to predict.
+Five findings, and only the second is the one this project set out to make:
+
+- **Single-threaded, the compiled kernel is not reliably faster than Python.**
+  It is level under `risk_ranked` — 0.0413 against 0.0410 — and 5.0x under
+  `age_threshold`. The gap tracks the candidate set exactly: the kernel scores
+  only the candidates, the array implementations score the whole population
+  because that is what vectorizes, and when every segment is a candidate the
+  advantage is gone. A claim that this model is faster in Rust, single
+  threaded, would be false for the policy that is the actual proposal.
+- **The win is the replication axis: 14x to 58x.** Replications are
+  independent, each reads its own slice of the draws and writes its own block,
+  and the interpreter lock is released for the whole computation. Nothing on
+  the Python side follows without multiprocessing. This holds for reasons that
+  are about the axis rather than the language — it would hold in any compiled
+  language — and what Rust contributes is that the compiler rejected the first
+  attempt at sharing the working buffers, which is what forced the design where
+  each worker owns its own.
+- **Batching over replications does not reliably beat the scalar reference.**
+  It wins under `run_to_failure` and loses under both others. The greedy fill's
+  candidate set differs between replications, so a compacted form would be
+  ragged and the batched loop sorts every segment where the reference sorts
+  only the candidates. So a speedup quoted against `batched.py` alone is
+  flattered wherever the reference beats it, and the benchmark reports a second
+  ratio against whichever Python implementation was actually fastest. **That is
+  the ratio an outside claim should use.**
+- **The frame form costs about 1.2x the array form**, not the several times a
+  first measurement suggested — see the paragraph below, which is the more
+  important half of this section. Its most expensive operation is a *win*: the
+  ranking sort, which has to be full-width because candidate sets are ragged,
+  is faster in polars than `numpy.lexsort` (5.9 ms against 9.1 ms per year at
+  240,000 rows). What the frame form loses, it loses on the many small
+  operations around that sort.
+- **The two frame implementations are not equivalent, and Python is the faster
+  of them** — 0.0523 against 0.0596. There is therefore no interop penalty to
+  recover by writing the frame loop in Rust, which is what that implementation
+  was built to find out. The likeliest reason is on the Rust side rather than
+  in the engine: reading a column out of a frame there copies it, and eleven
+  columns a year over a thirty-year horizon is hundreds of megabytes that the
+  Python side gets as a borrow.
+
+**Every implementation has to be written as carefully as the kernel, and this
+section exists because twice it was not.** The batched NumPy baseline was first
+written slower than the reference on every policy, by up to 3.8x. The two
+polars implementations were then written with the same class of mistake and
+were 2.4x to 2.6x slower than they needed to be, which nearly published "the
+frame form costs three and a half times the array form" as a fact about polars
+when it was a fact about that program. In every case the mistake was the same:
+doing full-width work where a few percent of rows contribute — drawing a
+replacement lifetime for every segment when three percent are replaced,
+totalling over every row with the rest contributing zero, sorting and
+un-sorting an entire seventeen-column frame to push ineligible segments behind
+the candidates.
+
+Two rules follow, and they are the reason this is written down rather than
+merely fixed:
+
+- **A wasted pass in the baseline is a correctness problem for the claim**, not
+  untidiness. Everything measured against it inherits the flattery.
+- **Do not transliterate between implementations.** The full-width sort was in
+  the polars loop because it had been copied from the rectangular NumPy form,
+  which needs it; a long frame does not, because ragged candidate sets are the
+  thing a long frame handles well. Filtering to the candidates before sorting
+  is what took the frame form from 3.1x to 1.2x.
 
 ---
 
