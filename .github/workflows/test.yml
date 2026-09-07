@@ -34,7 +34,10 @@ jobs:
       # channel, then cargo would read the file and download a second
       # toolchain on every run.
       - name: Install the pinned Rust toolchain
-        run: rustup install
+        # --no-self-update because rustup updates itself by default here, and
+        # a job that upgrades its own toolchain manager is the drift this pin
+        # exists to stop. The action this step replaced passed the same flag.
+        run: rustup install --no-self-update
 
       # Caches the compiled dependency crates. Without it every run rebuilds
       # them from scratch, which is what makes --release unaffordable.

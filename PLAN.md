@@ -11,9 +11,10 @@ the random streams, the Weibull forms, the population generator, the synthetic
 record table and the censored maximum-likelihood fit exist, with notebooks 01
 to 03, and the configuration is calibrated against a run of the generator
 itself. Phase 3, the Python reference and the annual loop, is next.
-A Rust toolchain is installed, and `rust-toolchain.toml` pins the minor version
-that a checkout and continuous integration both build against, so the extension
-module rebuilds and all four Rust gates run. This document is the pickup point
+`rust-toolchain.toml` pins the compiler a checkout and continuous integration
+both build against, so `maturin develop` rebuilds the extension module and the
+format, lint and test gates all run — rustup installs what that file names, so
+this needs nothing chosen on a fresh machine. This document is the pickup point
 for a fresh session — read it top to bottom before writing code, and read the
 roadmap in Section 11 for what each phase owes.
 
@@ -2418,13 +2419,13 @@ Each phase ends in a working, committed state.
 `configs/base.yaml`, `.gitignore`, README. Confirm `maturin develop` builds a
 trivial `add(a, b)` and imports in Python. *Do not skip this smoke test.*
 
-`main` is already protected against direct pushes and merges without a pull
-request, so this phase lands through one. The remaining half of Section 10.4,
-Branch protection on `main` — the `test` check being *required* — waits until
-this phase has produced a green run of it, because a required check that has
-never reported green blocks every merge including the one that would fix it.
-Add the rule as the last act of Phase 0, then confirm it by opening a pull
-request with a deliberately failing test and watching the merge button refuse.
+`main` was already protected against direct pushes and merges without a pull
+request, so this phase landed through one. The remaining half of Section 10.4,
+Branch protection on `main` — the `test` check being *required* — was held back
+until this phase had produced a green run of it, because a required check that
+has never reported green blocks every merge including the one that would fix
+it. Both rulesets are applied; Section 10.4 is where their state is recorded,
+and applying one that exists again creates a duplicate rather than updating it.
 
 Phase 0 also has to create everything the workflows and the review skills
 assume. Each item below is a silent failure rather than a loud one, which is
@@ -2557,11 +2558,17 @@ the release process (Section 10.5, What CI does not cover yet).
   rustup reads that file on any cargo invocation inside the checkout, so a
   contributor and continuous integration compile against the same compiler
   without either naming a version. It holds the minor rather than an exact
-  patch: `cargo clippy -- -D warnings` gates every pull request and clippy
-  gains lints with each minor release, so holding the minor is what keeps a
-  green branch from going red on a compiler release, while patches arrive on
-  their own. A workflow that also names a channel defeats this — the action
-  installs one toolchain, then cargo reads the file and downloads a second.
+  patch: the clippy gate of 10.1, The workflow, treats a warning as an error,
+  and clippy gains lints with each minor release, so holding the minor is what
+  keeps a green branch from going red on a compiler release, while patches
+  arrive on their own. A workflow that also names a
+  channel defeats this — the action installs one toolchain, then cargo reads
+  the file and downloads a second.
+- **The pin moves when something needs a newer compiler, and not on a
+  schedule.** A bump is a commit that does nothing else, so the lints a new
+  release brings are read as that commit's diff. The cost of the policy is that
+  the gap can grow until one bump arrives with a wall of new findings; that is
+  accepted in exchange for never doing the work speculatively.
 
 ---
 
@@ -2713,8 +2720,9 @@ the argument belongs beside the model it constrains.
    specification it implements.
 2. Confirm branch protection refuses what it claims to. Both rulesets in
    Section 10.4, Branch protection on `main`, are applied and match their
-   checked-in files, and every change so far has arrived through a pull
-   request with a green `test` — but nothing has yet been watched being
+   checked-in files, and every change since continuous integration existed has
+   arrived through a pull request with a green `test` — the two commits that
+   predate it went in by direct push — but nothing has yet been watched being
    *blocked*. Open a pull request with a deliberately failing test, confirm
    the merge button refuses, then confirm a direct `git push origin main` is
    rejected. A protection rule nobody has watched refuse something is not

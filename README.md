@@ -15,15 +15,15 @@ The configuration schema and its validators, the purpose-spawned sources of
 randomness, the Weibull forms and the synthetic population generator exist,
 along with the synthetic failure history and the censored, left-truncated
 maximum-likelihood fit that recovers the parameters it was generated from.
-Three marimo notebooks walk them. The fit is checked against an independent
-implementation, and its confidence intervals have been checked for coverage
-rather than assumed.
+Three marimo notebooks walk them. Every rung of the recovery ladder fits data
+generated at parameters the configuration states, and checks the estimates come
+back at them rather than checking that the generator and the estimator agree
+with each other; the confidence intervals have been checked for coverage rather
+than assumed.
 
-The continuous integration workflows run, and the extension module has been
-built and imports under Python — though see `PLAN.md` §14, First actions in the
-next session, for what is not yet verified on a fresh machine. The annual
-simulation loop, the replacement policies and the Rust kernel are not written
-yet. See [PLAN.md](PLAN.md) for the model, the decisions behind it, and the
+The continuous integration workflows run, and the extension module builds and
+imports under Python. The annual simulation loop, the replacement policies and
+the Rust kernel are not written yet. See [PLAN.md](PLAN.md) for the model, the decisions behind it, and the
 phased roadmap.
 
 ## Layout
