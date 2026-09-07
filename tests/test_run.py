@@ -7,6 +7,7 @@ which is what lets the benchmark sweep the chunk size and still say it changed
 no result.
 """
 
+import json
 import pathlib
 import tempfile
 
@@ -257,6 +258,7 @@ def test_the_run_derives_the_draw_key_from_the_configured_seed(
                 "draw_key": arguments["draw_key"],
                 "first_replication": arguments["first_replication"],
                 "n_reps": arguments["n_reps"],
+                "threads": arguments["threads"],
             }
         )
         return simulate.run_chunk(**arguments)
@@ -270,6 +272,11 @@ def test_the_run_derives_the_draw_key_from_the_configured_seed(
     # would be indistinguishable from ignoring the seed.
     assert random_draws.draw_key(settings.simulation.seed + 1) != expected
 
+    # And the thread count reaches the loop rather than stopping at the manifest.
+    # A run recording a count nothing acted on is provenance that reads as fact
+    # and is not, which is the reason every implementation takes the argument.
+    assert {call["threads"] for call in seen} == {1}
+
     # Every replication of the run is covered exactly once, in order.
     covered: list[int] = []
     for call in seen[: len(seen) // len(settings.policies) or 1]:
@@ -277,6 +284,45 @@ def test_the_run_derives_the_draw_key_from_the_configured_seed(
             range(call["first_replication"], call["first_replication"] + call["n_reps"])
         )
     assert covered == list(range(settings.simulation.n_reps))
+
+
+def test_a_thread_count_reaches_the_annual_loop_and_the_manifest(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Both, because recording one and running another is the failure to catch.
+
+    Only the compute kernel spreads replications over workers, so this runs
+    through it. What it pins is the wiring rather than the parallelism: a run
+    that passed the count to the manifest and a literal 1 to the loop would
+    report a number nothing acted on, and every result would still be correct,
+    because the thread count changes no value.
+    """
+    settings = small_config()
+    seen: list[int] = []
+    annual_loop = run.RUNNABLE["kernel"]
+
+    def capturing(**arguments: object) -> simulate.Results:
+        seen.append(arguments["threads"])
+        return annual_loop(**arguments)
+
+    directory = run.run(
+        settings,
+        tmp_path,
+        implementation="kernel",
+        threads=2,
+        batch_size=6,
+    )
+    manifest = json.loads((directory / results.MANIFEST_NAME).read_text())
+    assert manifest["threads"] == 2
+
+    # And again with the loop watched, so the manifest above is not the only
+    # thing the number reached.
+    run.RUNNABLE["kernel"] = capturing
+    try:
+        run.run(settings, tmp_path, implementation="kernel", threads=2, batch_size=6)
+    finally:
+        run.RUNNABLE["kernel"] = annual_loop
+    assert seen and set(seen) == {2}
 
 def test_the_budget_series_uses_the_budget_rate_and_not_the_cost_rate(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch

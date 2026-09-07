@@ -31,6 +31,22 @@ work as having appeared from outside the session. This has now happened twice.
 wait for it to finish. `git status` before committing shows what is about to be
 taken.
 
+## A standing rule states a constraint, never what the code currently does
+
+`CLAUDE.md` carried "`py.allow_threads` around the compute" and "random draws
+arrive as an array". PyO3 renamed the first; this branch removed the second.
+Both had to be found and corrected by a reviewer, because a file that loads on
+every session was describing code that no longer existed.
+
+`CLAUDE.md` already says why: *"`README.md` is how a person runs this. `PLAN.md`
+is what the project is and why. This file is how work is done here. A rule
+belongs in exactly one of the three; restated in a second, the copies drift."*
+
+**A constraint survives a refactor; a description of current behaviour goes
+stale the moment the behaviour moves.** "Never call back into Python inside the
+loop" stays true whatever the method is called. Put the mechanism in the module
+that implements it, where the code and the sentence are edited together.
+
 ## A wasted pass in the baseline is a correctness problem for the claim
 
 The batched NumPy loop is the baseline every speedup is measured against. It

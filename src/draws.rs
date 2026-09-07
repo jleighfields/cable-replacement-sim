@@ -217,6 +217,20 @@ pub const REPLICATION_SHIFT: u64 = YEAR_SHIFT + YEAR_BITS;
 /// Where the purpose field starts, leaving six bits above it.
 pub const PURPOSE_SHIFT: u64 = REPLICATION_SHIFT + REPLICATION_BITS;
 
+/// Bits left for the purpose above the other three fields.
+const PURPOSE_BITS: u64 = 64 - (REPLICATION_BITS + YEAR_BITS + SEGMENT_BITS);
+
+/// The largest purpose an index can carry.
+///
+/// **Bounded like the other three, because it folds the same way.** It sits in
+/// the top bits, so a purpose past this shifts out of the word entirely and
+/// lands on one that fits — identically on both sides of the boundary, which is
+/// why no comparison between implementations could see it. This field is what
+/// keeps the replacement-policy priorities off the same segments' lifetime
+/// draws, so a fold here is exactly the correlation the separation exists to
+/// prevent.
+pub const MAX_PURPOSE: u64 = (1 << PURPOSE_BITS) - 1;
+
 /// The largest year an index can carry.
 pub const MAX_YEAR: u64 = (1 << YEAR_BITS) - 1;
 /// The largest segment identifier an index can carry.
@@ -234,6 +248,16 @@ const _: () = assert!(1_000 < MAX_REPLICATION, "the shipped run must fit");
 const _: () = assert!(30 < MAX_YEAR, "the shipped horizon must fit");
 // And the fields must not overlap: together they have to leave room above.
 const _: () = assert!(YEAR_BITS + SEGMENT_BITS + REPLICATION_BITS < 64);
+// The purpose takes whatever is left, so every bit of the word is accounted
+// for and no field can be widened without narrowing another on purpose.
+const _: () = assert!(
+    PURPOSE_BITS + REPLICATION_BITS + YEAR_BITS + SEGMENT_BITS == 64,
+    "the four fields must tile the word"
+);
+// Every purpose this crate names has to fit the field it sits in. Checked when
+// this compiles, which is why the annual loop's own draws need no run-time
+// purpose check — only a caller supplying one can get it wrong.
+const _: () = assert!(purpose::RECORDS <= MAX_PURPOSE, "a purpose must fit");
 
 /// Where in the stream the draw for one position of the simulation lives.
 ///
@@ -253,7 +277,8 @@ const _: () = assert!(YEAR_BITS + SEGMENT_BITS + REPLICATION_BITS < 64);
 ///
 /// # Arguments
 ///
-/// * `purpose` - which stream, keeping unrelated draws independent.
+/// * `purpose` - which stream, keeping unrelated draws independent. At most
+///   `MAX_PURPOSE`.
 /// * `replication` - at most `MAX_REPLICATION`.
 /// * `segment` - at most `MAX_SEGMENT`.
 /// * `year` - at most `MAX_YEAR`.
@@ -266,6 +291,7 @@ pub fn index(purpose: u64, replication: u64, segment: u64, year: u64) -> u64 {
     // a debug assertion here would be compiled out of everything that runs and
     // the injective packing would rest entirely on the boundary guards. Three
     // comparisons against the cost of an encryption is not measurable.
+    assert!(purpose <= MAX_PURPOSE, "purpose out of range");
     assert!(replication <= MAX_REPLICATION, "replication out of range");
     assert!(segment <= MAX_SEGMENT, "segment out of range");
     assert!(year <= MAX_YEAR, "year out of range");

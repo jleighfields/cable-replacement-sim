@@ -301,6 +301,8 @@ fn run_chunk<'py>(
     // refuse, reached through the guard. An addition that would overflow names
     // a replication past every limit, so saturating reports it as exactly that.
     let last_replication = first_replication.saturating_add(n_reps as u64 - 1);
+    // No purpose is checked here: the loop draws only at the purposes this crate
+    // names, and that they fit their field is settled when this compiles.
     within_the_index(last_replication, n_segments as u64 - 1, n_years as u64)?;
 
     // A fixed-size array of name-and-length pairs, checked in one loop so that
@@ -563,6 +565,7 @@ fn uniforms_dense<'py>(
     // `run_chunk` and the Python mirror both check — and saturating for the
     // same reason they are.
     let last_replication = first_replication.saturating_add(n_reps as u64 - 1);
+    within_the_purpose(purpose)?;
     within_the_index(
         last_replication,
         (n_segments as u64).saturating_sub(1),
@@ -627,6 +630,7 @@ fn uniforms_at<'py>(
             segments.len()
         )));
     }
+    within_the_purpose(purpose)?;
     within_the_index(
         u64::from(replications.iter().copied().max().unwrap_or(0)),
         u64::from(segments.iter().copied().max().unwrap_or(0)),
@@ -649,6 +653,29 @@ fn uniforms_at<'py>(
             .collect()
     });
     Ok(values.into_pyarray(py))
+}
+
+/// Refuses a purpose the index cannot represent.
+///
+/// Separate from the position check because only a caller supplying a purpose
+/// can get it wrong: the annual loop draws at the purposes this crate names,
+/// and that those fit is settled when it compiles. The field sits in the top
+/// bits, so one past the limit shifts out of the word and lands on a purpose
+/// that fits — identically on both sides of the boundary, which is why no
+/// comparison between implementations could see it.
+///
+/// # Arguments
+///
+/// * `purpose` - which stream the caller asked for.
+fn within_the_purpose(purpose: u64) -> PyResult<()> {
+    if purpose > draws::MAX_PURPOSE {
+        return Err(PyValueError::new_err(format!(
+            "purpose {purpose} is past the {} a draw index can carry; beyond it \
+             two positions would share one draw",
+            draws::MAX_PURPOSE
+        )));
+    }
+    Ok(())
 }
 
 /// Refuses a position the index cannot represent.
@@ -694,7 +721,12 @@ fn _cablesim(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // and nothing downstream could tell.
     m.add(
         "DRAW_INDEX_LIMITS",
-        (draws::MAX_REPLICATION, draws::MAX_SEGMENT, draws::MAX_YEAR),
+        (
+            draws::MAX_REPLICATION,
+            draws::MAX_SEGMENT,
+            draws::MAX_YEAR,
+            draws::MAX_PURPOSE,
+        ),
     )?;
     m.add(
         "DRAW_INDEX_SHIFTS",

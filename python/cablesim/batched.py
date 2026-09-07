@@ -50,11 +50,7 @@ import numpy as np
 from cablesim import policies, random_draws, simulate, weibull
 
 
-def order_all_by_rank(
-    policy: policies.Resolved,
-    rank: np.ndarray,
-    eligible: np.ndarray,
-) -> np.ndarray:
+def order_all_by_rank(rank: np.ndarray, eligible: np.ndarray) -> np.ndarray:
     """Orders every segment of every replication, ineligible ones last.
 
     The reference compacts each replication's candidates and sorts those. A
@@ -69,9 +65,6 @@ def order_all_by_rank(
     in, whatever the sort does with the ineligible tail behind them.
 
     Args:
-        policy: The resolved policy, whose ranking branch decides nothing here
-            but whose presence keeps this callable the same way the reference's
-            ordering is.
         rank: ``(replications, segments)`` rank keys.
         eligible: ``(replications, segments)`` mask of what may be funded.
 
@@ -84,7 +77,6 @@ def order_all_by_rank(
             upstream; without this it would surface as a segment that quietly
             never gets funded.
     """
-    del policy
     if np.isnan(rank[eligible]).any():
         # Reported the way the reference reports it, since a caller running
         # both must not get a different diagnosis from each.
@@ -175,25 +167,26 @@ def totals_by_class(
     )
 
 
-def gathered(values: np.ndarray, rows: np.ndarray, columns: np.ndarray) -> np.ndarray:
-    """Reads a per-segment or per-cell quantity at the contributing cells only.
+def gathered(values: np.ndarray, columns: np.ndarray) -> np.ndarray:
+    """Reads a per-segment quantity at the contributing cells only.
 
     A few percent of segments fail or are funded in a year, so reading the whole
     array and masking afterwards does twenty times the work for the same
     numbers. This implementation is the baseline a speedup is claimed against,
     so anything gratuitously slow in it flatters the claim.
 
+    Every quantity gathered here is per-segment and shared across replications,
+    so only the segment of each cell is needed — the replication decides which
+    result bin the value lands in, not which value it is.
+
     Args:
-        values: ``(segments,)`` or ``(replications, segments)``.
-        rows: Replication index of each contributing cell.
+        values: ``(segments,)``.
         columns: Segment index of each contributing cell.
 
     Returns:
         One value per contributing cell, in the order they were given.
     """
-    if values.ndim == 1:
-        return values[columns]
-    return values[rows, columns]
+    return values[columns]
 
 
 def run_chunk_numpy(
@@ -329,20 +322,20 @@ def run_chunk_numpy(
         failed_rows, failed_columns = np.nonzero(failed)
         failed_bins = bins[failed_rows, failed_columns]
         failed_cost = (
-            gathered(planned_now, failed_rows, failed_columns) * emergency_multiplier
+            gathered(planned_now, failed_columns) * emergency_multiplier
         )
         results.failures[:, year] += totals_by_class(failed_bins, n_reps, n_classes)
         results.customers_interrupted[:, year] += totals_by_class(
             failed_bins,
             n_reps,
             n_classes,
-            gathered(customers, failed_rows, failed_columns),
+            gathered(customers, failed_columns),
         )
         results.customer_minutes[:, year] += totals_by_class(
             failed_bins,
             n_reps,
             n_classes,
-            gathered(customer_minutes_per_failure, failed_rows, failed_columns),
+            gathered(customer_minutes_per_failure, failed_columns),
         )
         results.emergency_spend[:, year] += totals_by_class(
             failed_bins, n_reps, n_classes, failed_cost
@@ -383,7 +376,7 @@ def run_chunk_numpy(
                 emergency_multiplier=emergency_multiplier,
                 priority=priorities,
             )
-            ordered = order_all_by_rank(policy, rank, eligible)
+            ordered = order_all_by_rank(rank, eligible)
             funded_positions = fund_all(ordered, planned_now, eligible, available)
             # Totalled in rank order, because that is the order the reference
             # adds them in and floating-point addition is not associative. The
@@ -405,13 +398,13 @@ def run_chunk_numpy(
                 funded_bins,
                 n_reps,
                 n_classes,
-                gathered(customer_minutes_per_planned, funded_rows, funded_columns),
+                gathered(customer_minutes_per_planned, funded_columns),
             )
             results.planned_spend[:, year] += totals_by_class(
                 funded_bins,
                 n_reps,
                 n_classes,
-                gathered(planned_now, funded_rows, funded_columns),
+                gathered(planned_now, funded_columns),
             )
             replaced[funded_rows, funded_columns] = True
 

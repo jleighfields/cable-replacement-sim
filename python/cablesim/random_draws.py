@@ -118,7 +118,7 @@ A field rather than four streams, because there are no streams to keep apart
 once a draw is a function of where it sits.
 """
 
-MAX_REPLICATION, MAX_SEGMENT, MAX_YEAR = _cablesim.DRAW_INDEX_LIMITS
+MAX_REPLICATION, MAX_SEGMENT, MAX_YEAR, MAX_PURPOSE = _cablesim.DRAW_INDEX_LIMITS
 """The largest position each field of a draw index can carry."""
 
 PURPOSE_SHIFT, REPLICATION_SHIFT, YEAR_SHIFT, SEGMENT_SHIFT = (
@@ -266,10 +266,17 @@ def draw_index(
         ValueError: If a position is past what its field can carry, where two
             positions would otherwise share one draw.
     """
+    if replications.shape != segments.shape:
+        raise ValueError(
+            f"replications has {replications.size} entries against "
+            f"{segments.size} segments; a draw is named by both, so they pair "
+            f"up one for one"
+        )
     check_positions(
         int(replications.max()) if replications.size else 0,
         int(segments.max()) if segments.size else 0,
         year,
+        purpose,
     )
     return (
         (np.uint64(purpose) << np.uint64(PURPOSE_SHIFT))
@@ -279,7 +286,9 @@ def draw_index(
     )
 
 
-def check_positions(replication: int, segment: int, year: int) -> None:
+def check_positions(
+    replication: int, segment: int, year: int, purpose: int = 0
+) -> None:
     """Refuses a position the index cannot represent.
 
     Called once with the largest position a chunk will reach, rather than per
@@ -290,12 +299,18 @@ def check_positions(replication: int, segment: int, year: int) -> None:
         replication: The largest replication this chunk covers.
         segment: The largest segment identifier.
         year: The last year drawn for.
+        purpose: Which stream. Bounded like the other three because it folds the
+            same way: it sits in the top bits, so one past the limit shifts out
+            of the word and lands on a purpose that fits — identically on both
+            sides of the boundary, which is why no comparison between
+            implementations could see it.
 
     Raises:
         ValueError: If any is past what its field can carry, where two positions
             would otherwise share one draw.
     """
     for name, value, limit in (
+        ("purpose", purpose, MAX_PURPOSE),
         ("replication", replication, MAX_REPLICATION),
         ("segment", segment, MAX_SEGMENT),
         ("year", year, MAX_YEAR),
@@ -413,7 +428,9 @@ def uniforms_dense(
     Returns:
         ``(n_reps, n_segments)`` doubles in ``[0, 1)``.
     """
-    check_positions(first_replication + n_reps - 1, n_segments - 1, year)
+    if n_reps < 1:
+        raise ValueError("n_reps is 0, so there are no positions to draw at")
+    check_positions(first_replication + n_reps - 1, n_segments - 1, year, purpose)
     # One run per replication: a replication's segments are consecutive, so its
     # draws are consecutive too. Across replications they are not, because the
     # replication field changes, so this is a loop of runs rather than one run.

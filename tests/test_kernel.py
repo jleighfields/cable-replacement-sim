@@ -357,9 +357,20 @@ MISMATCHED_ARGUMENTS: dict[str, dict[str, object]] = {
     # case a real run reaches: replications are split into chunks, so it is the
     # tail of the last one that crosses. A guard checking only where a chunk
     # starts accepts this and draws at aliased positions.
+    # Three from one below the limit puts the last replication exactly one past
+    # it. Overshooting further would pass a guard that was off by one.
     "a_chunk_whose_tail_leaves_the_index": {
-        **minimal_arguments(4, n_reps=4),
+        **minimal_arguments(4, n_reps=3),
         "first_replication": random_draws.MAX_REPLICATION - 1,
+    },
+    "a_year_past_what_an_index_can_carry": {
+        **minimal_arguments(4, n_years=int(random_draws.MAX_YEAR) + 1),
+    },
+    # A valid policy, so the refusal that speaks is the one about replications
+    # rather than the policy check standing in front of it.
+    "a_chunk_covering_no_replications": {
+        **minimal_arguments(4),
+        "n_reps": 0,
     },
     "per_segment_array_too_short": {
         **minimal_arguments(4),
@@ -562,7 +573,10 @@ def test_a_chunk_offset_that_overflows_a_word_is_refused_not_wrapped() -> None:
     purpose = random_draws.PURPOSE["lifetimes"]
 
     with pytest.raises(ValueError, match="past the"):
-        _cablesim.uniforms_dense(key[0], key[1], purpose, 2**64 - 1, 1, 1, 0)
+        # Two replications, not one: at one the addition is `+ 0`, which cannot
+        # wrap, so saturating and wrapping are indistinguishable and the guard
+        # this pins would survive being written either way.
+        _cablesim.uniforms_dense(key[0], key[1], purpose, 2**64 - 1, 2, 1, 0)
 
     arguments = {**minimal_arguments(4), "first_replication": 2**64 - 1, "n_reps": 2}
     with pytest.raises(ValueError, match="past the"):

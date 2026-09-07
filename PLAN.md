@@ -25,10 +25,11 @@ array.** A uniform is a function of `(purpose, replication, segment, year)`
 under a key derived from the run's seed, using Philox-4x64-10, which both
 languages implement and both are checked against NumPy's. That removes the
 149 MB draw array from a chunk, produces only the draws that are read — 1.5% of
-the year draws ever were — and is what lets a worker generate without a lock. That duplication is the
-validation strategy rather than an accident. The kernel runs replications over
-worker threads with the interpreter lock released, and the benchmark table
-exists. Phase 6, the Shiny application and the wheel it needs, is next.
+the year draws ever were — and is what lets a worker generate without a lock.
+
+The kernel runs replications over worker threads with the interpreter lock
+released, and the benchmark table exists. Phase 6, the Shiny application and the
+wheel it needs, is next.
 `rust-toolchain.toml` pins the compiler a checkout and continuous integration
 both build against, so `maturin develop` rebuilds the extension module and the
 format, lint and test gates all run — rustup installs what that file names, so
@@ -908,10 +909,58 @@ come out non-monotone for no reason but sampling. Giving every policy the same
 underlying draws removes that noise, because the policies then differ only in
 what they replace.
 
-**Every uniform is generated once in NumPy and passed in.** The draws are one
-array, `lifetime_uniforms[r, i, y]` — replication, segment, year — produced
-from `PCG64`'s raw stream by the recipe below, before any implementation runs,
-and read by all four of them (Section 6.5, Benchmarks).
+**Every uniform is a function of where it sits.** There is no draw array. A
+uniform is computed from `(purpose, replication, segment, year)` under a key
+derived from the run's seed, using **Philox-4x64-10** — a counter-based
+generator, which means it encrypts a position rather than advancing a state, so
+the value at any position is available without producing the ones before it.
+
+Three properties follow, and each is load-bearing:
+
+- **Two policies see the same numbers.** This is the whole point above, and it
+  is now true by construction rather than by everyone reading one array: a
+  policy that replaces more segments consumes more draws, so a *stream* would
+  put two policies on different numbers. An address cannot.
+- **Workers share nothing.** A stream has state, so several threads drawing
+  from one need a lock and the order they take their turns in decides the
+  answer. Here a worker computes what it needs and coordinates with nobody, so
+  the result does not depend on the thread count or on scheduling — which
+  `test_every_thread_count_gives_the_reference_answer` checks.
+- **Only what is read is computed.** A year's draw is consumed only by a
+  segment replaced that year — measured, 1.45% to 1.74% of them. A stream would
+  have to produce the rest anyway to keep its position aligned.
+
+**The index packs four fields into fixed bit widths**, authored in `draws.rs`
+and read from there in Python so the packing exists once: the segment in the low
+32 bits, then the year, the replication, and the purpose in what is left. Fixed
+widths rather than a product of the run's dimensions, so that resizing the
+population does not reshuffle everyone's randomness and a small run stays a
+smaller version of a large one. **The segment sits lowest deliberately** — the
+generator makes four words at a time, so four adjacent segments come out of one
+call only if their indices are adjacent, and anywhere else three quarters of the
+work is discarded.
+
+Every field is bounded and both sides refuse a position past its width. Past it
+two positions would share a draw, which is a correlation nothing downstream
+could detect.
+
+**The key comes from `SeedSequence(seed).generate_state`**, so a small integer
+seed still spreads across both key words, and the seed remains the whole of a
+run's reproducibility.
+
+**The two implementations are held to NumPy's**, not to each other:
+`tests/test_draws.py` checks Rust against `numpy.random.Philox`, Python against
+it, and Python against Rust. Agreeing with a published algorithm each implements
+separately is a stronger position than agreeing with one another. One detail
+worth carrying: NumPy increments its counter *before* producing, so its first
+block for a counter is Philox's at that counter plus one — the first
+implementation here was one block out everywhere, which looks like perfectly
+good randomness.
+
+The rest of this section describes the design this replaced. It is kept because
+the argument for common random numbers is unchanged and because 13.2, Still
+open, records why the array went; a reader wanting the current mechanism has it
+above.
 
 Index `y = 0` is the left-truncated draw made at the start of the run, and a
 replacement made in year `y` takes index `y + 1`. Years run `0 .. n_years - 1`,
@@ -1790,9 +1839,12 @@ fifteen to twenty-one tests.
 
 ### 6.3 Where a parity test's inputs come from
 
-**One fixture builds the population, the draw array and the config, and every
+**One fixture builds the population, the draw key and the config, and every
 implementation under test reads that one set of objects.** The fixture lives in
-`conftest.py`, and no *parity* test constructs a bit generator itself. The
+`conftest.py`, and no *parity* test derives a key of its own. The draws
+themselves are no longer among those objects — each implementation computes them
+from the key and the position it is at, which is what 6.4 says is established by
+test rather than by construction. The
 analytical checks of 6.1 do build their own draws, at their own sizes and
 seeds, because they compare against a closed form rather than against another
 implementation and so have nothing to share. That is what makes
@@ -1827,10 +1879,23 @@ Which comparisons share random draws, and which do not:
 | Scalar reference against batched NumPy | Yes; both compute the same uniform at the same position | Exact, every cell — see below |
 | Any Python implementation against the Rust kernel | Uniforms match; the arithmetic does not | Statistical, plus the exact tests below |
 
-- **The draws are identical by construction, not by test.** Every
-  implementation reads the same `lifetime_uniforms` array, generated once in
-  NumPy (2.11), so there is no random-number stream to reconcile across
-  languages and nothing here to verify.
+- **The draws are identical by test, and `tests/test_draws.py` is that test.**
+  Every implementation computes its own uniform at each position rather than
+  reading one shared array, so what makes them the same numbers is that both
+  generators implement the same published algorithm — which is checked three
+  ways: Rust against `numpy.random.Philox`, Python against it, and Python
+  against Rust.
+
+  **This is the one guarantee this project traded away**, and deliberately: the
+  array made cross-language draw parity impossible to get wrong, and the test
+  makes it something that has to be caught. What bought the trade is that the
+  Python reference never runs at production size, so a generator can be checked
+  at test scale and used at run scale — see 13.2, Still open, for the reasoning
+  and 2.11 for the mechanism.
+
+  A parity failure should therefore still be diagnosed as a difference in the
+  *model*, but only after `test_draws.py` is green; if it is red, nothing below
+  it means anything.
 - **Measured, the two agree bit for bit.** At 2,000 segments and 50
   replications of drawn lifetimes, every policy and every reported quantity
   matched exactly — no replication differed at all, so the paired criterion
@@ -2288,7 +2353,7 @@ notebook needs a function, it belongs in the package.
 | `03_weibull_fitting.py` | Censored MLE walkthrough. Slider for censoring fraction; show the likelihood surface, fitted vs true survival curve, and the recovery test result. Demonstrates *why* censoring must be handled. |
 | `02_effective_scale.py` | The effective-scale reduction derived and made visual (2.3). Numbered ahead of the fitting notebook because the fitting notebook's third rung tests what this one establishes. Sliders for `k`, `lambda`, `n` and length; overlay conductor-level and segment-level survival curves against the empirical minimum of sampled draws, and against draws for a longer segment. Shows scale shrinking by `(n * L/L_ref)^(-1/k)` while shape holds, which is the claim the recovery ladder's rung 3 tests numerically. |
 | `04_policy_explorer.py` | Sliders for annual budget, policy, and policy params; plot SAIDI/SAIFI trajectories over 30 years, spend, and failures by class. **This is the reliability-vs-budget curve** — the deliverable the original work produced. |
-| `05_parity_and_bench.py` | Agreement and the benchmark table. Its rows are the five implementations of Section 6.5, with the Rust kernel appearing twice as its two thread configurations, at a stated population size and replication count. It reads the implementations from the runnable registry rather than naming them, so one added there is timed and checked without being added here. The scalar reference is shown for scale and is explicitly **not** the baseline a speedup is claimed against; 6.5 rules that comparison out as flattering. |
+| `05_parity_and_bench.py` | Agreement and the benchmark table. Its rows are the implementations of Section 6.5, with the Rust kernel appearing twice as its two thread configurations, at a stated population size and replication count. Its *agreement* table reads the runnable registry, so an implementation added there is checked without being named here; its *timing* table names its rows, because each carries a thread count and a replication count the registry does not hold, and a test asserts every name it uses is one that exists. The scalar reference is shown for scale and is explicitly **not** the baseline a speedup is claimed against; 6.5 rules that comparison out as flattering. |
 
 **Each notebook walks the API layer by layer rather than making the top-level
 call.** A notebook that calls one function and plots what comes back teaches
@@ -2959,7 +3024,7 @@ the argument belongs beside the model it constrains.
    concatenated lazily at the end, so what a run holds at once is one chunk
    rather than every chunk of every policy.
 
-   The size argument alone would not have justified it. At this size, A complete run is five
+   The size argument alone would not have justified it. A complete run is five
    policies by a thousand replications by thirty years by three classes —
    450,000 rows, **39 MB in memory**. The draw array for one fifty-replication
    chunk is 149 MB, nearly four times that, and it is freed each iteration. So

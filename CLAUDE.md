@@ -79,16 +79,16 @@ here. A mirrored pair carries the same module name on both sides:
   fix divergence; the parity test may not be sensitive enough to catch it.
 - **A numeric literal appearing in both is a defect.** The copies drift, and
   drift here is silent — see *Configuration and parameters* below.
-- **The FFI boundary is crossed once per policy per chunk of replications.**
-  Arrays in, arrays out, `py.allow_threads` around the compute. Never call back
-  into Python inside the loop; that erases the speedup this project exists to
-  demonstrate. Random draws arrive as an array — the kernel neither seeds nor
-  generates.
+- **Never call back into Python inside the loop**, and release the interpreter
+  lock around the compute. That is the rule; `src/lib.rs` says which method
+  releases it and what its own guards are. A callback per replication or per
+  segment erases the speedup this project exists to demonstrate, and a handful
+  of crossings per policy does not touch it.
 - **The reference implementation is not the benchmark baseline.** They are
   different programs with different jobs, and comparing the kernel against the
   scalar reference overstates the speedup. The baseline is the batched NumPy
-  implementation in `batched.py`; `PLAN.md`, on benchmarks, has all four
-  implementations and how each is reported.
+  implementation in `batched.py`; `PLAN.md`, on benchmarks, has every
+  implementation and how each is reported.
 
 ## Code style
 
@@ -122,11 +122,15 @@ here. A mirrored pair carries the same module name on both sides:
 - **Pin the PyO3 version and read that version's guide.** PyO3 migrated to the
   `Bound<'py, T>` smart-pointer API; older tutorials and answers found online
   will not compile against a current pin.
-- **The kernel neither seeds nor generates.** Every uniform arrives as an array
-  from NumPy, and every policy reads the identical draws so that a comparison
-  between two of them is a paired difference. So no random-number crate belongs
-  in `Cargo.toml`, and results are order-independent under rayon because each
-  replication reads its own slice rather than drawing from a shared stream.
+- **The kernel seeds nothing, and no random-number crate belongs in
+  `Cargo.toml`.** Two properties any change here has to keep: every policy must
+  read the identical value at the identical position, or a comparison between
+  policies stops being a paired difference; and a result must not depend on the
+  thread count or on which worker ran first. `PLAN.md`, on random numbers, has
+  the scheme that satisfies both and why a stream cannot.
+- **A generator is checked against a published implementation, never against
+  its own mirror.** Two copies of one project agreeing proves less than each
+  agreeing with a third.
 - **`f64` has no `Ord`.** The candidate sort needs a hand-written total
   comparator with a stated position for NaN, not `partial_cmp` and a hope:
   sort NaN last **and assert none is produced**. Every input to the score is
