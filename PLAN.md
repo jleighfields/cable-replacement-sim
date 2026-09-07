@@ -6,14 +6,16 @@ number-sections: false
 
 # Cable Replacement Simulation — Project Plan
 
-Status: **Phase 1 is landing.** The configuration schema and its validators,
-the random streams, the Weibull forms, the population generator and notebook 01
-exist, and the configuration is calibrated against a run of the generator
-itself.
-The extension module has been built once and is not currently rebuildable,
-because the machine has no Rust toolchain (Section 14, First actions). This document is the pickup point for a fresh session — read it top to
-bottom before writing code, and read the roadmap in Section 11 for what each
-phase owes.
+Status: **Phase 2 is merged.** The configuration schema and its validators,
+the random streams, the Weibull forms, the population generator, the synthetic
+record table and the censored maximum-likelihood fit exist, with notebooks 01
+to 03, and the configuration is calibrated against a run of the generator
+itself. Phase 3, the Python reference and the annual loop, is next.
+A Rust toolchain is installed, and `rust-toolchain.toml` pins the minor version
+that a checkout and continuous integration both build against, so the extension
+module rebuilds and all four Rust gates run. This document is the pickup point
+for a fresh session — read it top to bottom before writing code, and read the
+roadmap in Section 11 for what each phase owes.
 
 ---
 
@@ -2342,8 +2344,10 @@ reviewable, and so the required-check rule can arrive separately:
 
 - **`.github/rulesets/protect-main.json`** — applied, and the file matches
   what is live. It carries everything except the required check.
-- **`.github/rulesets/protect-main-required-check.json`** — not yet applied.
-  It is the last act of Phase 0, once `test` has reported green.
+- **`.github/rulesets/protect-main-required-check.json`** — applied, and the
+  file matches what is live. It was held back until `test` had first reported
+  green, because a required check that has never reported green blocks every
+  merge including the one that would fix it.
 
 ```bash
 # first application of a ruleset
@@ -2357,16 +2361,16 @@ Between them they set:
 | Rule | Setting |
 |---|---|
 | Require a pull request before merging | on, 0 approvals (solo repo) |
-| Require status checks to pass | added at the end of Phase 0, once `test` has reported green — `protect-main-required-check.json` |
+| Require status checks to pass | on, `test` — `protect-main-required-check.json` |
 | Require branches to be up to date | on, inside the required-check rule — `protect-main-required-check.json` |
 | Block force pushes | on |
 | Restrict deletions | on |
 
-- **Until the required-check rule is applied, a red `test` check does not
-  physically stop a merge — treat it as though it did.** The pull request is
-  forced from the day the first ruleset lands, but nothing mechanically blocks
-  merging on red until the second one does, and that window is precisely when
-  the habit of merging anyway would form.
+- **Both rules are live, so a red `test` now blocks the merge mechanically.**
+  There was a window between the two rulesets when the pull request was forced
+  but merging on red was not stopped, which is why `CLAUDE.md` says to treat a
+  red check as blocking whatever the settings say. That habit is what should
+  survive, not the window.
 - **Zero required approvals still forces the pull request**, which is the part
   that matters here: it routes every change through a run of `test`. Raise it
   if anyone else starts contributing.
@@ -2549,7 +2553,15 @@ the release process (Section 10.5, What CI does not cover yet).
   argument. Phase 5 measures single-threaded and parallel separately by
   building a pool of the requested size around the call, and 7.1's manifest
   records what it used — a timing without a thread count means nothing.
-- Confirm the Rust toolchain is installed (`rustup`) before Phase 0.
+- **The toolchain version lives in `rust-toolchain.toml`, not in a workflow.**
+  rustup reads that file on any cargo invocation inside the checkout, so a
+  contributor and continuous integration compile against the same compiler
+  without either naming a version. It holds the minor rather than an exact
+  patch: `cargo clippy -- -D warnings` gates every pull request and clippy
+  gains lints with each minor release, so holding the minor is what keeps a
+  green branch from going red on a compiler release, while patches arrive on
+  their own. A workflow that also names a channel defeats this — the action
+  installs one toolchain, then cargo reads the file and downloads a second.
 
 ---
 
@@ -2696,23 +2708,16 @@ the argument belongs beside the model it constrains.
 
 ## 14. First actions in the next session
 
-1. Apply the required-status-check ruleset from Section 10.4, Branch
-   protection on `main` — it is checked in and not yet applied — then confirm
-   it by opening a pull request with a deliberately failing test and watching
-   the merge button refuse. A protection rule nobody has watched refuse
-   something is not known to work.
-2. Install a Rust toolchain. `cargo` and `rustup` are absent, so
-   `maturin develop`, `cargo fmt`, `cargo clippy` and `cargo test` cannot run
-   and the built extension module cannot be rebuilt. The Python suite passes
-   against the existing binary, so this stays invisible until Phase 4 and then
-   blocks it outright. Phase 0's `add(a, b)` smoke test is not established
-   until this is done.
-3. Update `config.py` and `configs/base.yaml` to the schema in Section 3,
-   Configuration schema — `simulation.start_year`, the technologies list,
-   per-type customer mix, per-class outage durations, per-type value of lost
-   load, `install_volume`, the `records:` block, the discount rate, and every
-   validator listed there. Tests for each validator, each watched failing
-   before it is trusted.
-4. Phase 1, the synthetic population.
-5. Source the placeholder numbers in 13.2, Still open, before any result is
+1. Phase 3, the Python reference and the annual loop. Section 11, Phased
+   roadmap, has what it owes, and 2.9, Annual simulation loop, is the
+   specification it implements.
+2. Confirm branch protection refuses what it claims to. Both rulesets in
+   Section 10.4, Branch protection on `main`, are applied and match their
+   checked-in files, and every change so far has arrived through a pull
+   request with a green `test` — but nothing has yet been watched being
+   *blocked*. Open a pull request with a deliberately failing test, confirm
+   the merge button refuses, then confirm a direct `git push origin main` is
+   rejected. A protection rule nobody has watched refuse something is not
+   known to work.
+3. Source the placeholder numbers in 13.2, Still open, before any result is
    presented as a finding rather than as a demonstration of the machinery.
