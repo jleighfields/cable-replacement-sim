@@ -375,14 +375,13 @@ def test_the_value_of_lost_load_escalates_with_construction_cost() -> None:
 def test_a_replacement_reads_the_draw_for_the_year_it_enters_service() -> None:
     """Index ``y + 1`` for a replacement made in year ``y``, not index ``y``.
 
-    That indexing is what makes the draw array bounded and addressable, and it
-    is what two implementations have to agree on. Nothing else pins it: the
-    deterministic cases use one uniform everywhere, and comparing two runs that
-    both read the wrong cell is comparing a thing against itself.
+    The year is a field of a draw's address, and it is what two
+    implementations have to agree on. Nothing else pins it: comparing two runs
+    that both read the wrong position is comparing a thing against itself.
 
-    Here every segment fails in year 0, and the cells differ sharply — the
-    year-0 cell would give a replacement lasting decades, the year-1 cell one
-    lasting months. Which cell is read decides whether anything fails again.
+    Here every segment fails in year 0 by construction, so every replacement
+    enters service in year 1 and there is exactly one position its lifetime
+    could have come from.
     """
     # Every segment fails in year 0 by construction rather than by a draw, so
     # every replacement enters service in year 1 and there is one position its

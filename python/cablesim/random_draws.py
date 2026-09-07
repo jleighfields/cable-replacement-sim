@@ -1,7 +1,17 @@
 """Where every random number in this project comes from.
 
-Two rules make the results reproducible and the controls honest, and both are
-easy to get wrong in a way nothing detects:
+**Two designs live here, and which one applies depends on what is being
+drawn.** The simulation's own uniforms — segment lifetimes and the random
+policy's priorities — are computed from their position by the counter-based
+generator in the second half of this module, because the Rust kernel has to
+produce the identical numbers without a stream to share. Everything drawn once
+per run rather than per replication — the synthetic segment table and the
+synthetic failure history — still comes from the spawned ``SeedSequence``
+sources in the first half, which nothing crosses a language boundary to
+reproduce.
+
+Two rules govern the spawned sources, and both are easy to get wrong in a way
+nothing detects:
 
 **Spawn by purpose first, then by replication.** A fresh ``SeedSequence`` has
 spawned nothing, so calling ``spawn`` on two separately constructed ones
@@ -33,8 +43,12 @@ class Sources(NamedTuple):
     """The four independent sources of randomness, one per purpose.
 
     Attributes:
-        lifetimes: Segment lifetime draws, spawned again per replication.
-        policies: Replacement-policy randomness, spawned again per replication.
+        lifetimes: Segment lifetime draws. Unused by the annual loop, which
+            computes its lifetimes from their positions instead; kept so the
+            four purposes stay at fixed spawn positions, since renumbering
+            them would move the population and history draws of every archived
+            run.
+        policies: Replacement-policy randomness. Unused for the same reason.
         population: The synthetic segment table.
         records: The synthetic censored failure history.
     """
@@ -55,8 +69,9 @@ def spawn_sources(seed: int) -> Sources:
         seed: ``simulation.seed`` from the configuration.
 
     Returns:
-        One sequence per purpose, to be spawned again per replication where a
-        stream needs to be addressable by replication.
+        One sequence per purpose. ``population`` and ``records`` are the two a
+        run reads; the annual loop's own uniforms come from ``uniforms_dense``
+        and ``uniforms_at`` below instead.
     """
     return Sources(*SeedSequence(seed).spawn(4))
 

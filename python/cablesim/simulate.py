@@ -55,12 +55,13 @@ need the list and copies of it drift: the length guard below, the test helper
 that takes a prefix of a population, and — differing only in ``age`` against
 ``age0`` — the population columns ``run.SEGMENT_COLUMNS`` names.
 
-Named rather than derived from the signature. The two draw arrays are also per
-segment and are indexed on a different axis, so a rule of the form "every array
-as long as the segment count" would catch them and slice the wrong one. The
-Rust binding has a compile-time equivalent — its checked list is typed as
-twelve pairs, so a thirteenth per-segment argument is a build error there;
-this tuple is what a thirteenth would have to be added to here.
+Named rather than derived from the signature, because a rule of the form
+"every array as long as the segment count" would also catch ``budget`` and
+``cost_escalation`` on any run whose horizon happened to equal its segment
+count, and check them against the wrong axis. The Rust binding has a
+compile-time equivalent — its checked list is typed as twelve pairs, so a
+thirteenth per-segment argument is a build error there; this tuple is what a
+thirteenth would have to be added to here.
 """
 
 
@@ -160,12 +161,13 @@ def check_arguments(arguments: dict[str, object]) -> tuple[int, int]:
 
     Raises:
         ValueError: If the policy tag names no policy, if the population is
-            empty, if there is no class axis to accumulate into, if the draw
-            array's shape is not ``(replications, segments, n_years + 1)``, if
-            a per-segment or per-year array is the wrong length, if a class
-            index is past the end of the class axis, or if ``threads`` is not
-            1 — no Python implementation of this loop runs replications
-            concurrently, and the compute kernel is the one that can.
+            empty, if there is no class axis to accumulate into, if a
+            replication, segment or year this chunk would draw at is past what
+            a draw index can carry, if a per-segment or per-year array is the
+            wrong length, if a class index is past the end of the class axis,
+            or if ``threads`` is not 1 — no Python implementation of this loop
+            runs replications concurrently, and the compute kernel is the one
+            that can.
         TypeError: If ``policy.kind`` is not an integer.
     """
     policy = arguments["policy"]
@@ -315,8 +317,9 @@ def run_chunk(
             is part of a draw's address, so a chunk has to know where it sits
             or splitting a run into chunks would change its numbers — and the
             split is provenance rather than a parameter of the model.
-        n_reps: Replications this chunk covers. Explicit because there is no
-            longer a draw array whose shape it could be read from.
+        n_reps: Replications this chunk covers. Passed explicitly because
+            nothing else in the signature carries the replication axis: every
+            array here is per segment or per year.
         budget: Planned capital per year, already escalated.
         cost_escalation: Per-year multiplier applied to every dollar quantity.
         policy: The resolved replacement policy.
@@ -339,17 +342,16 @@ def run_chunk(
 
     Raises:
         ValueError: If the policy tag names no policy, if the population is
-            empty, if there is no class axis to accumulate into, if the draw
-            array's shape is not ``(replications, segments, n_years + 1)``, if
-            a per-segment or per-year array is the wrong length, if a class
-            index is past the end of the class axis, if ``threads`` is not 1,
-            or if a candidate scores a rank key that is not a number. The draw
-            array's year axis is why
-            that check exists: a short one raises on its own only when a
-            replacement happens to fall in the final year, so a run can
-            complete against a wrong array and be wrong nowhere visible. The
-            other two axes are checked with it because they cost nothing to
-            compare.
+            empty, if there is no class axis to accumulate into, if a
+            replication, segment or year this chunk would draw at is past what
+            a draw index can carry, if a per-segment or per-year array is the
+            wrong length, if a class index is past the end of the class axis,
+            if ``threads`` is not 1, or if a candidate scores a rank key that
+            is not a number. The position check is the one worth knowing
+            about: each field of a draw index has a fixed width, so a position
+            past one of them would wrap onto another position's draw, and two
+            replications reading one number is a correlation nothing
+            downstream could detect.
 
             These are the checks ``cablesim.kernel.run_chunk`` makes, in the
             order it makes them and word for word, because the two are

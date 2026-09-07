@@ -2,7 +2,7 @@
 
 `simulate.py` is the correctness reference and this is the fast path, and the
 point of this module is that nothing above them can tell which it holds. The
-call takes the same twenty-three arguments under the same names and returns the
+call takes the same twenty-four arguments under the same names and returns the
 same `simulate.Results`, so `run.py`, the metrics layer and every test drive
 both through one path rather than through two that could differ in how they are
 driven. `threads` is one of those arguments on both sides: the reference accepts
@@ -81,8 +81,9 @@ def run_chunk(
 
     The arguments are `simulate.run_chunk`'s, and mean the same things. Every
     array crosses the boundary as the bytes NumPy already holds rather than as
-    a copy, so the two implementations read the identical draws and there is no
-    random-number stream to reconcile across the two languages.
+    a copy. The two implementations read identical draws because each computes
+    them from the same key and the same positions, which `tests/test_draws.py`
+    establishes; there is no random-number stream to reconcile.
 
     Args:
         length_ft: Segment length, in feet.
@@ -122,13 +123,14 @@ def run_chunk(
         n_classes: Number of segment classes, sizing the third result axis.
         n_years: Horizon, in years.
         threads: Workers to spread the replications over, which changes no
-            number: a replication reads its own slice of the draws and writes
-            its own block of the results, so the answer does not depend on how
-            many workers there were or on the order they finished in. One runs
-            them in sequence and builds no thread pool at all, which is what
-            makes a single-threaded timing a baseline rather than a measurement
-            of the pool's overhead. ``AVAILABLE_THREADS`` is this machine's
-            count.
+            number: a replication computes its own draws from their positions
+            and writes its own block of the results, so the answer does not
+            depend on how many workers there were or on the order they finished
+            in. One runs them in sequence and builds no thread pool at all,
+            which is what makes a single-threaded timing a baseline rather than
+            a measurement of the pool's overhead. ``AVAILABLE_THREADS`` is this
+            machine's count.
+
     Returns:
         The seven per-year, per-class arrays for this chunk.
 
@@ -136,9 +138,10 @@ def run_chunk(
         ValueError: If the policy tag names no policy, if the population is
             empty, if ``n_classes`` is 0, if a class index is past the end of
             the class axis, if an array is not C-contiguous, if a per-segment
-            or per-year array is the wrong length, if the draw array is not
-            the shape the horizon implies, if ``threads`` is 0, or if a
-            candidate scores a rank key that is not a number.
+            or per-year array is the wrong length, if a replication, segment or
+            year this chunk would draw at is past what a draw index can carry,
+            if ``threads`` is 0, or if a candidate scores a rank key that is
+            not a number.
         RuntimeError: If a thread pool of the requested size could not be
             built. That is the operating system refusing to start the threads
             rather than anything about the arguments, so it is not a
@@ -147,7 +150,7 @@ def run_chunk(
             ``uint8`` for ``class_index`` and ``float64`` for the rest — if an
             array has the wrong number of axes, or if ``policy.kind`` is not an
             integer. The binding does not convert, because converting would
-            copy and a copy of the draw array is the largest thing in a run.
+            allocate a copy of every per-segment array on every call.
             These come from PyO3's extraction rather than from any check here,
             so the messages are its wording; ``simulate.run_chunk`` raises the
             same class for the same inputs.

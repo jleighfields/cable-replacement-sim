@@ -38,9 +38,10 @@ DETERMINISTIC_REPS = 3
 """Replications for those tests.
 
 Three rather than one, because the replication axis is where the two
-implementations index the draw arrays differently — the reference takes a
-NumPy row, the kernel offsets into a flat slice — so a run with a single
-replication would leave that arithmetic reading the same bytes either way.
+implementations address their draws differently — the reference builds a
+``(replications, segments)`` block and takes a row of it, the kernel computes
+each position on its own — so a run with a single replication would leave that
+arithmetic reading position zero either way.
 """
 
 STATISTICAL_SEGMENTS = 2_000
@@ -58,15 +59,14 @@ def simulation_arguments(settings: config_module.Config) -> dict[str, object]:
     """Builds one call's arguments from a configuration.
 
     Assembled through the same package functions a real run uses — the
-    population generator, the purpose-spawned draw sources and the escalation
-    series — so what the parity tests hand an implementation is what a run
-    hands it.
+    population generator, the key derivation and the escalation series — so
+    what the parity tests hand an implementation is what a run hands it.
 
     Args:
         settings: The configuration to build from, which carries the
-            replication count. Taken from there rather than passed alongside
-            it, so a fixture cannot resize the population to one count and
-            build draws for another.
+            replication count and the seed. Taken from there rather than passed
+            alongside them, so a fixture cannot resize the population to one
+            count and set ``n_reps`` to another.
 
     Returns:
         Every argument of ``simulate.run_chunk`` except ``policy``, keyed by
@@ -75,14 +75,14 @@ def simulation_arguments(settings: config_module.Config) -> dict[str, object]:
     simulation = settings.simulation
     if simulation.n_reps < 2:
         # One replication removes what this fixture exists for without failing
-        # anything: the reference takes a NumPy row per replication and the
-        # kernel offsets into a flat slice, so an offset defect is invisible
-        # until there is a second row to get wrong. Mutating either offset away
-        # reddens the parity tests at three replications and none at one.
+        # anything: the replication is a field of every draw's address, and at
+        # a single replication that field is 0 on both sides whatever the
+        # arithmetic around it does. Mutating either side's offset away reddens
+        # the parity tests at three replications and none at one.
         raise ValueError(
             f"the parity fixtures need at least 2 replications, got "
             f"{simulation.n_reps}: the replication axis is where the two "
-            f"implementations index the draw arrays differently"
+            f"implementations address their draws differently"
         )
 
     segments = run.segment_arrays(population.generate(settings))

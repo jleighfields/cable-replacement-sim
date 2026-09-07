@@ -23,9 +23,9 @@
 //!   comes from that generated code, not from anything written here.
 //! * **`PyReadonlyArray1<'py, f64>` borrows NumPy's own buffer.** Nothing is
 //!   copied and nothing is converted: the `f64` values Rust reads are the
-//!   bytes NumPy already holds. That is what makes the draw array free to pass
-//!   — it is the largest object in a run — and it is why the dtype has to
-//!   match exactly rather than being coerced.
+//!   bytes NumPy already holds. That is why the dtype has to match exactly
+//!   rather than being coerced — a coercion would allocate a converted copy of
+//!   every per-segment array on every call.
 //! * **`Bound<'py, T>` is a reference to a Python object that holds the
 //!   interpreter lock.** It is PyO3's smart pointer, and the `'py` lifetime
 //!   is what stops a Python object being used after the lock is released.
@@ -54,20 +54,19 @@ use pyo3::types::PyTuple;
 /// Borrows a NumPy array as a flat slice, rejecting a non-contiguous one.
 ///
 /// Every array crosses this boundary as the same bytes NumPy holds, rather
-/// than as a copy, which is what removes cross-language divergence in the
-/// draws entirely as opposed to testing for it. What can still go wrong is
-/// layout: a transposed view or a strided slice arrives non-contiguous, and
-/// reading it as a flat slice would take the wrong elements in the wrong
-/// order. The caller that gets this wrong is a notebook passing `arr.T`, and
-/// the symptom without this check is a plausible wrong number.
+/// than as a copy. What can still go wrong is layout: a strided slice arrives
+/// non-contiguous, and reading it as a flat slice would take the wrong
+/// elements in the wrong order. The caller that gets this wrong passes a step
+/// slice such as `age[::2]`, and the symptom without this check is a plausible
+/// wrong number rather than an error.
 ///
 /// **C order is checked explicitly rather than left to `as_slice`.** That call
 /// accepts a Fortran-ordered array too, since it is contiguous — just
-/// column-major. A one-dimensional array is both, so the twelve per-segment
-/// arrays cannot tell the difference; the draw arrays can, and a transposed
-/// three-dimensional view of the right shape would be read with its axes
-/// exchanged and return a run that completes. A strided slice is rejected
-/// either way, which is what makes the weaker check look like it works.
+/// column-major. Every array reaching this today is one-dimensional and so is
+/// both at once, which makes the two checks indistinguishable on current
+/// callers; the stricter one is kept because it is what an argument of two or
+/// more axes would need, and adding one must not silently relax the check.
+/// `contiguous` is generic over the number of axes for the same reason.
 ///
 /// # Arguments
 ///
@@ -184,8 +183,9 @@ fn as_result_array(
 /// `ValueError` if the policy tag names no policy, if the population is empty,
 /// if `n_classes` is 0, if a class index is past the end of the class axis, if
 /// an array is not C-contiguous, if a per-segment or per-year array is the
-/// wrong length, if the draw array is not the shape the horizon implies, if
-/// `threads` is 0, or if a candidate scores a rank key that is not a number.
+/// wrong length, if a replication, segment or year this chunk would draw at is
+/// past what a draw index can carry, if `threads` is 0, or if a candidate
+/// scores a rank key that is not a number.
 ///
 /// `RuntimeError` if a thread pool of the requested size could not be built,
 /// which is the operating system refusing to start the threads rather than
@@ -290,10 +290,9 @@ fn run_chunk<'py>(
 
     // Every position this chunk will draw at has to be one the index can carry.
     // Past a field's width two positions would share a draw, which is a
-    // correlation nothing downstream could detect. This replaces the check on
-    // the draw array's shape, which existed because a short array raised on its
-    // own only when a replacement happened to fall in the final year — an error
-    // that cannot be constructed now that the draws are not passed in.
+    // correlation nothing downstream could detect. The year passed is `n_years`
+    // rather than `n_years - 1`: a segment replaced in the final year draws its
+    // next lifetime from the year it would have entered service on.
     within_the_index(
         first_replication + n_reps as u64 - 1,
         n_segments as u64 - 1,

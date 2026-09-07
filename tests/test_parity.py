@@ -10,10 +10,13 @@ listed, so one added there is held to these tests from the moment it exists.
 Each is compared against the reference and none against another: a defect two
 of them share would otherwise pass by agreeing with itself.
 
-**The draws are identical by construction rather than by test.** Every
-implementation reads the same uniforms, generated once in NumPy by the fixture
-in `conftest.py`, so there is no random-number stream to reconcile across the
-languages and nothing here verifies that there is not.
+**The draws are identical by test rather than by construction, and that is
+the one guarantee this design traded away.** No array of uniforms is handed
+round: each implementation computes every draw from the run's key and the
+position it is reading, so the Python and Rust generators have to agree bit for
+bit. `test_draws.py` is what establishes that, against NumPy's own Philox.
+Nothing here re-checks it, so a failure in that file makes every comparison
+below unsafe to interpret.
 
 Most of these tests remove randomness entirely by forcing the Weibull scale
 through the ordinary `scale` array, and this is where allocation defects
@@ -576,8 +579,8 @@ def test_every_thread_count_gives_the_reference_answer(
 
     Order independence is a property of how the work is split rather than of
     how well the arithmetic behaves, so this asserts exact equality rather than
-    a tolerance. Each replication reads its own slice of the draw arrays and
-    writes its own block of the results, sharing nothing with any other, and
+    a tolerance. Each replication computes its own draws from their positions
+    and writes its own block of the results, sharing nothing with any other, and
     the blocks are concatenated in replication order rather than in the order
     they finished. A kernel that accumulated into one shared buffer instead
     would still pass a tolerance-based check most of the time and would give a

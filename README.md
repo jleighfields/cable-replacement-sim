@@ -11,8 +11,9 @@ policies evaluated against customer reliability (SAIFI / SAIDI / CMI) over a
 is fully synthetic.
 
 **Status: the simulation runs end to end in Python and in Rust.**
-The configuration schema and its validators, the purpose-spawned sources of
-randomness, the Weibull forms and the synthetic population generator exist,
+The configuration schema and its validators, the counter-based generator every
+uniform is drawn from, the Weibull forms and the synthetic population generator
+exist,
 along with the synthetic failure history and the censored, left-truncated
 maximum-likelihood fit that recovers the parameters it was generated from.
 Four marimo notebooks walk them. Every rung of the recovery ladder fits data
@@ -27,17 +28,23 @@ budget sweep draws the reliability-against-budget curve — at zero budget every
 policy lands on the same point as run-to-failure, which is the end-to-end check
 that costs nothing to run.
 
-**The annual loop is implemented five times**, and that is the validation
+**The annual loop is implemented three times**, and that is the validation
 strategy rather than duplication. A scalar Python reference written to be
-checkable by reading; a batched NumPy loop and a batched polars loop that hold
-every replication in flight at once; a Rust kernel that spreads replications
-over worker threads; and a Rust loop over a polars frame. All five take the
-same arguments, read the same draws and return the same result type, so any of
-them can be named at the call.
+checkable by reading; a batched NumPy loop that holds every replication in
+flight at once; and a Rust kernel that spreads replications over worker
+threads. All three take the same arguments, compute the same draws and return
+the same result type, so any of them can be named at the call. No array of
+uniforms is passed: each computes every draw from the run's key and the
+position it is reading, and the two generators are held to agreeing bit for bit
+against NumPy's own Philox.
+
+Two further implementations over a polars frame, one in each language, were
+built and retired; [deprecated/README.md](deprecated/README.md) has the
+measurements and what they say about running a simulation on a column store.
 
 They are compared by tests that force the lifetimes and check every cell, by a
 paired test over drawn lifetimes, and by runs written to disk and diffed row for
-row. **All five agree in every cell of every array**, with no tolerance
+row. **All three agree in every cell of every array**, with no tolerance
 anywhere — which takes deliberate care rather than luck, because floating-point
 addition is not associative and the year's emergency bill decides which segment
 the budget reaches last.
@@ -49,10 +56,8 @@ What the timings say, at 12,000 segments over 30 years, on a release build with
 |---|---|---|---|
 | Scalar Python reference | 0.00393 | 0.01700 | 0.04101 |
 | Batched NumPy | 0.00376 | 0.02304 | 0.04387 |
-| Batched polars | 0.01238 | 0.03149 | 0.05226 |
 | Rust kernel, 1 thread | 0.00258 | 0.00340 | 0.04134 |
 | **Rust kernel, 48 threads** | **0.00027** | **0.00029** | **0.00201** |
-| Rust polars, 1 thread | 0.01145 | 0.03210 | 0.05961 |
 | **Fastest Python, beaten by** | **14.1x** | **58.5x** | **20.4x** |
 
 The three policies differ in how much of the population they make eligible each
@@ -72,18 +77,19 @@ shared its working buffers between workers.
 
 Run the table yourself with `uv run python scripts/run_benchmarks.py`, after
 building with `--release`. See [PLAN.md](PLAN.md) for the model, the decisions
-behind it, what the frame implementations measure, and the phased roadmap.
+behind it, and the phased roadmap.
 
 ## Layout
 
 | Path | What it holds |
 |---|---|
-| `src/` | the Rust crate: the compute kernel and a second loop over a polars frame, built as one Python extension module |
-| `python/cablesim/` | the Python package: configuration, the sources of randomness, the Weibull forms, the population generator, the synthetic failure history and its censored maximum-likelihood fit, the replacement policies, the annual loop that is the correctness reference for every other implementation, the two batched loops and the wrapper that puts the kernel behind that same call, the benchmark harness, and the run, metrics and figure layers above it |
+| `src/` | the Rust crate: the compute kernel and the counter-based generator it draws from, built as one Python extension module |
+| `python/cablesim/` | the Python package: configuration, the sources of randomness, the Weibull forms, the population generator, the synthetic failure history and its censored maximum-likelihood fit, the replacement policies, the annual loop that is the correctness reference for every other implementation, the batched NumPy loop and the wrapper that puts the kernel behind that same call, the benchmark harness, and the run, metrics and figure layers above it |
 | `scripts/` | driver scripts that build configuration overrides and call the package in a loop; they hold no modelling logic |
 | `configs/base.yaml` | the documented default run configuration |
 | `notebooks/` | marimo notebooks that walk the package interface layer by layer |
 | `tests/` | the test suite |
+| `deprecated/` | retired implementations, kept with the measurements that retired them; nothing imports them and no test runs them |
 | [PLAN.md](PLAN.md) | the model, the configuration schema, the kernel contract, and the roadmap |
 
 The Python reference and everything else implement the same model repeatedly.

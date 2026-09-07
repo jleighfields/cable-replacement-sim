@@ -278,9 +278,9 @@ impl std::fmt::Display for ChunkError {
 /// a candidate scored a key that was not a number, or if the pool could not be
 /// built.
 ///
-/// The buffers do not depend on `threads`. Each replication reads its own
-/// slice of the draw arrays and writes its own block of the results, so no two
-/// workers touch the same value, and the blocks are concatenated in
+/// The buffers do not depend on `threads`. Each replication computes its own
+/// draws from their positions and writes its own block of the results, so no
+/// two workers touch the same value, and the blocks are concatenated in
 /// replication order rather than in the order they finished.
 #[allow(clippy::too_many_arguments)]
 pub fn run_chunk(
@@ -309,9 +309,8 @@ pub fn run_chunk(
     n_years: usize,
     threads: usize,
 ) -> Result<Results, ChunkError> {
-    // The segment count is the population's; the replication count is an
-    // argument, because there is no longer a draw array whose shape it could be
-    // read from.
+    // The segment count is the population's; the replication count arrives as
+    // `n_reps`, since nothing else passed in carries the replication axis.
     let n_segments = age0.len();
 
     // Costs at year-0 prices; the year's escalation is applied inside the loop.

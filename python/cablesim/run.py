@@ -10,13 +10,13 @@ kernel are interchangeable here — which is what lets a parity test drive both
 through one path rather than through two that could differ in how they are
 driven.
 
-Replications are processed in chunks because the draw array is the largest
-thing in a run: at a thousand replications, twelve thousand segments and a
-thirty-year horizon it is three gigabytes, and fifty replications at a time
-makes it a hundred and fifty megabytes. The chunk size changes no number, since
-every replication reads its own children of the stream whatever the chunking,
-so it is an argument here and provenance in the manifest rather than a
-configured parameter.
+Replications are processed in chunks because the result arrays grow with the
+replication count: seven of them at `(replications, years, classes)`, plus
+whatever the implementation holds in flight, which for the batched loops is a
+`(replications, segments)` working set. The chunk size changes no number, since
+every draw is a function of the key and of a position that carries the
+replication's index in the whole run, so it is an argument here and provenance
+in the manifest rather than a configured parameter.
 """
 
 import datetime

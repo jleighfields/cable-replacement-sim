@@ -102,7 +102,10 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "--repeats",
         type=int,
         default=benchmarks.DEFAULT_REPEATS,
-        help="runs per configuration, of which the fastest is reported",
+        help=(
+            "runs per configuration; the table carries the mean of them and "
+            "the fastest, and the count they were taken over"
+        ),
     )
     return parser.parse_args(argv)
 

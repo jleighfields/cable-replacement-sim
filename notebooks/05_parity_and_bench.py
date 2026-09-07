@@ -212,8 +212,11 @@ def _(mo):
       column is against the batched NumPy loop.
     * **Seconds per replication is the comparable column**, not total seconds,
       because rows may run different replication counts.
-    * **The fastest of several runs is reported**, not the mean. The question is
-      how long the work takes, and noise on a shared machine only ever adds.
+    * **Both the mean of several runs and the fastest are reported**, with the
+      count beside them. Noise on a shared machine only ever adds, so the
+      fastest run is the closest to what the work costs without interference;
+      the mean is what someone actually waits for. Neither means anything
+      without the repeat count.
     """
     )
     return

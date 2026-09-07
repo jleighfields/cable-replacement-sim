@@ -72,10 +72,10 @@ def minimal_arguments(
 def test_the_kernel_raises_rather_than_panicking_on_an_empty_population() -> None:
     """A chunk with no segments must report, not divide by zero.
 
-    The replication count is recovered from the draw array's length divided by
-    the segment count, so a population of none is an integer division by zero.
-    That is a Rust panic rather than a raise, and a panic crosses into Python
-    as something ``except Exception`` does not catch.
+    Reaching the loop with no segments indexes past the end of a working
+    buffer, and the per-year totals divide by a segment count of zero. Both are
+    a Rust panic rather than a raise, and a panic crosses into Python as
+    ``PanicException``, which ``except Exception`` does not catch.
     """
     arguments = minimal_arguments(n_segments=0)
 
