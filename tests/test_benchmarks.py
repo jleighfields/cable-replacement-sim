@@ -7,9 +7,13 @@ asserts that something was fast, because a test that did would fail on a loaded
 machine and teach nothing when it did.
 """
 
+import pathlib
+
 import numpy as np
 import pytest
 from cablesim import benchmarks, config, constants, policies, run, simulate
+
+from tests import helpers
 
 
 def small_settings(n_segments: int = 200, n_reps: int = 2) -> config.Config:
@@ -133,4 +137,30 @@ def test_the_speedup_columns_are_ratios_to_the_rows_they_name() -> None:
     assert np.allclose(
         table["speedup_over_fastest_python"].to_numpy(),
         fastest / table["seconds_per_replication"].to_numpy(),
+    )
+
+
+@pytest.mark.parametrize(
+    "path", helpers.CALLERS_THAT_NAME_IMPLEMENTATIONS, ids=lambda p: p.name
+)
+def test_the_shipped_callers_only_name_implementations_that_exist(
+    path: pathlib.Path,
+) -> None:
+    """A driver script or notebook naming a retired implementation is broken.
+
+    ``compare`` refuses an unknown name before it times anything, so a caller
+    that asks for one raises ``KeyError`` on every invocation rather than
+    producing a smaller table. Neither of these files runs in a default test
+    session — one is a script and the other is behind the ``notebooks`` marker,
+    which nothing runs automatically — so retiring an implementation without
+    editing them leaves the documented way to produce the benchmark table
+    failing, with nothing reporting it.
+    """
+    requested = helpers.requested_implementations(path)
+    runnable = set(run.RUNNABLE)
+
+    assert requested, f"{path.name} names no implementation; has the call moved?"
+    assert requested <= runnable, (
+        f"{path.name} asks for {sorted(requested - runnable)}, which "
+        f"{sorted(runnable)} does not carry"
     )

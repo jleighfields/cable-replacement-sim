@@ -14,7 +14,7 @@ panic message goes to stderr rather than into the traceback.
 
 import numpy as np
 import pytest
-from cablesim import kernel, policies, random_draws, simulate
+from cablesim import _cablesim, kernel, policies, random_draws, simulate
 
 from tests import helpers
 
@@ -375,10 +375,10 @@ def test_both_implementations_word_a_mismatch_refusal_the_same_way(
     compares the messages for the empty population, the absent class axis and
     the class index past its end. The remaining three are otherwise checked
     only for raising *something* that names the argument, which cannot see two
-    sides describing the same mismatch differently. The draw-array guard is
-    where that mattered: the shapes reach the message through a Rust slice on
-    one side and a Python tuple on the other, and printing either as it comes
-    agrees on every word while differing on the brackets.
+    sides describing the same mismatch differently. Every one of these messages
+    is built from a format string written out in each language, so two sides
+    can agree on every word while differing on a bracket, a plural or the
+    rendering of a number — differences a match on a substring does not see.
     """
     arguments = MISMATCHED_ARGUMENTS[wrong]
     policy = helpers.resolved("run_to_failure")
@@ -485,3 +485,82 @@ def test_the_reference_refuses_a_thread_count_it_cannot_honour() -> None:
     with pytest.raises(ValueError, match="threads is 2"):
         simulate.run_chunk(**arguments, policy=policy, threads=2)
     kernel.run_chunk(**arguments, policy=policy, threads=2)
+
+
+def test_both_sides_accept_the_largest_replication_an_index_carries() -> None:
+    """The limit is inclusive on one side and exclusive on the other.
+
+    ``random_draws.MAX_REPLICATION`` is documented as the largest replication a
+    draw index can carry, so a chunk ending on it is representable and must
+    run. The reference agrees; the binding's dense-draw entry point compares
+    the chunk's *count* against the limit rather than its last index, so it
+    refuses the final representable replication. Nothing downstream would ever
+    reach it — but the two sides disagreeing about where the boundary sits is
+    how a later widening of the field gets applied to one of them only.
+    """
+    last = random_draws.MAX_REPLICATION
+    key = random_draws.draw_key(1)
+
+    from_reference = random_draws.uniforms_dense(
+        key, random_draws.PURPOSE["lifetimes"], last, 1, 1, 0
+    )
+    from_kernel = _cablesim.uniforms_dense(
+        key[0], key[1], random_draws.PURPOSE["lifetimes"], last, 1, 1, 0
+    )
+
+    assert np.array_equal(from_reference.ravel(), from_kernel)
+
+
+def test_a_chunk_offset_that_overflows_a_word_is_refused_not_wrapped() -> None:
+    """The position guard must not be steppable over by its own arithmetic.
+
+    The binding adds the chunk's replication count to its offset before
+    comparing the total against the limit, and that addition is on a 64-bit
+    unsigned integer in a release build, where overflow wraps rather than
+    panicking. An offset near the top of the word therefore produces a small
+    total, the comparison passes, and the run proceeds at replication indices
+    that alias onto other positions' draws — which is exactly the correlation
+    the guard exists to prevent, arrived at through the guard.
+
+    The reference refuses both of these, because Python integers do not wrap.
+    """
+    key = random_draws.draw_key(1)
+    purpose = random_draws.PURPOSE["lifetimes"]
+
+    with pytest.raises(ValueError, match="past the"):
+        _cablesim.uniforms_dense(key[0], key[1], purpose, 2**64 - 1, 1, 1, 0)
+
+    arguments = {**minimal_arguments(4), "first_replication": 2**64 - 1, "n_reps": 2}
+    with pytest.raises(ValueError, match="past the"):
+        kernel.run_chunk(**arguments, policy=helpers.resolved("run_to_failure"))
+
+
+def test_both_implementations_report_the_same_first_complaint() -> None:
+    """Same argument set, same message — including which check speaks first.
+
+    ``check_arguments`` documents its checks as being in the order the binding
+    makes them and word for word, because the two are interchangeable behind
+    one call and a caller must not get a different answer from each. The
+    replication-count check is the one that breaks it: the reference asks it
+    before the policy tag and the binding asks it after, so an argument set
+    that is wrong in both ways is reported differently depending on which
+    implementation was named.
+    """
+    arguments = {**minimal_arguments(4), "n_reps": 0}
+    unrankable = policies.Resolved(
+        *(
+            max(policies.KIND.values()) + 1 if field == "kind" else value
+            for field, value in zip(
+                policies.Resolved._fields,
+                helpers.resolved("run_to_failure"),
+                strict=True,
+            )
+        )
+    )
+
+    with pytest.raises(ValueError) as from_kernel:
+        kernel.run_chunk(**arguments, policy=unrankable)
+    with pytest.raises(ValueError) as from_reference:
+        simulate.run_chunk(**arguments, policy=unrankable)
+
+    assert str(from_reference.value) == str(from_kernel.value)
