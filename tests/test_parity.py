@@ -44,7 +44,7 @@ from cablesim import (
     weibull,
 )
 
-from tests import helpers
+from tests import conftest, helpers
 
 POLICIES: tuple[policies.Resolved, ...] = (
     helpers.resolved("run_to_failure"),
@@ -366,7 +366,12 @@ def test_two_saved_runs_agree_row_for_row(tmp_path: pathlib.Path) -> None:
     }
 
     assert frames["reference"].height > 0
-    assert frames["reference"].equals(frames["kernel"])
+    # Every implementation against the reference, rather than the kernel by
+    # name: a third one added to the registry is run by the loop above, and
+    # naming its comparison here is what stops it being run and never checked.
+    for name, frame in frames.items():
+        assert frames["reference"].equals(frame), f"{name} differs on disk"
+    assert set(frames) == set(run.RUNNABLE)
 
 
 def test_a_saved_kernel_run_records_the_profile_it_was_built_with(
@@ -487,3 +492,23 @@ def test_a_year_that_overruns_its_budget_funds_nothing_and_carries_no_debt(
     assert overrun.planned_replacements.sum() == 0.0
     assert overrun.planned_spend.sum() == 0.0
     assert_identical(overrun, kernel.run_chunk(**arguments, policy=policy))
+
+
+def test_the_parity_fixture_refuses_a_single_replication() -> None:
+    """The builder behind both fixtures rejects a chunk it cannot cover.
+
+    One replication removes what the parity tests exist to check without
+    failing anything: the reference takes a NumPy row per replication and the
+    kernel offsets into a flat slice, so an offset defect needs a second row to
+    be visible at all. Mutating either offset away reddens seventeen tests at
+    three replications and none at one.
+
+    Driven here because the fixtures themselves always pass a good value, so
+    nothing else would ever reach the check.
+    """
+    settings = config.resize_population(
+        config.load_config(constants.DEFAULT_CONFIG_PATH), 50, n_reps=1
+    )
+
+    with pytest.raises(ValueError, match="at least 2 replications"):
+        conftest.simulation_arguments(settings)

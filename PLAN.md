@@ -1038,10 +1038,10 @@ and this document has lost that argument before.
 #
 # The coupled values below — the technology scales, the install-volume curve,
 # the population size, the lateral customer mix and the annual budget — were
-# calibrated together by running the population generator, against a target
-# taken from the original study this reproduces: about 2% of segments fail in the first year
-# under run-to-failure, the budget funds roughly 60% of that, and the customers
-# on terminal laterals reconcile with the system total. The value-of-lost-load
+# calibrated together by running the population generator, against the targets
+# that follow: about 2% of segments fail in the first year under
+# run-to-failure, the budget funds roughly 60% of that, and the customers on
+# terminal laterals reconcile with the system total. The value-of-lost-load
 # figures are still placeholders needing a published source.
 
 simulation:

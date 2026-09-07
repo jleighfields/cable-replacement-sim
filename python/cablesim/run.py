@@ -131,10 +131,11 @@ def unknown_implementations(names: Iterable[str]) -> set[str]:
     return set(names) - set(results.IMPLEMENTATIONS)
 
 
-if unknown_implementations(RUNNABLE):
+UNRUNNABLE = unknown_implementations(RUNNABLE)
+if UNRUNNABLE:
     raise ValueError(
-        f"{sorted(unknown_implementations(RUNNABLE))} name no implementation a "
-        f"result may claim; the closed set is {list(results.IMPLEMENTATIONS)}"
+        f"{sorted(UNRUNNABLE)} name no implementation a result may claim; "
+        f"the closed set is {list(results.IMPLEMENTATIONS)}"
     )
 
 

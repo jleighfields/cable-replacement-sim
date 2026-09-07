@@ -169,9 +169,11 @@ def test_the_kernel_refuses_a_policy_tag_it_does_not_recognize() -> None:
     catch-all branch, score every candidate zero, and fund them in segment
     order — a run that completes and means nothing.
     """
-    unmapped = helpers.resolved("worst_first")._replace(kind=9)
+    unmapped = helpers.resolved("worst_first")._replace(
+        kind=max(policies.KIND.values()) + 1
+    )
 
-    with pytest.raises(ValueError, match="policy.kind is 9"):
+    with pytest.raises(ValueError, match="no ranking branch covers"):
         kernel.run_chunk(**minimal_arguments(4), policy=unmapped)
 
 
@@ -308,9 +310,9 @@ def test_both_implementations_refuse_a_policy_tag_that_names_no_policy() -> None
         kind=max(policies.KIND.values()) + 1
     )
 
-    with pytest.raises(ValueError, match="names no policy"):
+    with pytest.raises(ValueError, match="no ranking branch covers"):
         kernel.run_chunk(**arguments, policy=unmapped)
-    with pytest.raises(ValueError, match="names no policy"):
+    with pytest.raises(ValueError, match="no ranking branch covers"):
         simulate.run_chunk(**arguments, policy=unmapped)
 
 
@@ -351,3 +353,80 @@ def test_a_per_segment_array_of_the_wrong_length_is_a_value_error_on_both_sides(
         kernel.run_chunk(**arguments, policy=policy)
     with pytest.raises(ValueError, match="customers"):
         simulate.run_chunk(**arguments, policy=policy)
+
+
+def test_both_implementations_refuse_a_tag_no_ranking_branch_covers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tag inside the mapping but outside ``rank_key`` must be refused too.
+
+    The guard on the tag asks a different question on each side. The reference
+    asks whether the tag is in ``policies.KIND``; the kernel asks whether it
+    lies between ``RUN_TO_FAILURE`` and ``RANDOM``. Those agree only while the
+    mapping holds exactly those five tags contiguously, so adding a sixth
+    entry to ``KIND`` opens the reference's guard for it in the same edit and
+    leaves the kernel's shut — one completes and the other raises, on the same
+    arguments, which is what the guard was added to prevent.
+
+    What completes is also meaningless. Neither ``rank_key`` has a branch for
+    the new tag, so both fall to the catch-all written for
+    ``run_to_failure``, score every candidate zero, and fund them in
+    ``segment_id`` order. On these arguments segment 3 is the only one with
+    any value at risk and is the one left unfunded.
+    """
+    unbranched = max(policies.KIND.values()) + 1
+    monkeypatch.setitem(policies.KIND, "condition_based", unbranched)
+    arguments = minimal_arguments(4, n_years=1)
+    arguments["budget"] = np.array([3_000.0])
+    arguments["scale"] = np.full(4, helpers.NEVER_FAILS)
+    arguments["replacement_scale"] = np.full(4, helpers.NEVER_FAILS)
+    arguments["outage_cost_per_failure"] = np.array([1.0, 2.0, 3.0, 1e9])
+    policy = helpers.resolved("risk_ranked")._replace(kind=unbranched)
+
+    with pytest.raises(ValueError):
+        simulate.run_chunk(**arguments, policy=policy)
+    with pytest.raises(ValueError):
+        kernel.run_chunk(**arguments, policy=policy)
+
+
+MISMATCHED_ARGUMENTS: dict[str, dict[str, object]] = {
+    "draw_array_short_a_year": {
+        **minimal_arguments(4, n_years=3),
+        "lifetime_uniforms": np.full((1, 4, 3), 0.5),
+    },
+    "per_segment_array_too_short": {
+        **minimal_arguments(4),
+        "cost_per_ft": np.full(3, 10.0),
+    },
+    "per_year_series_too_long": {
+        **minimal_arguments(4, n_years=3),
+        "budget": np.ones(5),
+    },
+}
+"""The three length and shape guards the degenerate cases above do not reach."""
+
+
+@pytest.mark.parametrize("wrong", sorted(MISMATCHED_ARGUMENTS), ids=str)
+def test_both_implementations_word_a_mismatch_refusal_the_same_way(
+    wrong: str,
+) -> None:
+    """Every guard says the same thing on both sides, not just three of them.
+
+    ``test_both_implementations_refuse_the_same_degenerate_population``
+    compares the messages for the empty population, the absent class axis and
+    the class index past its end. The remaining guards are checked only for
+    raising *something* that names the argument, which cannot see two sides
+    describing the same mismatch differently — and the draw-array guard does:
+    the shapes are formatted as a Rust slice on one side and a Python tuple on
+    the other, so the two messages differ on the brackets while agreeing on
+    every word.
+    """
+    arguments = MISMATCHED_ARGUMENTS[wrong]
+    policy = helpers.resolved("run_to_failure")
+
+    with pytest.raises(ValueError) as from_kernel:
+        kernel.run_chunk(**arguments, policy=policy)
+    with pytest.raises(ValueError) as from_reference:
+        simulate.run_chunk(**arguments, policy=policy)
+
+    assert str(from_reference.value) == str(from_kernel.value)

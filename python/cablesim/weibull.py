@@ -103,9 +103,10 @@ def conditional_failure_probability(
         the interval says rather than something the loop exercises.
     """
     # The hazard accumulated over this one year: a difference of two
-    # cumulative hazards rather than a cumulative hazard itself. Naming it
-    # for the accumulation and not for the year is what sent two attempts at
-    # the note above to measure the wrong quantity.
+    # cumulative hazards rather than a cumulative hazard itself. The name says
+    # "annual" because the bound documented above is a threshold on this
+    # difference and not on either of the two terms it subtracts, and the two
+    # thresholds fall at very different ages.
     annual_hazard = ((age + 1.0) / scale) ** shape - (age / scale) ** shape
     return -np.expm1(-annual_hazard)
 

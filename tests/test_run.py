@@ -252,7 +252,11 @@ def test_an_implementation_that_does_not_exist_is_refused_before_any_work(
     The manifest validator would refuse it too, but only at the write, which on
     a sweep is one budget level's computation later.
     """
-    with pytest.raises(KeyError, match="batched_numpy"):
+    # Matched on the guard's own wording, not on the name. The lookup a line
+    # below raises `KeyError` carrying the same name, so a test matching only
+    # that cannot tell the guard from its absence — and the guard exists for
+    # the message, which names what would have worked.
+    with pytest.raises(KeyError, match="are the ones that exist"):
         run.run(small_config(), tmp_path, implementation="batched_numpy")
 
 

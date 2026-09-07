@@ -61,9 +61,10 @@
 /// exercises.
 pub fn conditional_failure_probability(age: f64, shape: f64, scale: f64) -> f64 {
     // The hazard accumulated over this one year: a difference of two cumulative
-    // hazards rather than a cumulative hazard itself. Naming it for the
-    // accumulation and not for the year is what sent two attempts at the note
-    // above to measure the wrong quantity.
+    // hazards rather than a cumulative hazard itself. The name says "annual"
+    // because the bound documented above is a threshold on this difference and
+    // not on either of the two terms it subtracts, and the two thresholds fall
+    // at very different ages.
     let annual_hazard = ((age + 1.0) / scale).powf(shape) - (age / scale).powf(shape);
     // The last expression in a Rust function is its return value, with no
     // `return` keyword and no semicolon — a semicolon here would discard the

@@ -8,7 +8,7 @@ import pathlib
 import re
 
 import numpy as np
-from cablesim import config, constants, policies
+from cablesim import config, constants, policies, simulate
 
 PLAN_PATH: pathlib.Path = constants.PROJECT_ROOT / "PLAN.md"
 """The standing project plan, whose structure the document tests check."""
@@ -110,28 +110,6 @@ def resolved(name: str, **params: float | str) -> policies.Resolved:
     return policies.resolve(config.PolicySpec(name=name, params=params))
 
 
-SEGMENT_ARGUMENTS: tuple[str, ...] = (
-    "length_ft",
-    "customers",
-    "customer_minutes_per_failure",
-    "customer_minutes_per_planned",
-    "outage_cost_per_failure",
-    "class_index",
-    "age0",
-    "shape",
-    "scale",
-    "replacement_shape",
-    "replacement_scale",
-    "cost_per_ft",
-)
-"""The annual loop's arguments that carry one entry per segment.
-
-Named here rather than derived, because the two draw arrays are also per
-segment and are indexed on a different axis, so a rule of the form "every array
-whose length is the segment count" would catch them and slice the wrong one.
-"""
-
-
 def first_segments(
     arguments: dict[str, object], n_segments: int
 ) -> dict[str, object]:
@@ -154,7 +132,7 @@ def first_segments(
     Returns:
         A new argument dictionary; the original is untouched.
     """
-    kept = {name: arguments[name][:n_segments] for name in SEGMENT_ARGUMENTS}
+    kept = {name: arguments[name][:n_segments] for name in simulate.SEGMENT_ARGUMENTS}
     return {
         **arguments,
         **kept,

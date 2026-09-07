@@ -204,6 +204,9 @@ pub fn rank_key(
         kind::WORST_FIRST => failure_probability,
         kind::RANDOM => priority,
         // run_to_failure, whose eligible set is empty, so nothing is ranked.
+        // The binding refuses any tag outside the five before the loop starts,
+        // so this arm is that policy; it is written as a catch-all only
+        // because a `match` on `u8` has to cover every value.
         _ => 0.0,
     };
 

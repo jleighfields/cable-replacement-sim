@@ -65,6 +65,28 @@ class Resolved(NamedTuple):
     rank_by_cost: bool
 
 
+RANKABLE: frozenset[int] = frozenset(
+    {
+        KIND["run_to_failure"],
+        KIND["age_threshold"],
+        KIND["risk_ranked"],
+        KIND["worst_first"],
+        KIND["random"],
+    }
+)
+"""The tags ``rank_key`` has a branch for, enumerated rather than derived.
+
+``KIND`` is the mapping; this is the subset that can actually be scored, and
+the annual loop refuses anything outside it. The two are the same set today and
+must not be written as though that is guaranteed: deriving this from ``KIND``
+would mean a sixth policy added to the mapping is accepted here the moment it
+is named, before ``rank_key`` has a branch for it, and it would be scored zero
+and funded in segment order. The Rust side enumerates the same five for the
+same reason, and a policy added to one and not the other is refused by both
+until both are edited.
+"""
+
+
 def resolve(spec: config_module.PolicySpec) -> Resolved:
     """Reduces one validated policy entry to the loop's three fields.
 
@@ -166,6 +188,8 @@ def rank_key(
         key = priority
     else:
         # run_to_failure, whose eligible set is empty, so nothing is ranked.
+        # The annual loop refuses any tag outside `RANKABLE` before reaching
+        # here, so this branch is that policy and nothing else.
         key = np.zeros_like(age)
 
     if policy.rank_by_cost:

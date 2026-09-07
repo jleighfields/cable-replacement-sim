@@ -34,6 +34,35 @@ import numpy as np
 
 from cablesim import policies, weibull
 
+SEGMENT_ARGUMENTS: tuple[str, ...] = (
+    "length_ft",
+    "customers",
+    "customer_minutes_per_failure",
+    "customer_minutes_per_planned",
+    "outage_cost_per_failure",
+    "class_index",
+    "age0",
+    "shape",
+    "scale",
+    "replacement_shape",
+    "replacement_scale",
+    "cost_per_ft",
+)
+"""``run_chunk``'s arguments that carry one entry per segment, in its order.
+
+Authored here, beside the signature that defines them, because three places
+need the list and copies of it drift: the length guard below, the test helper
+that takes a prefix of a population, and — differing only in ``age`` against
+``age0`` — the population columns ``run.SEGMENT_COLUMNS`` names.
+
+Named rather than derived from the signature. The two draw arrays are also per
+segment and are indexed on a different axis, so a rule of the form "every array
+as long as the segment count" would catch them and slice the wrong one. The
+Rust binding has a compile-time equivalent — its checked list is typed as
+twelve pairs, so a thirteenth per-segment argument is a build error there;
+this tuple is what a thirteenth would have to be added to here.
+"""
+
 
 class Results(NamedTuple):
     """One chunk of replications, per year and per segment class.
@@ -155,31 +184,58 @@ def run_chunk(
         The seven per-year, per-class arrays for this chunk.
 
     Raises:
-        ValueError: If the population is empty, if there is no class axis to
-            accumulate into, if a class index is past the end of that axis, or
-            if the draw array's shape is not ``(replications, segments,
-            n_years + 1)``. The year axis is why the last check exists: a short
-            one raises on its own only when a replacement happens to fall in
-            the final year, so a run can complete against a wrong array and be
-            wrong nowhere visible. The other two axes are checked with it
-            because they cost nothing to compare. The first three are refused
-            here because the kernel refuses them, and the two are documented as
-            interchangeable.
+        ValueError: If the policy tag names no policy, if the population is
+            empty, if there is no class axis to accumulate into, if the draw
+            array's shape is not ``(replications, segments, n_years + 1)``, if
+            a per-segment or per-year array is the wrong length, if a class
+            index is past the end of the class axis, or if a candidate scores
+            a rank key that is not a number. The draw array's year axis is why
+            that check exists: a short one raises on its own only when a
+            replacement happens to fall in the final year, so a run can
+            complete against a wrong array and be wrong nowhere visible. The
+            other two axes are checked with it because they cost nothing to
+            compare.
+
+            These are the checks ``cablesim.kernel.run_chunk`` makes, in the
+            order it makes them and word for word, because the two are
+            documented as interchangeable behind one call: a caller must not
+            get an answer from one and an error from the other.
+
+            Three cases are reported differently, and all three are the
+            binding's argument types refusing input before any check of ours
+            runs. It rejects an array that is not C-contiguous, one whose dtype
+            is not ``float64`` — ``uint8`` for ``class_index`` — and one that
+            is not one-dimensional, the last two as ``TypeError``. This
+            implementation needs none of those to be true and checks only the
+            third, as a ``ValueError``, because a two-dimensional array of the
+            right element count would otherwise fail later inside NumPy as a
+            broadcast error naming neither the argument nor the reason. So an
+            argument set this accepts is not guaranteed to cross the boundary.
     """
     n_reps, n_segments = policy_uniforms.shape
-    # The kernel refuses these three because reaching its loop with any of them
-    # is a panic rather than an exception, and a panic does not inherit from
-    # `Exception`. The reference has no such hazard — it would complete and
-    # return zeros, or silently widen a bincount — but the two are documented
-    # as interchangeable behind one call, so a caller must not get an answer
-    # from one and an error from the other. The schema forbids all three, which
-    # makes a direct caller the only way to arrive here: every parity test and
-    # every driver script is one.
-    if policy.kind not in policies.KIND.values():
+    # Six checks, in the order `src/lib.rs` makes them and carrying the same
+    # messages, because the two implementations are documented as
+    # interchangeable behind one call and a caller must not get an answer from
+    # one and an error from the other. Left to itself this side would give an
+    # answer to every one of them: an unrecognized policy tag falls to the
+    # catch-all in `rank_key`, scores every candidate zero and funds them in
+    # segment order; a per-segment array of the wrong length raises
+    # `IndexError` from NumPy rather than `ValueError`; a per-year series
+    # longer than the horizon has its extra entries read by nothing; and the
+    # rest complete and return zeros, or silently widen a `bincount`.
+    #
+    # The kernel cannot give an answer to most of them: reaching its loop
+    # divides by zero or indexes past the end of a buffer, which is a Rust
+    # panic, and a panic crosses into Python as `PanicException`, which does
+    # not inherit from `Exception`.
+    #
+    # The schema forbids every one of these, which makes a direct caller the
+    # only way to arrive here: every parity test and every driver script is one.
+    if policy.kind not in policies.RANKABLE:
         raise ValueError(
-            f"policy.kind is {policy.kind}, which names no policy; the tags "
-            f"are authored in cablesim.policies.KIND and run from "
-            f"{min(policies.KIND.values())} to {max(policies.KIND.values())}"
+            f"policy.kind is {policy.kind}, which no ranking branch covers; "
+            f"the tags are authored in cablesim.policies.KIND and the ones "
+            f"that can be scored are {sorted(policies.RANKABLE)}"
         )
     if n_segments == 0:
         raise ValueError("the population is empty; there is nothing to simulate")
@@ -189,24 +245,28 @@ def run_chunk(
         )
     if lifetime_uniforms.shape != (n_reps, n_segments, n_years + 1):
         raise ValueError(
-            f"lifetime_uniforms is {lifetime_uniforms.shape}, expected "
-            f"{(n_reps, n_segments, n_years + 1)}: one draw per segment per "
+            f"lifetime_uniforms is {list(lifetime_uniforms.shape)}, expected "
+            f"{[n_reps, n_segments, n_years + 1]}: one draw per segment per "
             f"year, plus the left-truncated draw at index 0"
         )
-    for name, column in (
-        ("length_ft", length_ft),
-        ("customers", customers),
-        ("customer_minutes_per_failure", customer_minutes_per_failure),
-        ("customer_minutes_per_planned", customer_minutes_per_planned),
-        ("outage_cost_per_failure", outage_cost_per_failure),
-        ("class_index", class_index),
-        ("age0", age0),
-        ("shape", shape),
-        ("scale", scale),
-        ("replacement_shape", replacement_shape),
-        ("replacement_scale", replacement_scale),
-        ("cost_per_ft", cost_per_ft),
-    ):
+    # Read by name from the frame rather than listed again as a tuple of the
+    # twelve parameters: a second list would fix their order in a second place,
+    # and a pair whose order drifted would check the wrong array against the
+    # wrong name while every length still matched.
+    per_segment = locals()
+    for name in SEGMENT_ARGUMENTS:
+        column = per_segment[name]
+        if column.ndim != 1:
+            # The binding takes a one-dimensional array and rejects anything
+            # else with a `TypeError` of PyO3's own wording, so this case is
+            # one the two implementations report differently by nature. What
+            # it must not do is pass: a two-dimensional array of the right
+            # element count would otherwise fail later inside NumPy as a
+            # broadcast error naming neither the argument nor the reason.
+            raise ValueError(
+                f"{name} has shape {column.shape}; every per-segment array is "
+                f"one-dimensional, one entry per segment, ordered by segment_id"
+            )
         if column.size != n_segments:
             raise ValueError(
                 f"{name} has {column.size} entries against {n_segments} "

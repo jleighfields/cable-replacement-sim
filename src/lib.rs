@@ -219,13 +219,34 @@ fn run_chunk<'py>(
     // them in segment_id order, which is a plausible-looking run rather than an
     // error. `policies.resolve` is the only thing that builds this struct, so
     // reaching here means the two sides disagree about the mapping.
-    if !(policies::kind::RUN_TO_FAILURE..=policies::kind::RANDOM).contains(&policy.kind) {
+    //
+    // The five tags are listed rather than checked against a range, because a
+    // range's upper bound is whichever policy currently happens to be last: a
+    // sixth policy added to the Python mapping would fall inside it and be
+    // accepted here before `rank_key` had a branch for it. `policies.RANKABLE`
+    // enumerates the same five on the other side for the same reason, so a
+    // policy added to one language and not the other is refused by both until
+    // both are edited.
+    if !matches!(
+        policy.kind,
+        policies::kind::RUN_TO_FAILURE
+            | policies::kind::AGE_THRESHOLD
+            | policies::kind::RISK_RANKED
+            | policies::kind::WORST_FIRST
+            | policies::kind::RANDOM
+    ) {
         return Err(PyValueError::new_err(format!(
-            "policy.kind is {}, which names no policy; the tags are authored \
-             in cablesim.policies.KIND and run from {} to {}",
+            "policy.kind is {}, which no ranking branch covers; the tags are \
+             authored in cablesim.policies.KIND and the ones that can be \
+             scored are {:?}",
             policy.kind,
-            policies::kind::RUN_TO_FAILURE,
-            policies::kind::RANDOM
+            [
+                policies::kind::RUN_TO_FAILURE,
+                policies::kind::AGE_THRESHOLD,
+                policies::kind::RISK_RANKED,
+                policies::kind::WORST_FIRST,
+                policies::kind::RANDOM
+            ]
         )));
     }
 
