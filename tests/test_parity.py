@@ -132,14 +132,12 @@ def test_the_kernel_matches_the_reference_when_failures_crowd_out_prevention(
     first decide how far down the second the budget reaches.
 
     Costs are forced round — every segment 100 feet at 10 dollars plus 500 of
-    mobilization, and no escalation — for a reason the assertion depends on.
-    The reference sums the year's emergency spend with `numpy.sum`, which is
-    free to add pairwise, while the kernel accumulates it one failure at a
-    time; on arbitrary costs the two agree only to the last bits, and that
-    difference reaches the budget the candidates are then scored against, where
-    it could flip which segment is funded last. At 3,750 dollars a failure both
-    orders are exact, so the comparison stays exact and tests the ordering
-    rather than the arithmetic.
+    mobilization, and no escalation — so that the year's emergency bill is
+    exactly representable whatever order it is added in. That keeps this test
+    on the ordering: it compares which segments each implementation funds, not
+    whether the two reductions that produce the budget agree in their last
+    bits. `test_both_implementations_charge_the_same_emergency_total` leaves
+    the costs uneven and pins that arithmetic instead.
     """
     n_segments = np.size(deterministic_arguments["age0"])
     n_years = deterministic_arguments["n_years"]
@@ -205,12 +203,13 @@ def test_both_implementations_charge_the_same_emergency_total(
 
     Where `emergency_charged_to_budget` is true, the year's emergency spend is
     subtracted from the budget before the planned pass is scored, so it decides
-    how far down the ranked order the money reaches. The reference totals it
-    with `numpy.sum`, which adds pairwise; the kernel adds one failure at a
-    time. For as few as eight failures those two orders disagree in the last
-    bits, and that difference lands on a budget the greedy fill then compares
-    against a cumulative cost — turning a rounding difference into a different
-    set of funded segments.
+    how far down the ranked order the money reaches. Both sides total it one
+    failure at a time — `simulate.running_total` on the reference, a running
+    sum in the kernel — and this is what holds them to that. A reference that
+    reduced with `numpy.sum` instead would add pairwise, which disagrees in the
+    last bits for as few as eight failures, and that difference lands on a
+    budget the greedy fill then compares against a cumulative cost, turning a
+    rounding difference into a different set of funded segments.
 
     `test_the_kernel_matches_the_reference_when_failures_crowd_out_prevention`
     cannot see this: it forces every cost round, so both reductions are exact.
@@ -287,9 +286,9 @@ def test_the_kernel_matches_the_reference_over_a_real_population(
     The shipped configuration leaves it off, so without this parameter the
     charged path is reached only by the deterministic tests, and those force
     costs round precisely so that both implementations' reductions are exact.
-    That combination once hid a real divergence: the two summed the year's
-    emergency spend in different orders, and the difference reached the budget
-    the candidates were then scored against.
+    Drawn lifetimes are what make the emergency bill uneven, so this is where a
+    difference in how the two implementations reduce it would reach the budget
+    the candidates are then scored against.
 
     Both sides consume the same draws, so replication `r` sees identical
     lifetimes in each, and the results should differ only where a last-place
@@ -384,7 +383,7 @@ def test_a_saved_kernel_run_records_the_profile_it_was_built_with(
         config.load_config(constants.DEFAULT_CONFIG_PATH), 100, n_reps=2
     )
 
-    directory = run.run(settings, tmp_path, implementation="kernel")
+    directory = run.run(settings, tmp_path / "kernel", implementation="kernel")
 
     manifest = results.Manifest.model_validate_json(
         (directory / results.MANIFEST_NAME).read_text(encoding="utf-8")
@@ -392,6 +391,14 @@ def test_a_saved_kernel_run_records_the_profile_it_was_built_with(
 
     assert manifest.implementation == "kernel"
     assert manifest.build_profile in {"debug", "release"}
+
+    # And the reference records none rather than inventing one. Without this,
+    # a default of "release" on the lookup would have every pure-Python run
+    # claiming a Rust build, and nothing would report it.
+    pure_python = run.run(settings, tmp_path / "reference", implementation="reference")
+    assert results.Manifest.model_validate_json(
+        (pure_python / results.MANIFEST_NAME).read_text(encoding="utf-8")
+    ).build_profile is None
 
 
 def test_charging_an_empty_year_of_failures_leaves_the_budget_whole(
@@ -436,25 +443,45 @@ def test_a_year_that_overruns_its_budget_funds_nothing_and_carries_no_debt(
 ) -> None:
     """The limiting case of failures crowding out prevention.
 
-    Every segment fails, so the emergency bill exceeds a budget deliberately
-    set to a few dollars. Both implementations floor the remainder at zero
-    rather than carrying a negative that would read as a debt against the
-    following year, and both fund nothing — the floor changes no funding
-    decision, because every planned cost is positive.
+    Half the population fails every year and the other half never does, so a
+    year has both an emergency bill and a candidate list. The bill is far
+    larger than a budget set to ten dollars, which leaves the planned pass with
+    a negative amount to spend.
 
-    Nothing else reaches this regime: the crowd-out test sets a budget the
-    failures do not exhaust, and the paired test runs a population where most
-    segments survive.
+    **The surviving half is what makes this a test of the greedy fill.** Force
+    every segment to fail and there are no candidates at all, because a segment
+    replaced after failure is out of the running for planned work in the same
+    year — the budget is then computed and never used, and the run funds
+    nothing whatever the fill does with a negative number.
+
+    Neither implementation floors that negative at zero. Nothing needs to:
+    every planned cost is positive, so the fill stops at its first candidate,
+    and no year's remainder carries to the next. Both must fund nothing, spend
+    nothing, and agree on all seven arrays.
     """
+    n_segments = np.size(deterministic_arguments["age0"])
     n_years = deterministic_arguments["n_years"]
+    alternating = np.where(
+        np.arange(n_segments) % 2 == 0, helpers.FAILS_AT_ONCE, helpers.NEVER_FAILS
+    ).astype(float)
     arguments = {
-        **helpers.forced_lifetimes(deterministic_arguments, helpers.FAILS_AT_ONCE),
+        **deterministic_arguments,
+        "scale": alternating,
+        "replacement_scale": alternating,
         "emergency_charged_to_budget": True,
         "budget": np.full(n_years, 10.0),
     }
     policy = helpers.resolved("age_threshold", threshold_years=45)
 
     overrun = simulate.run_chunk(**arguments, policy=policy)
+
+    # The surviving half leaves candidates for the fill to refuse.
+    eligible = simulate.run_chunk(
+        **{**arguments, "budget": np.full(n_years, 1e9)}, policy=policy
+    )
+    assert eligible.planned_replacements.sum() > 0.0, (
+        "the budget must be what stops this funding, not an empty candidate list"
+    )
 
     assert overrun.emergency_spend.sum() > 10.0 * n_years
     assert overrun.planned_replacements.sum() == 0.0

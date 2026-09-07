@@ -14,7 +14,7 @@ panic message goes to stderr rather than into the traceback.
 
 import numpy as np
 import pytest
-from cablesim import kernel, simulate
+from cablesim import kernel, policies, simulate
 
 from tests import helpers
 
@@ -233,29 +233,121 @@ parity tests and a driver script make.
 """
 
 
+EXPECTED_REFUSAL = {
+    "empty_population": "the population is empty",
+    "no_class_axis": "n_classes is 0",
+    "class_past_the_axis": "class_index holds 7",
+}
+"""Which guard each degenerate case must be refused by, not merely that one was.
+
+The three overlap, so a case can be refused by the wrong check and still raise:
+without this, deleting the empty-class-axis guard leaves the class-index guard
+catching the same input and the test stays green.
+"""
+
+
 @pytest.mark.parametrize("wrong", sorted(DEGENERATE_ARGUMENTS), ids=str)
 def test_both_implementations_refuse_the_same_degenerate_population(
     wrong: str,
 ) -> None:
     """The boundary checks belong to the model, not to one implementation.
 
-    The kernel refuses all three because each would otherwise reach a Rust
-    panic, which crosses into Python as ``PanicException`` and is not caught by
-    ``except Exception``. The reference has no panic to convert, so it accepts
-    all three and returns a result: zeros of the shape the caller asked for, or
-    — for the class index — totals that silently omit a segment class the
-    results have no axis for.
+    The kernel has to refuse all three because each would otherwise reach a
+    Rust panic, which crosses into Python as ``PanicException`` and is not
+    caught by ``except Exception``. The reference has no panic to convert, so
+    on its own it would complete and return a result: zeros of the shape the
+    caller asked for, or — for the class index — totals that silently omit a
+    segment class the results have no axis for.
 
-    That makes the two answer differently to input neither should accept, and
-    the two are meant to be interchangeable behind one call. Whichever is
-    right, they have to agree: a driver script that runs the reference and then
-    the kernel over the same arguments must not have one complete and the other
-    raise.
+    The two are meant to be interchangeable behind one call, so they must not
+    answer differently to input neither should accept: a driver script that
+    runs the reference and then the kernel over the same arguments must not
+    have one complete and the other raise. The reference therefore carries the
+    same three checks, and this asserts both sides refuse each case.
+
+    **The two messages are compared to each other rather than to a pattern.**
+    Asserting only that each raises cannot tell one guard from another, and
+    these three overlap: an absent class axis is also a class index past the
+    end of it, so removing the first check leaves the second refusing the same
+    input under a different name. Comparing the messages pins which guard fired
+    and, because the strings are authored separately in two languages, keeps
+    them saying the same thing.
     """
     arguments = DEGENERATE_ARGUMENTS[wrong]
     policy = helpers.resolved("run_to_failure")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as from_kernel:
         kernel.run_chunk(**arguments, policy=policy)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as from_reference:
+        simulate.run_chunk(**arguments, policy=policy)
+
+    assert str(from_reference.value) == str(from_kernel.value)
+    assert EXPECTED_REFUSAL[wrong] in str(from_kernel.value)
+
+
+def test_both_implementations_refuse_a_policy_tag_that_names_no_policy() -> None:
+    """An unrecognized tag must not produce a run on either side.
+
+    The tags are authored in ``policies.KIND`` and read again as constants in
+    the Rust module, so a tag outside that range means the two sides disagree
+    about the mapping. The kernel refuses it. The reference falls to the
+    catch-all branch of ``rank_key``, scores every candidate zero, and funds
+    them in segment_id order, which is a run that completes and means nothing:
+    on these arguments it funds two segments and reports 3,000 dollars of
+    planned spend.
+
+    The two are interchangeable behind one call, so a driver script running
+    both over the same arguments must not have one complete and the other
+    raise.
+    """
+    arguments = minimal_arguments(4, n_years=2)
+    arguments["budget"] = np.array([3_000.0, 0.0])
+    arguments["scale"] = np.full(4, helpers.NEVER_FAILS)
+    arguments["replacement_scale"] = np.full(4, helpers.NEVER_FAILS)
+    unmapped = helpers.resolved("risk_ranked")._replace(
+        kind=max(policies.KIND.values()) + 1
+    )
+
+    with pytest.raises(ValueError, match="names no policy"):
+        kernel.run_chunk(**arguments, policy=unmapped)
+    with pytest.raises(ValueError, match="names no policy"):
+        simulate.run_chunk(**arguments, policy=unmapped)
+
+
+@pytest.mark.parametrize("series", ["budget", "cost_escalation"])
+def test_both_implementations_refuse_a_per_year_series_longer_than_the_horizon(
+    series: str,
+) -> None:
+    """A per-year array with spare entries is a horizon the caller got wrong.
+
+    The kernel compares both lengths against ``n_years`` and refuses. The
+    reference indexes ``budget[year]`` and ``cost_escalation[year]``, so it
+    reads the first ``n_years`` entries and ignores the rest: a sweep that
+    built a 40-year budget series and asked for 30 years completes, and the
+    ten discarded years leave no trace in the result or the manifest.
+    """
+    arguments = minimal_arguments(4, n_years=3)
+    arguments[series] = np.ones(5)
+
+    with pytest.raises(ValueError, match=series):
+        kernel.run_chunk(**arguments, policy=helpers.resolved("run_to_failure"))
+    with pytest.raises(ValueError, match=series):
+        simulate.run_chunk(**arguments, policy=helpers.resolved("run_to_failure"))
+
+
+def test_a_per_segment_array_of_the_wrong_length_is_a_value_error_on_both_sides(
+) -> None:
+    """The same bad length must come back as the same kind of exception.
+
+    ``simulate.run_chunk`` documents ``ValueError`` and nothing else, and the
+    kernel raises one naming the argument. The reference reaches NumPy first
+    and a boolean mask of the wrong length raises ``IndexError`` there, which
+    a caller writing ``except ValueError`` around a sweep does not catch.
+    """
+    arguments = {**minimal_arguments(4), "customers": np.full(6, 10.0)}
+    policy = helpers.resolved("run_to_failure")
+
+    with pytest.raises(ValueError, match="customers"):
+        kernel.run_chunk(**arguments, policy=policy)
+    with pytest.raises(ValueError, match="customers"):
         simulate.run_chunk(**arguments, policy=policy)

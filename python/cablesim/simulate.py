@@ -175,24 +175,56 @@ def run_chunk(
     # from one and an error from the other. The schema forbids all three, which
     # makes a direct caller the only way to arrive here: every parity test and
     # every driver script is one.
+    if policy.kind not in policies.KIND.values():
+        raise ValueError(
+            f"policy.kind is {policy.kind}, which names no policy; the tags "
+            f"are authored in cablesim.policies.KIND and run from "
+            f"{min(policies.KIND.values())} to {max(policies.KIND.values())}"
+        )
     if n_segments == 0:
         raise ValueError("the population is empty; there is nothing to simulate")
     if n_classes == 0:
         raise ValueError(
             "n_classes is 0, so the results have no class axis to accumulate into"
         )
+    if lifetime_uniforms.shape != (n_reps, n_segments, n_years + 1):
+        raise ValueError(
+            f"lifetime_uniforms is {lifetime_uniforms.shape}, expected "
+            f"{(n_reps, n_segments, n_years + 1)}: one draw per segment per "
+            f"year, plus the left-truncated draw at index 0"
+        )
+    for name, column in (
+        ("length_ft", length_ft),
+        ("customers", customers),
+        ("customer_minutes_per_failure", customer_minutes_per_failure),
+        ("customer_minutes_per_planned", customer_minutes_per_planned),
+        ("outage_cost_per_failure", outage_cost_per_failure),
+        ("class_index", class_index),
+        ("age0", age0),
+        ("shape", shape),
+        ("scale", scale),
+        ("replacement_shape", replacement_shape),
+        ("replacement_scale", replacement_scale),
+        ("cost_per_ft", cost_per_ft),
+    ):
+        if column.size != n_segments:
+            raise ValueError(
+                f"{name} has {column.size} entries against {n_segments} "
+                f"segments; every per-segment array is one entry per segment, "
+                f"ordered by segment_id"
+            )
+    for name, series in (("budget", budget), ("cost_escalation", cost_escalation)):
+        if series.size != n_years:
+            raise ValueError(
+                f"{name} has {series.size} entries against a {n_years}-year "
+                f"horizon"
+            )
     past_the_axis = class_index[class_index >= n_classes]
     if past_the_axis.size > 0:
         raise ValueError(
             f"class_index holds {int(past_the_axis[0])}, which is past the "
             f"{n_classes} classes the results have an axis for; the index is a "
             f"position in the class list, not a name"
-        )
-    if lifetime_uniforms.shape != (n_reps, n_segments, n_years + 1):
-        raise ValueError(
-            f"lifetime_uniforms is {lifetime_uniforms.shape}, expected "
-            f"{(n_reps, n_segments, n_years + 1)}: one draw per segment per "
-            f"year, plus the left-truncated draw at index 0"
         )
 
     results = Results(

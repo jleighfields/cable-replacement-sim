@@ -50,20 +50,26 @@
 /// # Returns
 ///
 /// The annual failure probability, on `[0, 1]`. It reaches exactly 1 once the
-/// accumulated hazard passes about 37.4, where `exp(-h)` falls below half an
-/// ulp of 1 and the subtraction rounds to 1. That is not unreachable here: at
-/// the shipped population 324 of 12,000 segments pass a saturating age within
-/// a 30-year horizon. What makes it unobservable is survival, not age — the
-/// best-placed of those segments reaches its saturating age with probability
-/// 6e-10 — so the closed bound is what the interval says rather than something
-/// the loop exercises.
+/// hazard accumulated *within the year* — the bracketed difference above, not
+/// the cumulative hazard to `age` — passes 37.4299, where `exp(-h)` falls
+/// below half an ulp of 1 and the subtraction rounds to 1. No segment the
+/// shipped population generates reaches that: the within-year hazard crosses
+/// 37.4299 somewhere between ages 105 and 222 across the 12,000 shipped
+/// segments, against a maximum age of 89 scored inside a 30-year horizon, and
+/// the largest value this returns anywhere in that horizon is 0.9999954. The
+/// closed upper bound is what the interval says rather than something the loop
+/// exercises.
 pub fn conditional_failure_probability(age: f64, shape: f64, scale: f64) -> f64 {
-    let accumulated = ((age + 1.0) / scale).powf(shape) - (age / scale).powf(shape);
+    // The hazard accumulated over this one year: a difference of two cumulative
+    // hazards rather than a cumulative hazard itself. Naming it for the
+    // accumulation and not for the year is what sent two attempts at the note
+    // above to measure the wrong quantity.
+    let annual_hazard = ((age + 1.0) / scale).powf(shape) - (age / scale).powf(shape);
     // The last expression in a Rust function is its return value, with no
     // `return` keyword and no semicolon — a semicolon here would discard the
     // value and return the empty tuple instead, which is what Rust uses where
     // Python returns `None`.
-    -((-accumulated).exp_m1())
+    -((-annual_hazard).exp_m1())
 }
 
 /// Inverts the survivor function to sample a lifetime for new cable.

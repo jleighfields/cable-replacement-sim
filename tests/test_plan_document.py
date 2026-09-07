@@ -85,12 +85,25 @@ def test_nothing_outside_the_plan_cites_a_section_of_it() -> None:
     """
     # `src` is in this list because the Rust crate is half the codebase and was
     # unscanned until it had files in it worth scanning.
-    roots = ["python", "src", "tests", "scripts", "notebooks", ".claude", ".github"]
+    roots = [
+        "python",
+        "src",
+        "tests",
+        "scripts",
+        "notebooks",
+        "configs",
+        ".claude",
+        ".github",
+    ]
     files = [
         path
         for root in roots
         for path in (helpers.PLAN_PATH.parent / root).rglob("*")
-        if path.suffix in {".py", ".rs", ".md", ".yml", ".toml"} and path.is_file()
+        # `.yaml` beside `.yml`: the repository's only `.yaml` file is the
+        # documented default configuration, so leaving it out meant the one
+        # file this rule was broken in was also the one file never scanned.
+        if path.suffix in {".py", ".rs", ".md", ".yml", ".yaml", ".toml"}
+        and path.is_file()
     ]
     files += [
         helpers.PLAN_PATH.parent / name

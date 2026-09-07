@@ -101,9 +101,11 @@ def run_chunk(
         The seven per-year, per-class arrays for this chunk.
 
     Raises:
-        ValueError: If an array is not C-contiguous, if a per-segment or
-            per-year array is the wrong length, if the draw array is not the
-            shape the horizon implies, or if a candidate scores a rank key
+        ValueError: If the policy tag names no policy, if the population is
+            empty, if ``n_classes`` is 0, if a class index is past the end of
+            the class axis, if an array is not C-contiguous, if a per-segment
+            or per-year array is the wrong length, if the draw array is not
+            the shape the horizon implies, or if a candidate scores a rank key
             that is not a number.
         TypeError: If an array's dtype is not the one the boundary reads —
             ``uint8`` for ``class_index`` and ``float64`` for the rest. The

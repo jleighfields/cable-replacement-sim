@@ -70,11 +70,6 @@ def simulation_arguments(settings: config_module.Config) -> dict[str, object]:
         name.
     """
     simulation = settings.simulation
-    segments = run.segment_arrays(population.generate(settings))
-    n_segments = segments["age0"].size
-    sources = random_draws.spawn_sources(simulation.seed)
-    replications = range(simulation.n_reps)
-
     if simulation.n_reps < 2:
         # One replication removes what this fixture exists for without failing
         # anything: the reference takes a NumPy row per replication and the
@@ -86,6 +81,11 @@ def simulation_arguments(settings: config_module.Config) -> dict[str, object]:
             f"{simulation.n_reps}: the replication axis is where the two "
             f"implementations index the draw arrays differently"
         )
+
+    segments = run.segment_arrays(population.generate(settings))
+    n_segments = segments["age0"].size
+    sources = random_draws.spawn_sources(simulation.seed)
+    replications = range(simulation.n_reps)
 
     return {
         **segments,

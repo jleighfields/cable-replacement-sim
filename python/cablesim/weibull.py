@@ -92,17 +92,22 @@ def conditional_failure_probability(
 
     Returns:
         The annual failure probability, on [0, 1]. It reaches exactly 1 once
-        the accumulated hazard passes about 37.4, where ``exp(-h)`` falls
-        below half an ulp of 1 and the subtraction rounds to 1. That is not
-        unreachable here: at the shipped population 324 of 12,000 segments
-        pass a saturating age within a 30-year horizon. What makes it
-        unobservable is survival, not age — the best-placed of those segments
-        reaches its saturating age with probability 6e-10 — so the closed
-        bound is what the interval says rather than something the loop
-        exercises.
+        the hazard accumulated *within the year* — the bracketed difference
+        above, not the cumulative hazard to ``age`` — passes 37.4299, where
+        ``exp(-h)`` falls below half an ulp of 1 and the subtraction rounds
+        to 1. No segment the shipped population generates reaches that: the
+        within-year hazard crosses 37.4299 somewhere between ages 105 and 222
+        across the 12,000 shipped segments, against a maximum age of 89
+        scored inside a 30-year horizon, and the largest value this returns
+        anywhere in that horizon is 0.9999954. The closed upper bound is what
+        the interval says rather than something the loop exercises.
     """
-    accumulated = ((age + 1.0) / scale) ** shape - (age / scale) ** shape
-    return -np.expm1(-accumulated)
+    # The hazard accumulated over this one year: a difference of two
+    # cumulative hazards rather than a cumulative hazard itself. Naming it
+    # for the accumulation and not for the year is what sent two attempts at
+    # the note above to measure the wrong quantity.
+    annual_hazard = ((age + 1.0) / scale) ** shape - (age / scale) ** shape
+    return -np.expm1(-annual_hazard)
 
 
 def draw_lifetime(u: np.ndarray, shape: np.ndarray, scale: np.ndarray) -> np.ndarray:

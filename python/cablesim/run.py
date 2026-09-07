@@ -114,7 +114,6 @@ refused only at the write.
 """
 
 
-
 def unknown_implementations(names: Iterable[str]) -> set[str]:
     """Names among these that no saved result may claim.
 

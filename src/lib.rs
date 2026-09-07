@@ -175,9 +175,11 @@ fn as_result_array(
 ///
 /// # Errors
 ///
-/// `ValueError` if an array is not C-contiguous, if a per-segment or per-year
-/// array is the wrong length, if the draw array is not the shape the horizon
-/// implies, or if a candidate scores a rank key that is not a number.
+/// `ValueError` if the policy tag names no policy, if the population is empty,
+/// if `n_classes` is 0, if a class index is past the end of the class axis, if
+/// an array is not C-contiguous, if a per-segment or per-year array is the
+/// wrong length, if the draw array is not the shape the horizon implies, or if
+/// a candidate scores a rank key that is not a number.
 #[pyfunction]
 #[pyo3(signature = (
     length_ft, customers, customer_minutes_per_failure,
