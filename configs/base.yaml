@@ -124,8 +124,16 @@ population:
 # needs, not by how large a system is being modeled.
 records:
   n_segments: 20_000
-  monitoring_start: 1998    # left-truncation point; no record exists before it
-  study_end: 2026           # right-censoring point
+  # A prospective follow-up: inventory what is in the ground at
+  # monitoring_start, taking install dates from the asset register, then record
+  # failures until study_end. The two edges do different things and an episode
+  # can meet both. study_end RIGHT-CENSORS at exit: a row with a missing end.
+  # monitoring_start LEFT-TRUNCATES at entry: a MISSING ROW. Cable installed
+  # 1967 that failed in 1996 and was replaced leaves no row at all here — only
+  # its replacement appears, and nothing says it is a replacement. That
+  # surviving row is censored at exit and truncated at entry, both at once.
+  monitoring_start: 1998
+  study_end: 2026
 
 failure:
   conductor_dependence: iid         # iid | shared_frailty (not implemented)

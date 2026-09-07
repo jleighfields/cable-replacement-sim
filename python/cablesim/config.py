@@ -453,9 +453,7 @@ class PolicySpec(pydantic.BaseModel):
             )
         missing = required.get(self.name, set()) - set(self.params)
         if missing:
-            raise ValueError(
-                f"policy {self.name!r} requires {sorted(missing)}"
-            )
+            raise ValueError(f"policy {self.name!r} requires {sorted(missing)}")
         rank_by = self.params.get("rank_by")
         if rank_by is not None and rank_by not in ("score", "score_per_dollar"):
             raise ValueError(
@@ -513,8 +511,8 @@ class Config(pydantic.BaseModel):
                 configured classes, if the value of lost load does not cover
                 exactly the configured customer types, if the study window does
                 not sit inside the install range and end by the simulation's
-                first year, or if ``baseline_policy`` names no configured
-                policy.
+                first year, if it stops before the last cable is installed, or
+                if ``baseline_policy`` names no configured policy.
         """
         class_names = {c.name for c in self.population.classes}
         for field in ("outage_hours_emergency", "outage_hours_planned"):
@@ -571,6 +569,13 @@ class Config(pydantic.BaseModel):
                 f"records must satisfy monitoring_start < study_end <= start_year, "
                 f"got {self.records.monitoring_start}, {self.records.study_end}, "
                 f"{self.simulation.start_year}"
+            )
+        if self.records.study_end <= last:
+            raise ValueError(
+                f"records.study_end {self.records.study_end} is not after the last "
+                f"install year {last}: segments would be installed after the study "
+                f"stopped observing, and each is dropped rather than counted, so "
+                f"the table is quietly smaller than the size asked for"
             )
 
         policy_names = {p.name for p in self.policies}

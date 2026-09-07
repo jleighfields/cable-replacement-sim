@@ -305,20 +305,89 @@ loglik = sum_i [ delta_i * log h(t_i) ] - sum_i H(t_i)
     where H(t) = (t/lambda)^k        (cumulative hazard)
 ```
 
-**Left truncation is required here, not optional.** Records exist only from
-when monitoring began, so cables that failed before that date are absent
-entirely. Ignoring this biases the fit toward longer life, because the
-population that survived to be recorded is not the population that was
-installed. With entry age `a_i`, the correction adds the hazard accumulated
-before observation began back in:
+**The study design, stated because everything below depends on it.** This is a
+**prospective follow-up**: the utility inventories what is in the ground at
+`records.monitoring_start`, taking install dates from the asset register, and
+records failures from then until `records.study_end`. An episode already
+finished before the inventory is not in it — its replacement is there instead,
+and nothing in the data says the earlier one existed. A register carrying full
+history back to the first install year would have no truncation at all, and one
+listing current inventory with no failure log would have no failures and an
+unidentified shape; this is the design between them.
+
+**Censoring and truncation are different mechanisms, and the words are not
+interchangeable. One episode can have both.**
+
+- **Right censoring is a row with a missing end.** The cable is in the table,
+  it reached the study end, and when it fails is unknown. `delta_i = 0`, and it
+  contributes accumulated hazard only.
+- **Left truncation is a missing row.** Not a row with a blank field — no row.
+
+A worked case makes the pair concrete. A segment has cable installed in 1967,
+which fails in 1996 at age 29 and is replaced the same moment. A study starting
+in 1998 sees exactly one row: the replacement, installed 1996, still running in
+2026.
+
+The 1967 episode is the missing row, and **no term in the likelihood
+corresponds to it** — the sum has one term per row present and never more.
+Nothing in the data even reveals that the 1996 cable is a replacement.
+
+The surviving row is right-censored at its exit and left-truncated at its
+entry, both at once. Truncated because it is in the table only by virtue of
+lasting until the inventory: cable installed in 1996 that failed before 1998
+would not be here, its own replacement would be. The correction therefore asks
+it a conditional question — given it reached age 2, what did it then do — and
+the episodes that failed before age 2 drop out of that conditional probability
+by construction. Nothing counts the missing rows or needs to.
+
+Truncation is correctable here only because the asset register records install
+dates even where failures are not recorded, which is what makes an entry age
+computable. With entry age `a_i`, the correction divides each contribution by
+`S(a_i)` — adding back the hazard accumulated before observation began:
 
 ```
 loglik = sum_i [ delta_i * log h(t_i) ] - sum_i [ H(t_i) - H(a_i) ]
 ```
 
 **Covariates enter through scale.** The fit is an accelerated-failure-time
-model in the sense of R's `survreg`: shape is constant within a stratum and
+model of the form R's `survreg` fits: shape is constant within a stratum and
 covariates scale `lambda`.
+
+**How much the truncation term is worth, measured rather than asserted.**
+`H(a) = (a/lambda)^k`, so at a sharp shape an early entry age contributes
+almost nothing, and the rows the record window deletes are few: at the shipped
+parameters and a 1998 record start, 0.05% of episodes on the one-technology
+table Notebook 03 builds, and 0.12% across the full configured technology mix.
+
+An episode count is the wrong denominator, and reading the term as negligible
+from it is the mistake this paragraph exists to prevent. Shape is estimated
+from the spread of the ages cables failed at, so the rows that carry it are the
+**failures**, of which 0.84% are deleted on that same table — and not a random
+0.84%, since a row is deleted only if the cable failed early enough to be gone
+before the records open. Every deleted row comes from the young end.
+
+So the term is worth more than its row count suggests. Dropping it biases the
+fitted shape by about +0.06, roughly 1%, and leaves the scale alone; the sign
+is upward because deleting the young failures makes the survivors look more
+alike than the cohort was. That bias does not shrink with sample size, which is
+what distinguishes it from noise: across 150 paired draws the corrected fit
+sits 0.0006 from the answer a complete record gives, with an interval covering
+zero, while the uncorrected fit sits 0.064 away at both 4,000 and 30,000
+segments. Notebook 03, section 45, is where this is run.
+
+**`survreg` names the form, not a route to reproducing this.** It does not
+accept left-truncated data, so a reader reaching for it in R to check this fit
+would find the model unsupported rather than merely awkward. `flexsurv::flexsurvreg` is the R
+package that takes delayed entry. Naming both is worth the sentence: the first
+is the vocabulary this model is described in, the second is what a reader would
+actually need to reproduce it outside Python.
+
+`survreg` was nonetheless run against this fit during development, on
+untruncated data, where it agreed to ten decimals on every parameter and on the
+log-likelihood itself — the stronger statement, since it says the two are the
+same function rather than two fits that landed nearby. It is not carried in the
+repository: it would run on no machine without R, and the half of the
+likelihood it cannot express is the half most worth checking.
 
 **The two parameterizations, written out once so nothing has to transpose them
 from memory.** The accelerated-failure-time form and the hazard form above are
@@ -387,15 +456,21 @@ keeps the parameterization identical to the simulator's, which is where this
 kind of code actually goes wrong — an AFT library's `(mu, sigma)` and this
 model's `(k, lambda)` are easy to transpose and the error is silent.
 
-The cross-check is `lifelines.WeibullAFTFitter`, in the test suite only. It
-parameterizes as `lambda(x) = exp(beta_0 + beta_1 x_1 + ...)` with shape `rho`
-constant unless given ancillary covariates, supports entry times for left
-truncation, and reports standard errors and confidence intervals. Fitting the
-same synthetic data both ways and requiring agreement is the same validation
-idea as the Python/Rust mirror, applied to the fit: two independent
-implementations disagree loudly where one implementation is silently wrong.
-It also supplies the confidence interval the recovery test needs, which
-otherwise means hand-rolling a Hessian inversion.
+No outside library is carried to check this. One was, briefly, and measurement
+is why it went: mutating the likelihood to transpose shape and scale, to read
+the scale as a rate, and to do so consistently in the generator *and* the fit
+each reddened fifteen to twenty-one tests without it. The recovery ladder
+already catches that class, because it compares a fit against the parameters
+the configuration states rather than against the generator agreeing with the
+fit, and those are different numbers.
+
+What an outside library uniquely covers is narrower than it first appears: a
+convention wrong in the same way across every function here, so that the whole
+module is self-consistent, matches its own tests, and still means something
+different by "scale" than the literature does. That is worth knowing about and
+was not worth a dependency tree pulled in to guard it. R's `survreg` was run
+against this fit during development and settled the question once; the note
+below records what it found.
 
 `statsmodels` has no parametric AFT — its survival support is Cox proportional
 hazards and nonparametric estimators — so it is not an alternative here. It is
@@ -719,7 +794,7 @@ for an ordering nothing consumes.
 ### 2.10 Observed failure records, and the table the MLE fits
 
 Censored MLE (2.4) fits a different table from the one the simulation carries.
-Its grain is one row per **cable installation episode**:
+It holds **one row per cable installation episode**:
 
 | Column         | Meaning                                              |
 |----------------|------------------------------------------------------|
@@ -740,7 +815,7 @@ because they are calendar boundaries rather than measurements.
 
 `delta_i = 1` where `failure_year` is present and `0` where it is null.
 
-**The grain is the episode, not the segment.** A segment installed in 1972,
+**One row per episode, not per segment.** A segment installed in 1972,
 failed and replaced in 2006, and still in service at a study end of 2026
 contributes two observations: one uncensored lifetime of 34 years, and one
 right-censored lifetime of 20 years measured from 2006. Collapsing that to one row per segment either
@@ -762,13 +837,26 @@ population:
    episode begins with its own lifetime draw. Repeat until an episode survives
    past `study_end`. Each completed episode is one uncensored row; the last one
    is right-censored.
-4. **Apply the observation window.** `entry_year = max(install_year,
-   monitoring_start)`, which is the left-truncation point. An episode that
-   ended at or before `monitoring_start` is dropped entirely — it was never
-   observable, and dropping it is what the truncation correction in 2.4 exists
-   to compensate for. The comparison is inclusive so that no episode is kept
-   with zero exposure after entry, which contributes nothing to the likelihood
-   and would silently inflate the apparent sample size.
+4. **Apply the record window.** The complete history is simulated first, from
+   installation to the study end, so every real lifetime is drawn whether or
+   not anyone would have recorded it. The window is then a filter over that
+   truth: `entry_year = max(install_year, monitoring_start)`, and an episode
+   that ended at or before `monitoring_start` is **dropped entirely**. That
+   drop is the truncation — the cable really did fail, there is simply no
+   record of it — and it is a different thing from censoring an episode that
+   is still in the table with an unknown end. The comparison is inclusive so
+   no episode is kept with zero exposure after entry, which contributes
+   nothing to the likelihood and would silently inflate the sample size.
+
+   The dropped episodes are not recovered by anything downstream — they left
+   no trace, and nothing can reconstruct a row from its own absence. What the
+   likelihood corrects is the bias in the episodes that *remain*: each is in
+   the table partly because it lasted long enough to still be running when
+   records began, so the surviving sample over-represents long lives.
+
+   Simulating the truth first and hiding part of it is what makes this a valid
+   test of that correction: the parameters behind the whole history are known,
+   so fitting only the visible subset either recovers them or does not.
 5. Censor every surviving episode at `study_end`.
 
 The censoring fraction is not configured directly. It falls out of
@@ -863,7 +951,7 @@ avoids that, and passing an array is the simplest way to be indexed.
   distribution method**, and the conversion is written down here:
 
   ```python
-  children = numpy.random.SeedSequence(seed).spawn(n_reps)   # one per replication
+  children = numpy.random.SeedSequence(seed).spawn(n_reps)  # one per replication
   raw = numpy.random.PCG64(children[r]).random_raw(n_segments * (n_years + 1))
   block = ((raw >> numpy.uint64(11)) * 2.0**-53).reshape(n_segments, n_years + 1)
   ```
@@ -880,7 +968,7 @@ avoids that, and passing an array is the simplest way to be indexed.
 
   ```python
   lifetimes, policies, population, records = SeedSequence(seed).spawn(4)
-  children = lifetimes.spawn(n_reps)          # and policies.spawn(n_reps)
+  children = lifetimes.spawn(n_reps)  # and policies.spawn(n_reps)
   ```
 
   **One child per replication per stream is what makes a chunk addressable.**
@@ -1064,8 +1152,16 @@ population:
 # needs, not by how large a system is being modeled.
 records:
   n_segments: 20_000
-  monitoring_start: 1998    # left-truncation point; no record exists before it
-  study_end: 2026           # right-censoring point
+  # A prospective follow-up: inventory what is in the ground at
+  # monitoring_start, taking install dates from the asset register, then record
+  # failures until study_end. The two edges do different things and an episode
+  # can meet both. study_end RIGHT-CENSORS at exit: a row with a missing end.
+  # monitoring_start LEFT-TRUNCATES at entry: a MISSING ROW. Cable installed
+  # 1967 that failed in 1996 and was replaced leaves no row at all here — only
+  # its replacement appears, and nothing says it is a replacement. That
+  # surviving row is censored at exit and truncated at entry, both at once.
+  monitoring_start: 1998
+  study_end: 2026
 
 failure:
   conductor_dependence: iid         # iid | shared_frailty (not implemented)
@@ -1246,8 +1342,8 @@ cable-replacement-sim/
 │   └── plots.py                # shared figures; optional plotly extra
 ├── notebooks/                  # marimo, all plain .py
 │   ├── 01_population.py
-│   ├── 02_weibull_fitting.py
-│   ├── 03_effective_scale.py
+│   ├── 02_effective_scale.py
+│   ├── 03_weibull_fitting.py
 │   ├── 04_policy_explorer.py
 │   └── 05_parity_and_bench.py
 ├── app/                        # Shiny for Python
@@ -1291,7 +1387,8 @@ replications rather than the per-replication frame of 7.2.
 seed, and they are separate because they produce different tables for different
 consumers. `population.py` emits the segment table the simulation runs on, and
 its size is set by how large a system is being modeled. `records.py` emits the
-episode-grain failure history the MLE fits (2.10), and its size is set by how
+failure history the MLE fits, one row per installation episode (2.10), and
+its size is set by how
 many observed failures the recovery test needs to have power — a different
 question with a different answer.
 
@@ -1625,15 +1722,15 @@ technology, and heavy censoring means most cable never fails inside the study
 window. The synthetic record table is therefore sized by what the fit needs
 (4, Repo layout, on why `records.py` is separate from `population.py`).
 
-**An independent implementation cross-checks the fit.**
-`lifelines.WeibullAFTFitter` fits the same data in the test suite and must
-agree on **point estimates to within a tenth of the fitted standard error**,
-after the conversion in 2.4. Point estimates rather than intervals, because
-comparing intervals would test the two libraries' interval machinery instead of
-the likelihood they both claim to maximize. This is the same idea as the Python/Rust mirror applied to the
-estimator: two implementations disagree loudly where one is silently wrong, and
-the failure it is aimed at is a parameterization transposed between an AFT
-library's `(mu, sigma)` and this model's `(k, lambda)`.
+**The ladder is what guards the parameterization**, rather than a second
+library. The failure worth fearing is a transposition between an
+accelerated-failure-time library's `(mu, sigma)` and this model's
+`(k, lambda)`, and the reason the ladder catches it is that each rung compares
+a fit against the parameters the configuration states — not against the
+generator and the fit agreeing with one another, which they would continue to
+do while both were wrong. Mutating the likelihood to transpose the two, and
+again to read the scale as a rate in the generator and the fit alike, reddens
+fifteen to twenty-one tests.
 
 ### 6.3 Where a parity test's inputs come from
 
@@ -1855,7 +1952,7 @@ as a key column. So the run's
 hoists only the parameters that varied *between* runs — budget, seed, any other
 override — never `policy`, which varies within one.
 
-### 7.2 The grain of what is saved
+### 7.2 What one saved row is
 
 `results.parquet` holds one row per `(policy, replication, year, class)`, with
 one column for each of the seven arrays the kernel returns (5.2): `failures`,
@@ -1878,7 +1975,8 @@ paired difference is the entire reason for holding the draws fixed.
 **Class stays a key column.** The app plots failures by segment class, which is
 why the kernel returns that axis rather than a system total.
 
-Size is not a constraint at this grain: five policies, 1000 replications, 30
+Size is not a constraint at this level of detail: five policies, 1000
+replications, 30
 years and three classes is 450,000 rows, which parquet stores in a few
 megabytes.
 
@@ -1983,8 +2081,8 @@ notebook needs a function, it belongs in the package.
 | Notebook | Purpose |
 |----------|---------|
 | `01_population.py` | Generate and inspect a synthetic population. Sliders for `n_segments` and class shares; show length, customer, and install-year distributions by class. Sanity check that main feeders carry far more customers than laterals. |
-| `02_weibull_fitting.py` | Censored MLE walkthrough. Slider for censoring fraction; show the likelihood surface, fitted vs true survival curve, and the recovery test result. Demonstrates *why* censoring must be handled. |
-| `03_effective_scale.py` | The effective-scale reduction derived and made visual (2.3). Arrives in Phase 1 with the reduction, ahead of the fitting notebook it is numbered beside. Sliders for `k`, `lambda`, `n` and length; overlay conductor-level and segment-level survival curves against the empirical minimum of sampled draws, and against draws for a longer segment. Shows scale shrinking by `(n * L/L_ref)^(-1/k)` while shape holds, which is the claim the recovery ladder's rung 3 tests numerically. |
+| `03_weibull_fitting.py` | Censored MLE walkthrough. Slider for censoring fraction; show the likelihood surface, fitted vs true survival curve, and the recovery test result. Demonstrates *why* censoring must be handled. |
+| `02_effective_scale.py` | The effective-scale reduction derived and made visual (2.3). Numbered ahead of the fitting notebook because the fitting notebook's third rung tests what this one establishes. Sliders for `k`, `lambda`, `n` and length; overlay conductor-level and segment-level survival curves against the empirical minimum of sampled draws, and against draws for a longer segment. Shows scale shrinking by `(n * L/L_ref)^(-1/k)` while shape holds, which is the claim the recovery ladder's rung 3 tests numerically. |
 | `04_policy_explorer.py` | Sliders for annual budget, policy, and policy params; plot SAIDI/SAIFI trajectories over 30 years, spend, and failures by class. **This is the reliability-vs-budget curve** — the deliverable the original work produced. |
 | `05_parity_and_bench.py` | Reference-vs-Rust agreement plots plus the benchmark table. Its rows are the four implementations of Section 6.5, with Rust appearing twice as its two thread configurations — scalar reference, batched NumPy, batched polars, Rust single-threaded, Rust with rayon — at a stated chunk size. The scalar reference is shown for scale and is explicitly **not** the baseline the speedup is claimed against; 6.5 rules that comparison out as flattering, and the batched NumPy row is the honest one. |
 
@@ -2345,11 +2443,11 @@ fitting to the same module rather than creating it.
 `population.py` generating the segment table from config: class assignment,
 install year from the install-volume curve, technology from install year,
 per-type customer counts, and the effective-scale reduction of 2.3 folded into
-one `(shape, scale)` pair per segment. Notebooks 01 and 03.
+one `(shape, scale)` pair per segment. Notebooks 01 and 02.
 
-Notebook 03 sits here rather than with the fitting notebook it was first
+Notebook 02 sits here rather than with the fitting notebook it was first
 grouped with, because it needs nothing from that phase — only the reduction,
-which lands here. The grouping came from both being about the same claim, and
+which lands here. It is numbered ahead of that notebook for the same reason. The grouping came from both being about the same claim, and
 the order that implies is backwards: the recovery ladder's third rung tests by
 fitting that the coefficients come back at the values the reduction predicts,
 so establishing those values independently has to come first or the fit is the
@@ -2360,9 +2458,10 @@ the whole install-year range, and reproducible seeding.
 **Phase 2 — MLE and the recovery ladder**
 `weibull.py` gains the censored likelihood with covariates and the fit itself;
 its reduction and draw functions landed in Phase 1.
-`records.py`: the synthetic episode-grain record table. Tests: the analytical
+`records.py`: the synthetic record table, one row per installation episode.
+Tests: the analytical
 checks and every rung of the MLE recovery ladder (Section 6, Validation
-strategy), including the `lifelines` cross-check. Notebook 02.
+strategy). Notebook 03.
 
 This phase is where the length claim is either confirmed or abandoned, so it
 comes before anything depends on it.
@@ -2499,13 +2598,24 @@ the argument belongs beside the model it constrains.
 
 ### 13.2 Still open
 
-1. **The size of the record table.** `records.n_segments` is a placeholder
-   with no reasoning recorded beside it, which 2.10 requires. It is also coupled
-   to the calibration of the technology scales and the budget below: under the current short effective
-   lifetimes the newest technology accumulates plenty of observed failures,
-   and under any recalibration that fixes the flat curve it accumulates far
-   fewer, so the value has to be re-derived after the scales move rather than
-   before.
+1. **The newest technology cannot be identified from this study window, and
+   raising the sample does not help.** Technology follows install year, so the
+   newest one is also the youngest cable: `tr_xlpe` exists from 2005 and is at
+   most 21 years old at the study end, against a median life near 85. Observed
+   failures for it run 0 at 20,000 segments, 4 at 60,000 and 10 at 180,000 —
+   proportional to the sample and never near the several hundred per cell a
+   shape estimate needs. **The binding constraint is exposure time, not sample
+   size**, so `records.n_segments` is the wrong knob, and asking whether it
+   survived the calibration was the wrong question.
+
+   Real data has the same problem: a utility fitting a technology introduced
+   fifteen years ago has fifteen years of exposure whatever its asset count.
+   The ways out are to report that technology as weakly identified with an
+   interval that says so, to pool it with the previous technology and state
+   the assumption, or to carry a prior from accelerated-life testing. Which
+   one is chosen belongs to the point where the fit meets a population. The
+   recovery ladder sidesteps it with a fixture that gives every technology
+   equal exposure, and that is a fixture rather than a claim about any fleet.
 1. **Value-of-lost-load figures by customer type.** The values in
    `configs/base.yaml` are placeholders. They need sourcing to published
    interruption-cost estimates, recorded with the source and the outage
@@ -2534,10 +2644,10 @@ the argument belongs beside the model it constrains.
    numbers.
 4. **Discount rate.** A number is in the config; it needs a stated basis, since
    the present-value comparison is sensitive to it over a 30-year horizon.
-5. **Does the recovery ladder's rung 5 stay in the suite or move to a
-   notebook?** Fitting per-technology shape needs enough observed failures per
-   technology that the synthetic record table may be large enough to be slow.
-   Decide once it has been run and timed, not before.
+5. **Settled: rung 5 stays in the suite.** Fitting per-technology shape was
+   expected to need a record table large enough to be slow. Timed, the whole
+   suite runs in about five seconds, so the rung is nowhere near the cost that
+   would justify moving it to a notebook.
 6. **Switchability as a class average.** Restoration time per class (2.5)
    averages over the segments in that class that can be switched around and
    those that cannot. Modeling it as a per-segment probability of having an
@@ -2548,6 +2658,39 @@ the argument belongs beside the model it constrains.
    coefficient shrunk toward zero would indicate failures concentrating at
    splices and terminations. Whether that becomes a modeled term or stays a
    documented diagnostic is a v2 question.
+8. **Is there a polars implementation on the Rust side, as there is on the
+   Python side?** 6.5, Benchmarks, times a batched NumPy implementation against
+   a batched polars one, which asks whether a frame engine is competitive for
+   this work. The same question can be asked in Rust, and there is a reason to
+   want it: the Python pair cannot separate the two things it measures. The
+   Python polars package is a binding over the Rust polars crate, so a loss
+   there could be the engine being wrong for this shape of work or could be
+   interop, and the pair gives no way to tell which.
+
+   Two ways to answer it, and they differ by an order of magnitude in cost.
+
+   The expensive one is a sixth implementation of the annual loop, in polars
+   from Rust, held to the parity tests every other implementation passes. That
+   is the comparison stated plainly, and it carries the tax Phase 5 already
+   names for the batched implementations: each is another mirror of the loop
+   and another place divergence can hide. It would also inherit the limits the
+   Python polars implementation has — the greedy fill of 2.9 stops at the first
+   candidate that does not fit, which is sequential, and the uniforms have to
+   arrive from outside because polars has no addressable per-element generator
+   — so it would be a partial frame implementation benchmarked as a whole one.
+
+   The cheap one is to time the same polars expressions from both languages on
+   the grouping step alone: the `group_by` behind the metrics and the
+   `cum_sum().over("rep")` behind the greedy fill. Tens of lines, no parity
+   obligation because it implements none of the model, and it isolates
+   interop from engine cost directly. If the overhead turns out negligible,
+   the Python number already says what a Rust implementation would, and the
+   expensive option is answered without being built.
+
+   Do the cheap one first, and only then decide whether the row is worth it.
+   Either way this belongs in Phase 5 with the rest of the benchmark work,
+   for the reason that phase gives: the model has to have stopped moving
+   before another mirror of it is worth maintaining.
 
 ---
 

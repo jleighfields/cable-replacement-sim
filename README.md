@@ -10,9 +10,15 @@ policies evaluated against customer reliability (SAIFI / SAIDI / CMI) over a
 30-year horizon. All inputs are parameterized via config; the cable population
 is fully synthetic.
 
-**Status: the population layer is built.** The configuration schema and its
-validators, the purpose-spawned sources of randomness, the Weibull forms and the
-synthetic population generator exist, with a marimo notebook that walks them.
+**Status: the population layer is built, and the failure model can be fitted.**
+The configuration schema and its validators, the purpose-spawned sources of
+randomness, the Weibull forms and the synthetic population generator exist,
+along with the synthetic failure history and the censored, left-truncated
+maximum-likelihood fit that recovers the parameters it was generated from.
+Three marimo notebooks walk them. The fit is checked against an independent
+implementation, and its confidence intervals have been checked for coverage
+rather than assumed.
+
 The continuous integration workflows run, and the extension module has been
 built and imports under Python — though see `PLAN.md` §14, First actions in the
 next session, for what is not yet verified on a fresh machine. The annual
@@ -25,7 +31,7 @@ phased roadmap.
 | Path | What it holds |
 |---|---|
 | `src/` | the Rust crate: the compute kernel, built as a Python extension module |
-| `python/cablesim/` | the Python package: configuration, the sources of randomness, the Weibull forms, the population generator, and the pure-Python reference implementation that will mirror the kernel |
+| `python/cablesim/` | the Python package: configuration, the sources of randomness, the Weibull forms, the population generator, the synthetic failure history and its censored maximum-likelihood fit, and the pure-Python reference implementation that will mirror the kernel |
 | `configs/base.yaml` | the documented default run configuration |
 | `notebooks/` | marimo notebooks that walk the package interface layer by layer |
 | `tests/` | the test suite |

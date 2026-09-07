@@ -182,9 +182,9 @@ def test_install_years_after_the_simulation_starts_are_rejected() -> None:
     first, _ = broken["population"]["initial_age"]["install_year_range"]
     beyond = broken["simulation"]["start_year"] + 10
     broken["population"]["initial_age"]["install_year_range"] = (first, beyond)
-    broken["population"]["initial_age"]["install_volume"][beyond] = (
-        broken["population"]["initial_age"]["install_volume"].pop(2020)
-    )
+    broken["population"]["initial_age"]["install_volume"][beyond] = broken[
+        "population"
+    ]["initial_age"]["install_volume"].pop(2020)
     broken["population"]["technologies"][-1]["vintage"] = (2005, beyond)
 
     with pytest.raises(pydantic.ValidationError, match="start_year"):
@@ -238,3 +238,27 @@ def test_every_configured_number_parses_as_a_number() -> None:
     for technology in raw["population"]["technologies"]:
         for field, value in technology["weibull"].items():
             assert isinstance(value, (int, float)), f"{technology['name']}.{field}"
+
+
+def test_a_study_ending_before_the_last_install_is_refused() -> None:
+    """A record window that closes while cable is still going in is rejected.
+
+    The install-year range and the study window are configured in different
+    blocks, so nothing about either alone is wrong: the population may install
+    through 2020 and the study may stop in 2010, and each block validates.
+    Together they mean segments installed after observation stopped, which no
+    record could contain. Dropping them silently would make the table quietly
+    smaller than the size asked for, and a record table is sized by how many
+    observed failures a fit needs.
+    """
+    settings = config.load_config().model_dump()
+    first, last = settings["population"]["initial_age"]["install_year_range"]
+
+    for study_end in (last - 10, last):
+        with pytest.raises(pydantic.ValidationError, match="study_end"):
+            config.Config.model_validate(
+                {**settings, "records": {**settings["records"], "study_end": study_end}}
+            )
+
+    # The shipped window ends after the last install and must still load.
+    assert config.load_config().records.study_end > last
