@@ -23,6 +23,7 @@ import datetime
 import logging
 import pathlib
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Iterable
 
@@ -246,7 +247,8 @@ def simulate_policy(
     implementation: Implementation,
     batch_size: int,
     threads: int,
-) -> pl.DataFrame:
+    parts: pathlib.Path,
+) -> list[pathlib.Path]:
     """Runs every replication under one policy, chunk by chunk.
 
     Args:
@@ -260,9 +262,18 @@ def simulate_policy(
             every implementation rather than only to the ones that can use it,
             so an implementation that cannot refuses the request instead of
             leaving the caller to believe it was honoured.
+        parts: Where to write each chunk's rows.
 
     Returns:
-        Every replication's rows for this policy.
+        One file per chunk, in the order the chunks were run.
+
+        **Written out rather than accumulated**, so that what a run holds at
+        once is one chunk's rows rather than every chunk of every policy. Rows
+        scale with the replication count — forty megabytes at a thousand
+        replications and four gigabytes at a hundred thousand — and that count
+        is exactly the knob someone turns to narrow a confidence interval. The
+        files are concatenated lazily at the end, so the whole is never
+        materialized either.
     """
     simulation = settings.simulation
     n_segments = segments["age0"].size
@@ -275,8 +286,10 @@ def simulate_policy(
         settings.costs.escalation_rate, simulation.n_years
     )
 
-    blocks = []
-    for replications in replication_chunks(simulation.n_reps, batch_size):
+    written = []
+    for index, replications in enumerate(
+        replication_chunks(simulation.n_reps, batch_size)
+    ):
         block = implementation(
             **segments,
             lifetime_uniforms=random_draws.replication_uniforms(
@@ -295,10 +308,12 @@ def simulate_policy(
             n_years=simulation.n_years,
             threads=threads,
         )
-        blocks.append(
-            results.rows_from_chunk(block, spec.name, class_names, replications.start)
-        )
-    return pl.concat(blocks)
+        part = parts / f"{spec.name}-{index:04d}.parquet"
+        results.rows_from_chunk(
+            block, spec.name, class_names, replications.start
+        ).write_parquet(part)
+        written.append(part)
+    return written
 
 
 def run(
@@ -350,9 +365,7 @@ def run(
     # extension. Asking the module rather than testing the name for "kernel"
     # keeps that name out of a second place, so a later Rust-backed
     # implementation records its profile instead of silently recording none.
-    build_profile = getattr(
-        sys.modules[annual_loop.__module__], "BUILD_PROFILE", None
-    )
+    build_profile = getattr(sys.modules[annual_loop.__module__], "BUILD_PROFILE", None)
     started = time.perf_counter()
     run_id = results.new_run_id()
     segments_frame = population.generate(settings)
@@ -367,30 +380,49 @@ def run(
         threads,
     )
 
-    frame = pl.concat(
-        simulate_policy(
-            spec, settings, segments, class_names, annual_loop, batch_size, threads
-        )
-        for spec in settings.policies
-    )
-    for name, value in (swept or {}).items():
-        frame = frame.with_columns(pl.lit(value).alias(name))
+    # Each chunk's rows go to a file of their own and are concatenated lazily at
+    # the end, so neither a policy's rows nor the whole run is ever held at
+    # once. The scratch directory is removed however this exits, including on a
+    # failure part-way through a sweep, so a crashed run leaves no half-written
+    # parts to be mistaken for a result.
+    with tempfile.TemporaryDirectory(prefix=f"cablesim-{run_id}-") as scratch:
+        parts = pathlib.Path(scratch)
+        written: list[pathlib.Path] = []
+        for spec in settings.policies:
+            written.extend(
+                simulate_policy(
+                    spec,
+                    settings,
+                    segments,
+                    class_names,
+                    annual_loop,
+                    batch_size,
+                    threads,
+                    parts,
+                )
+            )
+        # Named in order rather than scanned by pattern: the rows are written in
+        # policy order and then chunk order, and a directory listing would put
+        # them in whatever order the filesystem returns.
+        frame = pl.scan_parquet(written)
+        for name, value in (swept or {}).items():
+            frame = frame.with_columns(pl.lit(value).alias(name))
 
-    commit, dirty = results.git_provenance(constants.PROJECT_ROOT)
-    return results.write_run(
-        root,
-        frame,
-        settings,
-        results.Manifest(
-            run_id=run_id,
-            written_at=datetime.datetime.now(datetime.UTC),
-            package_version=results.package_version(),
-            git_commit=commit,
-            git_dirty=dirty,
-            implementation=implementation,
-            build_profile=build_profile,
-            threads=threads,
-            batch_size=batch_size,
-            wall_seconds=time.perf_counter() - started,
-        ),
-    )
+        commit, dirty = results.git_provenance(constants.PROJECT_ROOT)
+        return results.write_run(
+            root,
+            frame,
+            settings,
+            results.Manifest(
+                run_id=run_id,
+                written_at=datetime.datetime.now(datetime.UTC),
+                package_version=results.package_version(),
+                git_commit=commit,
+                git_dirty=dirty,
+                implementation=implementation,
+                build_profile=build_profile,
+                threads=threads,
+                batch_size=batch_size,
+                wall_seconds=time.perf_counter() - started,
+            ),
+        )

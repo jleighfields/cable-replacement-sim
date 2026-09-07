@@ -2920,10 +2920,32 @@ the argument belongs beside the model it constrains.
    both sides of the boundary trades that guarantee for a test, and the memory
    it would save is already bounded by a chunk size that changes no number.
 
-   So the waste is real, measured, and accepted. Anything reconsidering it has
-   to start by saying what it does about draw parity.
-6. **Whether a run should stream its rows to disk rather than accumulate
-   them.** Measured, it should not, at this size. A complete run is five
+   **Making the draws lazy does not help, and the reason is worth keeping.**
+   Deferring generation already happens at chunk granularity, which is why the
+   peak is 149 MB rather than 3 GB. Going finer changes nothing, because within
+   a chunk every replication needs its draws at once: the workers are each
+   partway through their own thirty-year loop, so one is reading year 22 while
+   another reads year 3. The peak is `threads x segments x years x 8` whenever
+   it is generated.
+
+   Nor does a generator avoid producing the 98% nobody reads. Skipping ahead in
+   a sequential stream costs what generating it costs, and the positions have to
+   stay aligned or common random numbers break. What would avoid it is random
+   access — `PCG64.advance` jumps ahead cheaply — but which draws are needed is
+   decided inside the loop, with the interpreter lock released, so producing
+   only those means generating inside the kernel. Which is the design above,
+   declined.
+
+   So the waste is real, measured, and accepted. The remaining lever is the
+   chunk size, which trades memory against thread count and is already an
+   argument rather than a constant. Anything reconsidering this has to start by
+   saying what it does about draw parity.
+6. **Settled: a run streams its rows to disk rather than accumulating them.**
+   Each chunk's rows are written to a file of their own and the files are
+   concatenated lazily at the end, so what a run holds at once is one chunk
+   rather than every chunk of every policy.
+
+   The size argument alone would not have justified it. At this size, A complete run is five
    policies by a thousand replications by thirty years by three classes —
    450,000 rows, **39 MB in memory**. The draw array for one fifty-replication
    chunk is 149 MB, nearly four times that, and it is freed each iteration. So
@@ -2933,16 +2955,26 @@ the argument belongs beside the model it constrains.
    multi-file dataset that the reader, the sweep loader and the application's
    cached sweep all depend on.
 
-   The threshold is worth writing down, because the answer is "not at this
-   size" rather than "never". Rows scale as policies by replications by years by
-   classes, so ten thousand replications is 390 MB and the argument reverses.
-   `LazyFrame.sink_parquet` streams a frame to disk without materializing it,
-   so the mechanism is there when it is wanted.
+   What justifies it is the axis rather than today's size. Rows scale as
+   policies by replications by years by classes — **independent of the
+   population** — so ten thousand replications is 396 MB and a hundred thousand
+   is 3.96 GB, and the replication count is exactly the knob someone turns to
+   narrow a confidence interval. A ceiling on that axis was worth removing
+   before anything ran into it.
 
-   The cheaper half-measure to reach for first: the per-policy loop could write
-   each policy's rows as it finishes, capping accumulation at one policy's worth
-   rather than five, and concatenate lazily at write time — which changes no
-   file format.
+   It changes no file format: `pl.scan_parquet` over the parts and
+   `LazyFrame.sink_parquet` into the run directory means the reader, the sweep
+   loader and the application's cached sweep all still see one
+   `results.parquet`. It cannot change a number either, being entirely in the
+   writer, and the test that diffs two saved runs row for row is what
+   establishes that.
+
+   **This does nothing for the population axis**, which is the one the draw
+   array binds — see the item above. What made the population axis scale at all
+   is a decision already taken elsewhere: the kernel totals by segment class
+   inside its own loop, so the boundary returns seven small arrays rather than a
+   table. Returning per-segment detail instead would be 43 GB at the shipped
+   size and 3.6 TB at a million segments.
 7. **Settled: rung 5 stays in the suite.** Fitting per-technology shape was
    expected to need a record table large enough to be slow. Timed, the whole
    suite runs in about five seconds, so the rung is nowhere near the cost that
