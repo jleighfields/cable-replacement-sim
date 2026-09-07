@@ -2936,10 +2936,46 @@ the argument belongs beside the model it constrains.
    only those means generating inside the kernel. Which is the design above,
    declined.
 
-   So the waste is real, measured, and accepted. The remaining lever is the
-   chunk size, which trades memory against thread count and is already an
-   argument rather than a constant. Anything reconsidering this has to start by
-   saying what it does about draw parity.
+   So the waste is real, measured, and accepted. The remaining lever within
+   this design is the chunk size, which trades memory against thread count and
+   is already an argument rather than a constant. Anything reconsidering the
+   generator has to start by saying what it does about draw parity.
+
+   **The design that does address the population axis is Python driving the
+   years**, and it is costed here so that it is a decision waiting rather than
+   a rediscovery. Today the kernel owns both loops and is entered once per
+   policy per chunk, so all thirty-one years of draws are resident. If Python
+   drove the year loop instead, each call would carry one year of draws — but
+   the per-replication state would stop being Rust-local scratch and become
+   resident data crossing the boundary, so the saving is a factor of about
+   **6.3**, not of thirty-one:
+
+   | Segments | Chunk | Today | Year-driven |
+   |---|---|---|---|
+   | 12,000 | 48 | 0.18 GB | 0.03 GB |
+   | 100,000 | 48 | 1.46 GB | 0.23 GB |
+   | 1,000,000 | 48 | 14.59 GB | 2.30 GB |
+   | 1,000,000 | 200 | 60.80 GB | 9.60 GB |
+
+   It does not change the shape of the scaling — both designs are linear in the
+   chunk size — so what it buys is 6.3 times more memory per thread, which is
+   what would let a million-segment population keep forty-eight workers instead
+   of dropping to eight.
+
+   What it costs is the reason not to do it yet. The kernel's loop inverts,
+   years outside and replications inside, so it stops mirroring the reference
+   structurally and starts mirroring the batched form. The boundary becomes
+   stateful — state arrays in and out each year, or an object holding them —
+   so "arrays in, arrays out, crossed once per policy per chunk" has to be
+   rewritten rather than bent. And there are thirty parallel dispatches per
+   chunk instead of one, which costs microseconds against seventy milliseconds
+   of work per year and is therefore free, but the rule against per-year
+   crossings is what stops that pattern creeping toward per-replication.
+
+   Results would be unchanged: each replication's arithmetic is independent and
+   only the nesting moves. **Build it when a population exceeds roughly a
+   quarter of a million segments**; the shipped size is twelve thousand, and a
+   hundred thousand runs comfortably today.
 6. **Settled: a run streams its rows to disk rather than accumulating them.**
    Each chunk's rows are written to a file of their own and the files are
    concatenated lazily at the end, so what a run holds at once is one chunk
