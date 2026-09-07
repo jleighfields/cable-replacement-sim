@@ -40,6 +40,7 @@
 //!   specialised copy for each combination actually used.
 
 mod batched;
+mod draws;
 mod policies;
 mod simulate;
 mod weibull;
@@ -59,7 +60,7 @@ const FRAME_ENGINE: &str = "polars";
 use numpy::ndarray::{Array3, Dimension};
 use numpy::PyUntypedArrayMethods;
 use numpy::{
-    Element, IntoPyArray, PyArray3, PyReadonlyArray, PyReadonlyArray1, PyReadonlyArray2,
+    Element, IntoPyArray, PyArray1, PyArray3, PyReadonlyArray, PyReadonlyArray1, PyReadonlyArray2,
     PyReadonlyArray3,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -536,11 +537,49 @@ fn available_threads() -> usize {
         .unwrap_or(1)
 }
 
+/// Uniforms from the counter-based generator, one per position asked for.
+///
+/// Exposed so that the Python side can be held to producing the identical
+/// numbers. The reference implementation and the batched loops still take their
+/// draws as arrays, so both languages have to agree on every bit of every draw;
+/// checking that against NumPy's own Philox is what establishes it, and this is
+/// what the check calls.
+///
+/// # Arguments
+///
+/// * `key_low` - low word of the key, derived from the run's seed.
+/// * `key_high` - high word of the key.
+/// * `start` - the first position in the stream to produce.
+/// * `count` - how many consecutive positions to produce.
+///
+/// # Returns
+///
+/// `count` doubles in `[0, 1)`.
+#[pyfunction]
+fn philox_uniforms(
+    py: Python<'_>,
+    key_low: u64,
+    key_high: u64,
+    start: u64,
+    count: usize,
+) -> Bound<'_, PyArray1<f64>> {
+    // Released for the same reason the simulation releases it: nothing in here
+    // touches a Python object, and a caller asking for millions of draws should
+    // not hold the interpreter while they are computed.
+    let values: Vec<f64> = py.detach(|| {
+        (0..count as u64)
+            .map(|offset| draws::uniform_at(start + offset, [key_low, key_high]))
+            .collect()
+    });
+    values.into_pyarray(py)
+}
+
 /// Registers the extension module's contents under the name `_cablesim`.
 #[pymodule]
 fn _cablesim(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_chunk, m)?)?;
     m.add_function(wrap_pyfunction!(available_threads, m)?)?;
+    m.add_function(wrap_pyfunction!(philox_uniforms, m)?)?;
     // The engine names are authored in this crate and read on the Python side,
     // so the two cannot drift into disagreeing about what a name means.
     m.add("SCALAR_ENGINE", SCALAR_ENGINE)?;
