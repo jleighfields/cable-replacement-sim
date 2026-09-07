@@ -9,6 +9,35 @@
 //! This file is the boundary and nothing else. It checks what arrives, calls
 //! `simulate::run_chunk`, and hands back seven arrays; every decision the model
 //! makes is in the three modules below it.
+//!
+//! # Reading this beside the Python
+//!
+//! This is the file with the most unfamiliar syntax in it and the least going
+//! on. Everything below is either an attribute telling PyO3 to generate glue
+//! code, or a check on what arrived.
+//!
+//! * **`#[pyfunction]` and `#[pymodule]` are code generators.** They expand
+//!   into the C-level functions CPython actually calls, converting each
+//!   argument from a Python object into the Rust type named in the signature
+//!   and converting the return value back. A `TypeError` for a wrong dtype
+//!   comes from that generated code, not from anything written here.
+//! * **`PyReadonlyArray1<'py, f64>` borrows NumPy's own buffer.** Nothing is
+//!   copied and nothing is converted: the `f64` values Rust reads are the
+//!   bytes NumPy already holds. That is what makes the draw array free to pass
+//!   — it is the largest object in a run — and it is why the dtype has to
+//!   match exactly rather than being coerced.
+//! * **`Bound<'py, T>` is a reference to a Python object that holds the
+//!   interpreter lock.** It is PyO3's smart pointer, and the `'py` lifetime
+//!   is what stops a Python object being used after the lock is released.
+//!   Older PyO3 examples use `&PyArray1` and `Py<...>` instead and will not
+//!   compile against this version.
+//! * **`Python<'py>` is a token proving the caller holds the lock.** Functions
+//!   that need it take it as their first argument. Nothing in Python
+//!   corresponds, because there the lock is always held.
+//! * **The generic bounds `<T: Element, D: Dimension>` are duck typing checked
+//!   at compile time.** `contiguous` works for any element type NumPy
+//!   supports and any number of axes, and the compiler generates a separate
+//!   specialised copy for each combination actually used.
 
 mod policies;
 mod simulate;
@@ -46,6 +75,11 @@ fn contiguous<'a, T: Element, D: Dimension>(
     name: &str,
     array: &'a PyReadonlyArray<'_, T, D>,
 ) -> PyResult<&'a [T]> {
+    // `PyResult<T>` is `Result<T, PyErr>`: either the slice or a Python
+    // exception, returned rather than raised. `map_err` replaces whatever
+    // error the call produced with one carrying a message that names the
+    // argument, since the original says only that the array was not
+    // contiguous.
     array.as_slice().map_err(|_| {
         PyValueError::new_err(format!(
             "{name} is not C-contiguous; pass the array itself rather than a \
@@ -89,6 +123,11 @@ fn as_result_array(
     values: Vec<f64>,
     shape: (usize, usize, usize),
 ) -> Bound<'_, PyArray3<f64>> {
+    // `into_pyarray` consumes the `Vec` and hands its memory to NumPy rather
+    // than copying it — `into_` is the Rust naming convention for a conversion
+    // that takes ownership. The `expect` cannot fire: the buffer was allocated
+    // at exactly this size, so a mismatch would mean this file and
+    // `simulate.rs` disagree about the shape.
     Array3::from_shape_vec(shape, values)
         .expect("every result buffer is allocated as replications * years * classes")
         .into_pyarray(py)
@@ -170,6 +209,9 @@ fn run_chunk<'py>(
         )));
     }
 
+    // Destructuring a slice into named parts, with the `else` branch required
+    // because the compiler cannot know the length from the type alone. The
+    // two-dimensional array type guarantees it, so the branch is unreachable.
     let [n_reps, n_segments] = *policy_uniforms.shape() else {
         unreachable!("a PyReadonlyArray2 has exactly two axes")
     };
@@ -187,6 +229,10 @@ fn run_chunk<'py>(
         )));
     }
 
+    // A fixed-size array of name-and-length pairs, checked in one loop so that
+    // adding a per-segment argument without checking it is a visible omission
+    // rather than an invisible one. `[(&str, usize); 12]` is the type: twelve
+    // tuples, a length the compiler enforces.
     let per_segment: [(&str, usize); 12] = [
         ("length_ft", length_ft.len()),
         ("customers", customers.len()),

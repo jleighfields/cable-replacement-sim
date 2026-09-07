@@ -20,6 +20,42 @@
 //! work, because it has already been replaced this year. That is what keeps the
 //! year loop free of any inner iteration, and what makes the deterministic
 //! parity test terminate when lifetimes are forced to zero.
+//!
+//! # Reading this beside the Python
+//!
+//! The reference is written in NumPy: it operates on whole arrays, so a year's
+//! failures are a boolean mask and a year's totals come from `bincount`. This
+//! loop is written one segment at a time, and that is the main thing to hold in
+//! mind while reading the two side by side. Neither form is a translation of
+//! the other; each is what its language is fast at, and the parity tests are
+//! what establish they compute the same numbers.
+//!
+//! Four differences account for most of what looks unfamiliar:
+//!
+//! * **The result buffers are flat.** Python holds seven arrays of shape
+//!   `(replications, years, classes)` and indexes them with three subscripts.
+//!   Here each is one long `Vec<f64>` and the caller computes the offset —
+//!   `(replication * n_years + year) * n_classes + class`. That is exactly
+//!   what NumPy does underneath for a C-ordered array; the arithmetic is
+//!   visible because Rust has no built-in multidimensional array type, and the
+//!   binding hands the buffer back to NumPy to be reshaped without copying.
+//! * **Working buffers are allocated once, before the replication loop.**
+//!   Python writes `age = age0.astype(float, copy=True)` inside the loop and
+//!   lets the garbage collector reclaim last year's array. Rust has no garbage
+//!   collector — memory is freed when its owner goes out of scope — so
+//!   allocating outside the loop and overwriting with `copy_from_slice` avoids
+//!   asking the allocator for the same twelve thousand elements thirty times a
+//!   replication. This is the one place the two files differ in structure for
+//!   a reason that is about the language rather than about the model.
+//! * **Numeric types never convert themselves.** `year` is a `usize`, an
+//!   unsigned integer sized to the machine's pointer, and comparing it to a
+//!   `f64` requires writing `year as f64`. Python promotes `int` to `float`
+//!   silently; Rust refuses to, which is why casts appear at every boundary
+//!   between an index and a quantity.
+//! * **`&[f64]` in, `Vec<f64>` out.** The inputs are borrowed views the
+//!   function may read and not keep; the results are owned lists it built and
+//!   hands over. Python makes no such distinction, and it is worth reading the
+//!   signature with it in mind: everything with an `&` belongs to the caller.
 
 use crate::policies::{self, Resolved};
 use crate::weibull;
@@ -139,12 +175,18 @@ pub fn run_chunk(
     n_classes: usize,
     n_years: usize,
 ) -> Result<Results, policies::NanScore> {
+    // Python reads these off the draw array's shape. A flat slice carries only
+    // a length, so the shapes are recovered by division — and the binding has
+    // already checked that they divide exactly.
     let n_segments = age0.len();
     let n_reps = policy_uniforms.len() / n_segments;
     let draws_per_segment = n_years + 1;
 
     let mut results = Results::zeros(n_reps, n_years, n_classes);
     // Costs at year-0 prices; the year's escalation is applied inside the loop.
+    // `(0..n_segments).map(...).collect()` builds a list the way a Python
+    // comprehension does; the type annotation on the binding is what tells
+    // `collect` which kind of collection to build.
     let planned_at_par: Vec<f64> = (0..n_segments)
         .map(|segment| {
             policies::planned_cost(
@@ -172,6 +214,11 @@ pub fn run_chunk(
         current_shape.copy_from_slice(shape);
         current_scale.copy_from_slice(scale);
 
+        // Slicing twice reads as `x[start:][:length]` in Python and means the
+        // same: take everything from `start`, then the first `length` of that.
+        // The leading `&` makes it a borrowed view rather than a copy, so
+        // these two lines move no data — they are this replication's rows of
+        // the draw arrays, in place.
         let priority = &policy_uniforms[replication * n_segments..][..n_segments];
         let lifetimes = &lifetime_uniforms[replication * n_segments * draws_per_segment..]
             [..n_segments * draws_per_segment];
@@ -192,16 +239,23 @@ pub fn run_chunk(
             for segment in 0..n_segments {
                 planned_now[segment] = planned_at_par[segment] * escalation;
             }
+            // Where this year's totals start in each flat result buffer; the
+            // segment's class is added to it to reach the exact cell.
             let cell = (replication * n_years + year) * n_classes;
 
             // 1. Failures, which are resolved before planned work so that a
             //    segment failing this year is not also a candidate this year.
+            // Reused rather than reallocated, so it has to be cleared. The
+            // reference allocates a fresh boolean array each year instead.
             replaced.fill(false);
             let mut emergency_total = 0.0;
             for segment in 0..n_segments {
                 let year_start = year as f64;
                 if failure_time[segment] >= year_start && failure_time[segment] < year_start + 1.0 {
                     let emergency_now = planned_now[segment] * emergency_multiplier;
+                    // `usize::from` widens the `u8` class index without a
+                    // cast that could silently lose bits; Rust will not add a
+                    // `u8` to a `usize` on its own.
                     let class = cell + usize::from(class_index[segment]);
                     results.failures[class] += 1.0;
                     results.customers_interrupted[class] += customers[segment];
@@ -250,6 +304,11 @@ pub fn run_chunk(
                         priority[segment],
                     );
                 }
+                // The `?` returns early with the error if there was one, and
+                // unwraps the value otherwise. It is Rust's substitute for an
+                // exception propagating up the stack: the failure travels the
+                // same way, but every function it passes through has to name
+                // it in its return type.
                 let ordered = policies::order_by_rank(&rank, &candidates)?;
                 for &segment in policies::fund(&ordered, &planned_now, available) {
                     let class = cell + usize::from(class_index[segment]);
@@ -264,6 +323,9 @@ pub fn run_chunk(
             // 3. Everything replaced this year enters service next year, as new
             //    cable of the replacement technology, with a lifetime drawn
             //    from that segment's cell for the following year.
+            // The reference writes `age += 1.0` over the whole array and then
+            // `age[replaced] = 0.0`, which is two passes because that is what
+            // vectorizes. One pass with a branch is the same result.
             for segment in 0..n_segments {
                 if replaced[segment] {
                     current_shape[segment] = replacement_shape[segment];

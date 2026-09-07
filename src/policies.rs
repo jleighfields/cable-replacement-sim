@@ -14,6 +14,36 @@
 //! The Rust side of the mirror: `python/cablesim/policies.py` carries the same
 //! functions under the same names, taking the same arguments in the same
 //! order, over whole arrays rather than one segment at a time.
+//!
+//! # Reading this beside the Python
+//!
+//! Four constructs here have no direct Python equivalent, and each is doing a
+//! job Python does some other way.
+//!
+//! * **`&[f64]` is a slice: a borrowed view of somebody else's numbers.** It
+//!   is closest to a NumPy view — a pointer and a length, no copy — except
+//!   that the compiler tracks how long the view may live and refuses to
+//!   compile code that outlives what it points at. Where a Python function
+//!   takes `rank` and `planned` as arrays it might in principle mutate, these
+//!   take read-only views and cannot.
+//! * **Errors are returned, not raised.** `order_by_rank` returns
+//!   `Result<Vec<usize>, NanScore>`, which is either the ordering or the
+//!   failure. Rust has no exceptions, so a caller cannot forget the failure
+//!   case: it has to unwrap the `Result`, and the `?` operator at the call
+//!   site is the shorthand that says "hand this failure to my own caller",
+//!   which is what a bare `raise` propagating up a call stack does in Python.
+//! * **`match` is `if`/`elif`/`else` with a compiler check.** The final `_`
+//!   arm is the `else`; without some arm covering every possible value the
+//!   code does not compile, so a policy tag with no branch is caught at build
+//!   time rather than falling through to whatever the last branch happened to
+//!   be.
+//! * **Sorting floats needs a comparator written out.** Python's `sorted`
+//!   works on floats because it only ever asks whether one is less than
+//!   another. Rust separates `PartialOrd`, which floats have, from `Ord`,
+//!   which they do not, precisely because NaN is not ordered against anything
+//!   — `NaN < 1.0`, `NaN > 1.0` and `NaN == 1.0` are all false, so a sort that
+//!   assumes a total order can produce a garbage permutation rather than an
+//!   error. `order_by_rank` therefore rejects NaN first and then sorts.
 
 use std::fmt;
 
@@ -27,6 +57,11 @@ use pyo3::prelude::*;
 /// runs all five policies through both implementations, and any two tags
 /// exchanged funds a different set of segments.
 pub mod kind {
+    // A module of `const` values, which is how Rust spells the namespace that
+    // `policies.KIND` gets from being a dict: `kind::RISK_RANKED` here reads
+    // as `KIND["risk_ranked"]` does there. A `const` is substituted at every
+    // use site at compile time, so this costs nothing at run time and, unlike
+    // the dict, cannot be looked up with a key that does not exist.
     /// Replaces nothing; failures are still repaired.
     pub const RUN_TO_FAILURE: u8 = 0;
     /// Every segment at or over an age, oldest first.
@@ -48,6 +83,15 @@ pub mod kind {
 /// its own**: choosing the neutral values happens once, in Python, beside the
 /// schema they come from, because a default written on both sides of the
 /// boundary diverges silently.
+// `#[derive(...)]` asks the compiler to write these implementations. Ordinary
+// Rust structs get none of them by default, which is unlike Python, where every
+// object can be copied, printed and passed around from the moment it exists.
+// `FromPyObject` is PyO3's: it generates the code that reads a Python object's
+// `kind`, `threshold_years` and `rank_by_cost` attributes into these fields,
+// which is what lets `policies.Resolved` — a NamedTuple — arrive here directly.
+// `Copy` makes the struct pass by value like an integer rather than by
+// reference, which is why callers below write `policy` and not `&policy`; it is
+// three small fields, so copying it is cheaper than pointing at it.
 #[derive(FromPyObject, Clone, Copy, Debug)]
 pub struct Resolved {
     /// The tag from `kind`.
@@ -77,6 +121,11 @@ pub struct NanScore {
     pub first_segment_id: usize,
 }
 
+// `impl Trait for Type` attaches behaviour to a type from outside the type's
+// own definition — there is no equivalent of writing methods inside a `class`
+// body, and any trait can be implemented for any type the crate owns.
+// `Display` is what `{}` in a format string calls, so this is the job
+// `__str__` does in Python.
 impl fmt::Display for NanScore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -218,11 +267,21 @@ pub fn eligible(policy: Resolved, age: f64, replaced_this_year: bool) -> bool {
 /// The eligible positions in the order the budget should be spent on them, or
 /// `NanScore` if any candidate's key was not a number.
 pub fn order_by_rank(rank: &[f64], candidates: &[usize]) -> Result<Vec<usize>, NanScore> {
+    // `.iter().copied().filter(...).collect()` is a list comprehension read
+    // left to right: iterate, take each `usize` by value rather than by
+    // reference, keep the ones whose key is NaN, and build a `Vec` — Rust's
+    // growable list — from what is left. Nothing runs until `collect` asks for
+    // it, the same way a Python generator does nothing until something
+    // consumes it.
     let unranked: Vec<usize> = candidates
         .iter()
         .copied()
         .filter(|&index| rank[index].is_nan())
         .collect();
+    // `.first()` returns `Option<&usize>`: either `Some(value)` or `None`.
+    // Rust has no `null`, so "there might not be one here" is in the type and
+    // the compiler makes the caller handle both. `if let` is the shorthand for
+    // running a block only in the `Some` case and binding what is inside it.
     if let Some(&first_segment_id) = unranked.first() {
         return Err(NanScore {
             count: unranked.len(),
@@ -230,10 +289,24 @@ pub fn order_by_rank(rank: &[f64], candidates: &[usize]) -> Result<Vec<usize>, N
         });
     }
 
+    // `to_vec` copies, because this function returns an ordering of its own
+    // rather than rearranging the caller's list in place. `mut` is required to
+    // sort it: a binding cannot be modified unless it says so.
     let mut ordered = candidates.to_vec();
+    // `sort_by` takes a comparator returning `Ordering::Less`, `Equal` or
+    // `Greater`, which is Python 2's `cmp` argument rather than Python 3's
+    // `key`. Comparing `rank[right]` against `rank[left]` — right before left
+    // — is what makes the primary key descending. `.then(...)` uses the second
+    // comparison only when the first came out `Equal`, so the pair reads as
+    // Python's `key=lambda i: (-rank[i], i)`.
     ordered.sort_by(|&left, &right| {
         rank[right]
             .partial_cmp(&rank[left])
+            // `partial_cmp` returns `None` for a comparison involving NaN.
+            // `expect` turns that into a panic carrying this message — the
+            // blunt tool, used here only because the NaN check above has
+            // already ruled the case out, so reaching it would mean this
+            // function is broken rather than that its input was.
             .expect("NaN keys are rejected above, so every comparison here is ordered")
             .then(left.cmp(&right))
     });
@@ -268,6 +341,12 @@ pub fn order_by_rank(rank: &[f64], candidates: &[usize]) -> Result<Vec<usize>, N
 /// # Returns
 ///
 /// The positions to replace, a prefix of `ranked`.
+// `<'a>` names a lifetime, and tying it to `ranked` and to the return type
+// says the returned slice borrows from `ranked` and not from `planned`. It is
+// not a run-time cost or a check the caller performs; it is what lets the
+// compiler prove nobody holds this prefix after the list it points into is
+// gone. Python leaves that to the garbage collector, so the annotation has no
+// counterpart there — it is the price of returning a view rather than a copy.
 pub fn fund<'a>(ranked: &'a [usize], planned: &[f64], budget: f64) -> &'a [usize] {
     let mut running = 0.0;
     let mut funded = 0;
@@ -285,6 +364,7 @@ pub fn fund<'a>(ranked: &'a [usize], planned: &[f64], budget: f64) -> &'a [usize
 mod tests {
     use super::*;
 
+    /// A policy with the neutral threshold, so every segment is eligible.
     fn policy(kind: u8) -> Resolved {
         Resolved {
             kind,
