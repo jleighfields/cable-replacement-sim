@@ -269,8 +269,10 @@ def test_a_name_no_result_may_claim_is_reported_as_unknown() -> None:
     runs. Calling the check is what can report.
     """
     assert run.unknown_implementations(["batched_pandas"]) == {"batched_pandas"}
-    assert run.unknown_implementations(run.RUNNABLE) == set()
-    assert run.unknown_implementations(results.IMPLEMENTATIONS) == set()
+    # And nothing else: asserting that `RUNNABLE` itself comes back empty would
+    # be the invariant again, which breaking stops the suite at collection, and
+    # asserting it of the closed set is a set minus itself.
+    assert run.unknown_implementations([]) == set()
 
 
 def test_the_run_takes_policy_priorities_from_the_policy_stream(

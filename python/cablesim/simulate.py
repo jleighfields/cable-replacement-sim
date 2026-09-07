@@ -201,17 +201,27 @@ def run_chunk(
             documented as interchangeable behind one call: a caller must not
             get an answer from one and an error from the other.
 
-            Three cases are reported differently, and all three are the
-            binding's argument types refusing input before any check of ours
-            runs. It rejects an array that is not C-contiguous, one whose dtype
-            is not ``float64`` — ``uint8`` for ``class_index`` — and one that
-            is not one-dimensional, the last two as ``TypeError``. This
-            implementation needs none of those to be true and checks only the
-            third, as a ``ValueError``, because a two-dimensional array of the
-            right element count would otherwise fail later inside NumPy as a
-            broadcast error naming neither the argument nor the reason. So an
-            argument set this accepts is not guaranteed to cross the boundary.
+            What the two report differently is whatever the binding's
+            argument types refuse before any check of ours runs: an array that
+            is not C-contiguous, one whose dtype is not ``float64`` — ``uint8``
+            for ``class_index`` — one with the wrong number of axes, and a
+            ``policy.kind`` that is not an integer. PyO3 owns those messages.
+            This implementation needs none of them to be true, and raises the
+            same class for the last two: a non-integer tag would otherwise
+            match a branch by hash equality, and a two-dimensional array of the
+            right element count would fail later inside NumPy as a broadcast
+            error naming neither the argument nor the reason. So an argument
+            set this accepts is not guaranteed to cross the boundary.
+
+        TypeError: If ``policy.kind`` is not an integer, or an array is not
+            one-dimensional where one entry per segment is expected.
     """
+    if policy_uniforms.ndim != 2:
+        raise ValueError(
+            f"policy_uniforms has shape {policy_uniforms.shape}, expected "
+            f"(replications, segments): one fixed priority per segment per "
+            f"replication"
+        )
     n_reps, n_segments = policy_uniforms.shape
     # Six checks, in the order `src/lib.rs` makes them and carrying the same
     # messages, because the two implementations are documented as
@@ -231,6 +241,15 @@ def run_chunk(
     #
     # The schema forbids every one of these, which makes a direct caller the
     # only way to arrive here: every parity test and every driver script is one.
+    # `isinstance` before membership, because `2.0 in {0, 1, 2, 3, 4}` is true
+    # by hash equality: a float tag would pass the membership test and run the
+    # branch it happens to equal. The binding refuses a non-integer with a
+    # `TypeError` of PyO3's own wording, which is the class mirrored here.
+    if isinstance(policy.kind, bool) or not isinstance(policy.kind, int):
+        raise TypeError(
+            f"policy.kind is {policy.kind!r}, which is not an integer tag; "
+            f"the tags are authored in cablesim.policies.KIND"
+        )
     if policy.kind not in policies.RANKABLE:
         raise ValueError(
             f"policy.kind is {policy.kind}, which no ranking branch covers; "

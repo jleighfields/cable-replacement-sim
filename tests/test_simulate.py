@@ -10,7 +10,7 @@ branch only tests reach.
 
 import numpy as np
 import pytest
-from cablesim import simulate
+from cablesim import policies, run, simulate
 
 from tests import helpers
 
@@ -421,3 +421,46 @@ def test_a_replaced_segment_is_scored_at_age_zero_not_age_one() -> None:
     # are funded again. At age 1 in year 1, all four would be funded then too.
     funded = [results.planned_replacements[0, year].sum() for year in range(N_YEARS)]
     assert funded == [4.0, 0.0, 4.0]
+
+
+def test_the_rankable_tags_are_enumerated_rather_than_taken_from_the_mapping() -> None:
+    """``RANKABLE`` must name the five, not derive itself from ``KIND``.
+
+    Deriving it would accept a sixth policy the moment it is named in the
+    mapping — before ``rank_key`` has a branch for it, and before the Rust side
+    has been edited at all. The reference would then score that policy zero for
+    every candidate and fund in segment order while the kernel refused it,
+    which is the divergence the enumeration exists to prevent.
+
+    No runtime mutation can tell the two spellings apart while the sets happen
+    to be equal, so this asserts the membership directly: it turns that future
+    divergence into a red test at the edit that would cause it.
+    """
+    assert {
+        policies.KIND[name]
+        for name in (
+            "run_to_failure",
+            "age_threshold",
+            "risk_ranked",
+            "worst_first",
+            "random",
+        )
+    } == policies.RANKABLE
+
+
+def test_the_per_segment_arguments_match_the_population_columns() -> None:
+    """The two lists of the same twelve names, held in step.
+
+    ``simulate.SEGMENT_ARGUMENTS`` is what the length guard iterates and
+    ``run.SEGMENT_COLUMNS`` is what is taken from the population frame; they
+    differ only in ``age``, which the loop receives as ``age0`` because it
+    holds a current age that moves.
+
+    Omitting a thirteenth name from the second fails loudly at the call.
+    Omitting it from the first drops that array from the length guard silently,
+    with no error and no other test failing — where the Rust binding's own list
+    is typed as twelve pairs and a thirteenth argument is a build error.
+    """
+    assert set(simulate.SEGMENT_ARGUMENTS) == (set(run.SEGMENT_COLUMNS) - {"age"}) | {
+        "age0"
+    }

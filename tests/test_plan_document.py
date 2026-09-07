@@ -69,6 +69,24 @@ def test_a_citation_written_without_a_prefix_is_still_found() -> None:
 
 
 
+def readable(path: pathlib.Path) -> str:
+    """Reads a tracked file as text, tolerating one that is not.
+
+    The scan walks everything git tracks rather than a list of suffixes, so it
+    meets whatever is added — and a tracked image or font would otherwise stop
+    it with a decode error that has nothing to do with citations. A replacement
+    character cannot spell the literal the citation pattern needs, so nothing
+    is skipped silently by this.
+
+    Args:
+        path: The file to read.
+
+    Returns:
+        Its text, with undecodable bytes replaced.
+    """
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
 def test_nothing_outside_the_plan_cites_a_section_of_it() -> None:
     """An outward citation into the plan rots with nothing reporting it.
 
@@ -124,9 +142,9 @@ def test_nothing_outside_the_plan_cites_a_section_of_it() -> None:
     offenders = {
         str(relative): found
         for path in files
-        if (relative := path.relative_to(helpers.PLAN_PATH.parent))
+        if (relative := path.relative_to(root))
         not in defines_the_rule
-        and (found := helpers.plan_citations(path.read_text(encoding="utf-8")))
+        and (found := helpers.plan_citations(readable(path)))
     }
 
     assert len(files) > 50, (

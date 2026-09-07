@@ -542,7 +542,7 @@ def _(mo):
     the one that arbitrates. The Rust kernel computes the same model from the
     same draws, and the two are interchangeable behind the same call — same
     argument names, same result type — so the run below differs from the run in
-    section 40 only in which implementation it named.
+    40, A whole horizon, every policy, only in which implementation it named.
 
     Every saved row must match. The draws are not regenerated and not compared:
     both implementations read the identical uniforms, so there is no

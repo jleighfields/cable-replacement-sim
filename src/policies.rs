@@ -57,21 +57,29 @@ use pyo3::prelude::*;
 /// runs all five policies through both implementations, and any two tags
 /// exchanged funds a different set of segments.
 pub mod kind {
+    // `i64` rather than `u8`, which is wide enough for five tags but is not
+    // what decides the type here. PyO3 refuses to extract a value outside a
+    // narrow integer's range *before* any check of ours runs, and it refuses
+    // with a `TypeError` naming neither the tag nor the branch it lacks — so a
+    // tag of -1 or 256 would be reported one way by this side and another by
+    // the reference. Extracting the whole integer range and rejecting it
+    // ourselves is what lets both sides refuse the same input with the same
+    // error and the same words.
     // A module of `const` values, which is how Rust spells the namespace that
     // `policies.KIND` gets from being a dict: `kind::RISK_RANKED` here reads
     // as `KIND["risk_ranked"]` does there. A `const` is substituted at every
     // use site at compile time, so this costs nothing at run time and, unlike
     // the dict, cannot be looked up with a key that does not exist.
     /// Replaces nothing; failures are still repaired.
-    pub const RUN_TO_FAILURE: u8 = 0;
+    pub const RUN_TO_FAILURE: i64 = 0;
     /// Every segment at or over an age, oldest first.
-    pub const AGE_THRESHOLD: u8 = 1;
+    pub const AGE_THRESHOLD: i64 = 1;
     /// Failure probability weighted by what a failure would cost.
-    pub const RISK_RANKED: u8 = 2;
+    pub const RISK_RANKED: i64 = 2;
     /// Failure probability alone, ignoring consequence.
-    pub const WORST_FIRST: u8 = 3;
+    pub const WORST_FIRST: i64 = 3;
     /// A fixed per-segment priority, ignoring everything else.
-    pub const RANDOM: u8 = 4;
+    pub const RANDOM: i64 = 4;
 }
 
 /// A validated policy reduced to what the annual loop needs.
@@ -95,7 +103,7 @@ pub mod kind {
 #[derive(FromPyObject, Clone, Copy, Debug)]
 pub struct Resolved {
     /// The tag from `kind`.
-    pub kind: u8,
+    pub kind: i64,
     /// Eligibility age, compared as `age >= threshold_years`. Negative
     /// infinity makes every in-service segment eligible; positive infinity
     /// makes none, which is how `RUN_TO_FAILURE` funds nothing without a
@@ -387,7 +395,7 @@ mod tests {
     use super::*;
 
     /// A policy with the neutral threshold, so every segment is eligible.
-    fn policy(kind: u8) -> Resolved {
+    fn policy(kind: i64) -> Resolved {
         Resolved {
             kind,
             threshold_years: f64::NEG_INFINITY,

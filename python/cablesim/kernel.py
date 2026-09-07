@@ -108,9 +108,13 @@ def run_chunk(
             the shape the horizon implies, or if a candidate scores a rank key
             that is not a number.
         TypeError: If an array's dtype is not the one the boundary reads —
-            ``uint8`` for ``class_index`` and ``float64`` for the rest. The
-            binding does not convert, because converting would copy and a copy
-            of the draw array is the largest thing in a run.
+            ``uint8`` for ``class_index`` and ``float64`` for the rest — if an
+            array has the wrong number of axes, or if ``policy.kind`` is not an
+            integer. The binding does not convert, because converting would
+            copy and a copy of the draw array is the largest thing in a run.
+            These come from PyO3's extraction rather than from any check here,
+            so the messages are its wording; ``simulate.run_chunk`` raises the
+            same class for the same inputs.
     """
     return simulate.Results(
         *_cablesim.run_chunk(

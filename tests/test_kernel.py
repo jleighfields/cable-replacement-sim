@@ -360,13 +360,13 @@ def test_both_implementations_refuse_a_tag_no_ranking_branch_covers(
 ) -> None:
     """A tag inside the mapping but outside ``rank_key`` must be refused too.
 
-    The guard on the tag asks a different question on each side. The reference
-    asks whether the tag is in ``policies.KIND``; the kernel asks whether it
-    lies between ``RUN_TO_FAILURE`` and ``RANDOM``. Those agree only while the
-    mapping holds exactly those five tags contiguously, so adding a sixth
-    entry to ``KIND`` opens the reference's guard for it in the same edit and
-    leaves the kernel's shut — one completes and the other raises, on the same
-    arguments, which is what the guard was added to prevent.
+    Both guards enumerate the five tags a ranking branch exists for —
+    ``policies.RANKABLE`` on the reference, a ``matches!`` over the five
+    constants in the kernel — rather than testing membership of
+    ``policies.KIND`` or a range over it. Either of those would open for a
+    sixth entry added to ``KIND`` the moment it was named, before either
+    ``rank_key`` had a branch for it. This drives that: a tag inside the
+    mapping and outside both guards, which both must refuse.
 
     What completes is also meaningless. Neither ``rank_key`` has a branch for
     the new tag, so both fall to the catch-all written for
@@ -414,12 +414,12 @@ def test_both_implementations_word_a_mismatch_refusal_the_same_way(
 
     ``test_both_implementations_refuse_the_same_degenerate_population``
     compares the messages for the empty population, the absent class axis and
-    the class index past its end. The remaining guards are checked only for
-    raising *something* that names the argument, which cannot see two sides
-    describing the same mismatch differently — and the draw-array guard does:
-    the shapes are formatted as a Rust slice on one side and a Python tuple on
-    the other, so the two messages differ on the brackets while agreeing on
-    every word.
+    the class index past its end. The remaining three are otherwise checked
+    only for raising *something* that names the argument, which cannot see two
+    sides describing the same mismatch differently. The draw-array guard is
+    where that mattered: the shapes reach the message through a Rust slice on
+    one side and a Python tuple on the other, and printing either as it comes
+    agrees on every word while differing on the brackets.
     """
     arguments = MISMATCHED_ARGUMENTS[wrong]
     policy = helpers.resolved("run_to_failure")
@@ -430,3 +430,80 @@ def test_both_implementations_word_a_mismatch_refusal_the_same_way(
         simulate.run_chunk(**arguments, policy=policy)
 
     assert str(from_reference.value) == str(from_kernel.value)
+
+
+UNRANKABLE_TAGS: dict[str, int] = {
+    "just_past_the_mapping": max(policies.KIND.values()) + 1,
+    "below_the_mapping": -1,
+    "past_what_the_binding_reads": max(policies.KIND.values()) + 300,
+}
+"""Policy tags no ranking branch covers, keyed by where each sits.
+
+Three rather than one because the binding reads ``kind`` as a ``u8``, so the
+three land on different code: the first reaches both guards, and the other two
+are refused by PyO3's own extraction before the kernel's guard runs at all.
+``policies.resolve`` produces none of them — a direct caller building
+``Resolved`` by hand is the only way to arrive here, which is what the guards
+exist for and what every test in this module is.
+"""
+
+
+@pytest.mark.parametrize("tag", sorted(UNRANKABLE_TAGS), ids=str)
+def test_both_implementations_refuse_an_unrankable_tag_the_same_way(tag: str) -> None:
+    """A tag outside the five must be refused identically, not merely refused.
+
+    ``simulate.run_chunk`` documents ``ValueError`` and nothing else, and its
+    docstring names the checks as the kernel's, in the kernel's order and word
+    for word. A caller writing ``except ValueError`` around a sweep that runs
+    both implementations therefore catches whatever either one refuses — which
+    holds for a tag just past the mapping and not for one outside the range the
+    binding's ``u8`` can hold, where PyO3's extraction refuses first with a
+    ``TypeError`` naming neither the tag nor the branch it lacks.
+    """
+    arguments = minimal_arguments(4)
+    policy = helpers.resolved("risk_ranked")._replace(kind=UNRANKABLE_TAGS[tag])
+
+    with pytest.raises(ValueError) as from_kernel:
+        kernel.run_chunk(**arguments, policy=policy)
+    with pytest.raises(ValueError) as from_reference:
+        simulate.run_chunk(**arguments, policy=policy)
+
+    assert str(from_reference.value) == str(from_kernel.value)
+
+
+def test_the_reference_names_the_draw_array_it_cannot_read() -> None:
+    """A ``policy_uniforms`` that is not two-dimensional must say so.
+
+    The twelve per-segment arrays are checked for shape by name, because a
+    two-dimensional one of the right element count would otherwise fail later
+    inside NumPy as a broadcast error naming neither the argument nor the
+    reason. ``policy_uniforms`` reaches no such check: the reference recovers
+    the replication and segment counts by unpacking its shape on the first
+    line, so a one-dimensional array raises an unpacking error that names
+    nothing the caller passed. The kernel refuses it at the binding.
+    """
+    arguments = {**minimal_arguments(4), "policy_uniforms": np.full(4, 0.5)}
+
+    with pytest.raises(ValueError, match="policy_uniforms"):
+        simulate.run_chunk(**arguments, policy=helpers.resolved("run_to_failure"))
+
+
+def test_both_implementations_refuse_a_tag_that_is_not_an_integer() -> None:
+    """A float tag must be refused, not matched against a branch by value.
+
+    ``2.0 in frozenset({0, 1, 2, 3, 4})`` is true — a float hashes equal to the
+    integer it equals — and ``2.0 == KIND["risk_ranked"]`` is true with it, so
+    a membership check alone lets a float run the branch it happens to equal
+    while the binding refuses to extract it at all. That is one implementation
+    returning an answer and the other an error, on the same arguments.
+
+    The class is what matches here, not the wording: the binding refuses this
+    before any check of ours runs, so the message is PyO3's.
+    """
+    arguments = minimal_arguments(4)
+    policy = helpers.resolved("risk_ranked")._replace(kind=2.0)
+
+    with pytest.raises(TypeError):
+        kernel.run_chunk(**arguments, policy=policy)
+    with pytest.raises(TypeError):
+        simulate.run_chunk(**arguments, policy=policy)

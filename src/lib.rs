@@ -65,7 +65,7 @@ use pyo3::types::PyTuple;
 ///
 /// **C order is checked explicitly rather than left to `as_slice`.** That call
 /// accepts a Fortran-ordered array too, since it is contiguous — just
-/// column-major. A one-dimensional array is both, so the eleven per-segment
+/// column-major. A one-dimensional array is both, so the twelve per-segment
 /// arrays cannot tell the difference; the draw arrays can, and a transposed
 /// three-dimensional view of the right shape would be read with its axes
 /// exchanged and return a run that completes. A strided slice is rejected
@@ -247,6 +247,14 @@ fn run_chunk<'py>(
                 policies::kind::WORST_FIRST,
                 policies::kind::RANDOM
             ]
+        )));
+    }
+
+    if policy_uniforms.shape().len() != 2 {
+        return Err(PyValueError::new_err(format!(
+            "policy_uniforms has shape {:?}, expected (replications, \
+             segments): one fixed priority per segment per replication",
+            policy_uniforms.shape()
         )));
     }
 
