@@ -61,35 +61,37 @@ rewritten by this work beyond being made callable in parallel.
 
 ## Steps
 
-- [ ] 1. `cargo add rayon`. Restructure `src/simulate.rs` so one replication is
+- [x] 1. `cargo add rayon`. Restructure `src/simulate.rs` so one replication is
       a function returning its own small result block, then run those blocks
       sequentially at one thread and through rayon above one. Per-replication
       scratch buffers move inside that function or into per-thread state; they
       currently live outside the replication loop, which no parallel iterator
       can share.
-- [ ] 2. `src/lib.rs`: `py.allow_threads` around the compute, and the `threads`
+- [x] 2. `src/lib.rs`: `Python::detach` around the compute — the method that
+      releases the interpreter lock, named `allow_threads` before PyO3 renamed
+      it — and the `threads`
       argument. Nothing inside the released region may touch a Python object.
-- [ ] 3. `python/cablesim/kernel.py` and `run.py`: thread count through to the
+- [x] 3. `python/cablesim/kernel.py` and `run.py`: thread count through to the
       manifest, replacing the hard-coded one.
-- [ ] 4. `python/cablesim/batched.py`: the batched NumPy annual loop, state as
+- [x] 4. `python/cablesim/batched.py`: the batched NumPy annual loop, state as
       `(replications, segments)` arrays so the year loop runs once per year
       rather than once per replication-year.
-- [ ] 5. The batched polars loop in the same module, ranking and the greedy
+- [x] 5. The batched polars loop in the same module, ranking and the greedy
       fill as a sort plus a cumulative sum within a replication grouping. Its
       uniforms arrive from NumPy as columns, because polars has no addressable
       per-element generator.
-- [ ] 6. Parity tests for both, through the same fixture every other parity
+- [x] 6. Parity tests for both, through the same fixture every other parity
       test reads.
-- [ ] 7. `scripts/run_benchmarks.py`: the timing harness, writing a table with
+- [x] 7. `scripts/run_benchmarks.py`: the timing harness, writing a table with
       each row's replication count, chunk size, build profile and thread count
       beside its time.
-- [ ] 8. The Rust polars annual loop, taking the same arrays as every other
+- [x] 8. The Rust polars annual loop, taking the same arrays as every other
       implementation and returning the same seven, so it is held to the same
       parity tests.
-- [ ] 9. `notebooks/05_parity_and_bench.py`: the agreement plots, and the table
+- [x] 9. `notebooks/05_parity_and_bench.py`: the agreement plots, and the table
       whose rows are the implementations and whose columns are the wall time
       and whether the result matched the scalar Python reference exactly.
-- [ ] 10. `scripts/budget_sweep.py` default, and a `--threads` argument.
-- [ ] 11. Update the plan document with the measured figures, which it
+- [x] 10. `scripts/budget_sweep.py` default, and a `--threads` argument.
+- [x] 11. Update the plan document with the measured figures, which it
       currently leaves blank, and record what the polars comparison found.
 - [ ] 12. Review passes until no Must Fix or Should Fix remains.
