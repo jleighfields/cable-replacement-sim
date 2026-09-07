@@ -94,18 +94,30 @@ the kernel's binding has to mirror, since every call here is by keyword.
 """
 
 
-IMPLEMENTATIONS: dict[str, Implementation] = {
+RUNNABLE: dict[str, Implementation] = {
     "reference": simulate.run_chunk,
     "kernel": kernel.run_chunk,
 }
-"""The annual loops a caller can select by name.
+"""The annual loops that exist, by the name a manifest records them under.
 
-The keys are the manifest's implementation names, so what a driver script takes
-on the command line is what ends up recorded as provenance, with no second
-spelling in between. Two of the four names a result can carry — the batched
-baselines — have no implementation yet and so are absent here rather than
-mapped to something that would run.
+Named for what it holds rather than for the set it draws from: ``results``
+carries the closed set of names a saved run may claim, and this is the subset
+with something behind it. Two of those four — the batched baselines — have no
+implementation yet and so are absent here rather than mapped to something that
+would run.
+
+The keys must all be names ``results`` accepts, which is checked below rather
+than left to the manifest validator. Left there, a misspelling would be taken
+on the command line, accepted through a whole budget level's computation, and
+refused only at the write.
 """
+
+UNKNOWN_IMPLEMENTATIONS = set(RUNNABLE) - set(results.IMPLEMENTATIONS)
+if UNKNOWN_IMPLEMENTATIONS:
+    raise ValueError(
+        f"{sorted(UNKNOWN_IMPLEMENTATIONS)} name no implementation a result "
+        f"may claim; the closed set is {list(results.IMPLEMENTATIONS)}"
+    )
 
 
 REDUCED_SEGMENTS = 2_000
@@ -265,9 +277,7 @@ def simulate_policy(
 def run(
     settings: config_module.Config,
     root: pathlib.Path,
-    implementation: Implementation = simulate.run_chunk,
-    implementation_name: str = "reference",
-    build_profile: str | None = None,
+    implementation: str = "reference",
     batch_size: int = DEFAULT_BATCH_SIZE,
     swept: dict[str, float] | None = None,
 ) -> pathlib.Path:
@@ -276,11 +286,14 @@ def run(
     Args:
         settings: The effective configuration, already validated.
         root: Where run directories are written.
-        implementation: The annual loop to call.
-        implementation_name: Which implementation that is, for the manifest.
-        build_profile: The Rust build profile, where the kernel ran. Pure
-            Python has none, so it stays absent rather than being invented; a
-            timing from the kernel without one means nothing.
+        implementation: Which annual loop to run, keyed into ``RUNNABLE``.
+            A name rather than the callable, because the manifest records this
+            as provenance: passing the two separately let a caller run one
+            implementation and record another, and a manifest that can be
+            wrong is worse than no manifest. The Rust build profile follows
+            from the same name — read from the compiled extension where the
+            kernel ran, and absent for pure Python rather than invented, since
+            a timing from the kernel without one means nothing.
         batch_size: Replications per call.
         swept: Values that vary between the runs of a sweep, written into the
             saved rows as columns. A frame carrying its own parameters is
@@ -288,7 +301,17 @@ def run(
 
     Returns:
         The directory written.
+
+    Raises:
+        KeyError: If no implementation goes by that name.
     """
+    if implementation not in RUNNABLE:
+        raise KeyError(
+            f"no implementation named {implementation!r}; "
+            f"{sorted(RUNNABLE)} are the ones that exist"
+        )
+    annual_loop = RUNNABLE[implementation]
+    build_profile = kernel.BUILD_PROFILE if implementation == "kernel" else None
     started = time.perf_counter()
     run_id = results.new_run_id()
     segments_frame = population.generate(settings)
@@ -304,7 +327,7 @@ def run(
 
     frame = pl.concat(
         simulate_policy(
-            spec, settings, segments, class_names, implementation, batch_size
+            spec, settings, segments, class_names, annual_loop, batch_size
         )
         for spec in settings.policies
     )
@@ -322,7 +345,7 @@ def run(
             package_version=results.package_version(),
             git_commit=commit,
             git_dirty=dirty,
-            implementation=implementation_name,
+            implementation=implementation,
             build_profile=build_profile,
             threads=1,
             batch_size=batch_size,

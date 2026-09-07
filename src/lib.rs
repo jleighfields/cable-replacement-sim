@@ -63,6 +63,14 @@ use pyo3::types::PyTuple;
 /// order. The caller that gets this wrong is a notebook passing `arr.T`, and
 /// the symptom without this check is a plausible wrong number.
 ///
+/// **C order is checked explicitly rather than left to `as_slice`.** That call
+/// accepts a Fortran-ordered array too, since it is contiguous — just
+/// column-major. A one-dimensional array is both, so the eleven per-segment
+/// arrays cannot tell the difference; the draw arrays can, and a transposed
+/// three-dimensional view of the right shape would be read with its axes
+/// exchanged and return a run that completes. A strided slice is rejected
+/// either way, which is what makes the weaker check look like it works.
+///
 /// # Arguments
 ///
 /// * `name` - the argument's name, so the error says which one it was.
@@ -75,17 +83,20 @@ fn contiguous<'a, T: Element, D: Dimension>(
     name: &str,
     array: &'a PyReadonlyArray<'_, T, D>,
 ) -> PyResult<&'a [T]> {
+    if !array.is_c_contiguous() {
+        return Err(PyValueError::new_err(format!(
+            "{name} is not C-contiguous; pass the array itself rather than a \
+             transposed view or a strided slice of it"
+        )));
+    }
     // `PyResult<T>` is `Result<T, PyErr>`: either the slice or a Python
     // exception, returned rather than raised. `map_err` replaces whatever
     // error the call produced with one carrying a message that names the
     // argument, since the original says only that the array was not
-    // contiguous.
-    array.as_slice().map_err(|_| {
-        PyValueError::new_err(format!(
-            "{name} is not C-contiguous; pass the array itself rather than a \
-             transposed view or a strided slice of it"
-        ))
-    })
+    // contiguous. Unreachable once the check above has passed.
+    array
+        .as_slice()
+        .map_err(|_| PyValueError::new_err(format!("{name} could not be read as a flat slice")))
 }
 
 /// Checks that a per-segment array has one entry per segment.
@@ -223,6 +234,22 @@ fn run_chunk<'py>(
         unreachable!("a PyReadonlyArray2 has exactly two axes")
     };
 
+    // The replication count is recovered by dividing by the segment count, so
+    // an empty population divides by zero. Rust does not raise on that: it
+    // panics, and PyO3 surfaces a panic as `PanicException`, which does not
+    // inherit from `Exception` and so passes straight through a driver
+    // script's error handling.
+    if n_segments == 0 {
+        return Err(PyValueError::new_err(
+            "the population is empty; there is nothing to simulate",
+        ));
+    }
+    if n_classes == 0 {
+        return Err(PyValueError::new_err(
+            "n_classes is 0, so the results have no class axis to accumulate into",
+        ));
+    }
+
     // The year axis is why this check exists: a short draw array raises on its
     // own only when a replacement happens to fall in the final year, so a run
     // can complete against the wrong array and be wrong nowhere visible. The
@@ -274,6 +301,20 @@ fn run_chunk<'py>(
         }
     }
 
+    // A class index past the end of the result axis indexes out of bounds and
+    // panics, and it does so only once a segment of that class is selected in
+    // some year — so the same mismatched arguments complete on one seed and
+    // panic on another. The reference raises here instead, because NumPy
+    // refuses the out-of-range bin.
+    let classes = contiguous("class_index", &class_index)?;
+    if let Some(&past_the_axis) = classes.iter().find(|&&c| usize::from(c) >= n_classes) {
+        return Err(PyValueError::new_err(format!(
+            "class_index holds {past_the_axis}, which is past the {n_classes} \
+             classes the results have an axis for; the index is a position in \
+             the class list, not a name"
+        )));
+    }
+
     let results = simulate::run_chunk(
         contiguous("length_ft", &length_ft)?,
         contiguous("customers", &customers)?,
@@ -286,7 +327,7 @@ fn run_chunk<'py>(
             &customer_minutes_per_planned,
         )?,
         contiguous("outage_cost_per_failure", &outage_cost_per_failure)?,
-        contiguous("class_index", &class_index)?,
+        classes,
         contiguous("age0", &age0)?,
         contiguous("shape", &shape)?,
         contiguous("scale", &scale)?,
@@ -328,9 +369,11 @@ fn _cablesim(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Which profile this was compiled with, so a run records what actually ran
     // rather than what the person starting it believed. `debug_assertions` is
     // on in a debug build and off in a release one, and it is resolved at
-    // compile time, so this cannot disagree with the binary it ships in. A
-    // debug build is some tens of times slower here, which makes it the one
-    // way a timing is quietly meaningless.
+    // compile time, so this cannot disagree with the binary it ships in.
+    // Measured on one thread at 2,000 segments, 20 replications and a 30-year
+    // horizon under `risk_ranked`, a debug build takes 0.75 s against 0.12 s
+    // for release — about six times — which is what makes an unlabelled
+    // timing meaningless rather than merely imprecise.
     m.add(
         "BUILD_PROFILE",
         if cfg!(debug_assertions) {

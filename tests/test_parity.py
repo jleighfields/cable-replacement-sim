@@ -9,14 +9,18 @@ implementations read the same uniforms, generated once in NumPy by the fixture
 in `conftest.py`, so there is no random-number stream to reconcile across the
 two languages and nothing here verifies that there is not.
 
-Three tests remove randomness entirely by forcing the Weibull scale through the
-ordinary `scale` array, and this is where allocation defects actually surface:
-a scale near zero makes every segment fail in its first year, one far past the
-horizon makes none fail at all, and the two mixed together makes failures crowd
-out prevention in the same year. Because both sides then consume the same
-draws and take the same decisions, these compare **exactly** — every array,
-every cell. The fourth test runs a real population and compares replication
-against replication, which is what the shared draws make possible.
+Most of these tests remove randomness entirely by forcing the Weibull scale
+through the ordinary `scale` array, and this is where allocation defects
+actually surface: a scale near zero makes every segment fail in its first year,
+one far past the horizon makes none fail at all, and the two mixed together
+makes failures crowd out prevention in the same year. Because both sides then
+consume the same draws and take the same decisions, these compare **exactly** —
+every array, every cell. One test runs a real population instead and compares
+replication against replication, which is what the shared draws make possible.
+
+What the kernel does with input it cannot run is a separate question, asked in
+`test_kernel.py`: a boundary check that never fires is invisible here, because
+both implementations agree on every input these tests build.
 
 All five policies run through the exact tests, which is also what would catch
 the two sides disagreeing about a policy's integer tag: the tags are authored
@@ -40,7 +44,7 @@ from cablesim import (
     weibull,
 )
 
-from tests import conftest, helpers
+from tests import helpers
 
 POLICIES: tuple[policies.Resolved, ...] = (
     helpers.resolved("run_to_failure"),
@@ -57,11 +61,7 @@ the score, and only the second divides by planned cost, so running one of them
 would leave the other unexercised on this side of the boundary.
 """
 
-FAILS_AT_ONCE = 1e-6
-"""A scale that puts every segment's remaining life inside its first year."""
 
-NEVER_FAILS = 1e6
-"""A scale that puts the first failure hundreds of thousands of years out."""
 
 
 def assert_identical(reference: simulate.Results, produced: simulate.Results) -> None:
@@ -94,7 +94,7 @@ def test_the_kernel_matches_the_reference_when_nothing_ever_fails(
     on one side and a running sum on the other — which is a discrete outcome
     rather than a rounding difference.
     """
-    arguments = conftest.forced_lifetimes(deterministic_arguments, NEVER_FAILS)
+    arguments = helpers.forced_lifetimes(deterministic_arguments, helpers.NEVER_FAILS)
 
     assert_identical(
         simulate.run_chunk(**arguments, policy=policy),
@@ -114,7 +114,7 @@ def test_the_kernel_matches_the_reference_when_everything_fails_at_once(
     replacement enters service the following year — without which this case
     would not terminate at all.
     """
-    arguments = conftest.forced_lifetimes(deterministic_arguments, FAILS_AT_ONCE)
+    arguments = helpers.forced_lifetimes(deterministic_arguments, helpers.FAILS_AT_ONCE)
 
     assert_identical(
         simulate.run_chunk(**arguments, policy=policy),
@@ -146,7 +146,7 @@ def test_the_kernel_matches_the_reference_when_failures_crowd_out_prevention(
     n_segments = np.size(deterministic_arguments["age0"])
     n_years = deterministic_arguments["n_years"]
     scales = np.where(
-        np.arange(n_segments) % 2 == 0, FAILS_AT_ONCE, NEVER_FAILS
+        np.arange(n_segments) % 2 == 0, helpers.FAILS_AT_ONCE, helpers.NEVER_FAILS
     ).astype(float)
     arguments = {
         **deterministic_arguments,
@@ -183,7 +183,7 @@ def test_both_implementations_fund_a_candidate_costing_exactly_the_remainder(
     funded_exactly = 10
     planned = 100.0 * 10.0 + 500.0
     arguments = {
-        **conftest.forced_lifetimes(deterministic_arguments, NEVER_FAILS),
+        **helpers.forced_lifetimes(deterministic_arguments, helpers.NEVER_FAILS),
         "length_ft": np.full(n_segments, 100.0),
         "cost_per_ft": np.full(n_segments, 10.0),
         "mobilization_per_segment": 500.0,
@@ -238,47 +238,28 @@ def test_both_implementations_charge_the_same_emergency_total(
         "longer reach the boundary it exists to pin"
     )
 
-    # The budget that puts the kernel's remaining money exactly on a candidate
-    # boundary the reference's falls just short of.
+    scales = np.where(fails, helpers.FAILS_AT_ONCE, helpers.NEVER_FAILS).astype(float)
     arguments = {
-        **deterministic_arguments,
+        **helpers.first_segments(deterministic_arguments, n_segments),
         "length_ft": length_ft,
         "cost_per_ft": np.full(n_segments, 10.0),
         "mobilization_per_segment": 500.0,
-        "scale": np.where(fails, FAILS_AT_ONCE, NEVER_FAILS).astype(float),
-        "replacement_scale": np.where(fails, FAILS_AT_ONCE, NEVER_FAILS).astype(float),
-        "age0": np.random.default_rng(13).uniform(300.0, 4000.0, n_segments) * 0.0
-        + deterministic_arguments["age0"][:n_segments],
-        "customers": deterministic_arguments["customers"][:n_segments],
-        "customer_minutes_per_failure": deterministic_arguments[
-            "customer_minutes_per_failure"
-        ][:n_segments],
-        "customer_minutes_per_planned": deterministic_arguments[
-            "customer_minutes_per_planned"
-        ][:n_segments],
-        "outage_cost_per_failure": deterministic_arguments["outage_cost_per_failure"][
-            :n_segments
-        ],
-        "class_index": deterministic_arguments["class_index"][:n_segments],
-        "shape": deterministic_arguments["shape"][:n_segments],
-        "replacement_shape": deterministic_arguments["replacement_shape"][:n_segments],
-        "lifetime_uniforms": np.ascontiguousarray(
-            deterministic_arguments["lifetime_uniforms"][:, :n_segments, :]
-        ),
-        "policy_uniforms": np.ascontiguousarray(
-            deterministic_arguments["policy_uniforms"][:, :n_segments]
-        ),
+        "scale": scales,
+        "replacement_scale": scales,
         "cost_escalation": np.ones(deterministic_arguments["n_years"]),
         "emergency_charged_to_budget": True,
     }
     policy = helpers.resolved("worst_first")
 
+    # The budget is put exactly on a funding boundary that the two totals
+    # straddle: adding the sequential total leaves it recoverable to the cent,
+    # and subtracting the pairwise one lands just below, so the reference funds
+    # one candidate fewer than the kernel.
     survivors = np.flatnonzero(~fails)
     probability = weibull.conditional_failure_probability(
-        arguments["age0"], arguments["shape"], arguments["scale"]
+        arguments["age0"], arguments["shape"], scales
     )
-    ranked = policies.order_by_rank(probability, survivors)
-    running = np.cumsum(planned[ranked])
+    running = np.cumsum(planned[policies.order_by_rank(probability, survivors)])
     boundary = next(
         total
         for total in running
@@ -295,11 +276,22 @@ def test_both_implementations_charge_the_same_emergency_total(
     )
 
 
+@pytest.mark.parametrize("charged", [False, True], ids=["uncharged", "charged"])
 @pytest.mark.parametrize("policy", POLICIES, ids=lambda spec: str(spec.kind))
 def test_the_kernel_matches_the_reference_over_a_real_population(
-    statistical_arguments: dict[str, object], policy: policies.Resolved
+    statistical_arguments: dict[str, object],
+    policy: policies.Resolved,
+    charged: bool,
 ) -> None:
     """Paired, replication against replication, on drawn lifetimes.
+
+    Run with the year's emergency bill charged against the budget and without.
+    The shipped configuration leaves it off, so without this parameter the
+    charged path is reached only by the deterministic tests, and those force
+    costs round precisely so that both implementations' reductions are exact.
+    That combination once hid a real divergence: the two summed the year's
+    emergency spend in different orders, and the difference reached the budget
+    the candidates were then scored against.
 
     Both sides consume the same draws, so replication `r` sees identical
     lifetimes in each, and the results should differ only where a last-place
@@ -316,8 +308,9 @@ def test_the_kernel_matches_the_reference_over_a_real_population(
     arithmetic, and a standard error of zero would otherwise make the criterion
     a division by zero rather than a pass.
     """
-    reference = simulate.run_chunk(**statistical_arguments, policy=policy)
-    produced = kernel.run_chunk(**statistical_arguments, policy=policy)
+    arguments = {**statistical_arguments, "emergency_charged_to_budget": charged}
+    reference = simulate.run_chunk(**arguments, policy=policy)
+    produced = kernel.run_chunk(**arguments, policy=policy)
 
     for name, expected, actual in zip(
         simulate.Results._fields, reference, produced, strict=True
@@ -364,14 +357,8 @@ def test_two_saved_runs_agree_row_for_row(tmp_path: pathlib.Path) -> None:
     )
 
     saved = {
-        name: run.run(
-            settings,
-            tmp_path / name,
-            implementation=implementation,
-            implementation_name=name,
-            batch_size=3,
-        )
-        for name, implementation in run.IMPLEMENTATIONS.items()
+        name: run.run(settings, tmp_path / name, implementation=name, batch_size=3)
+        for name in run.RUNNABLE
     }
 
     frames = {
@@ -399,13 +386,7 @@ def test_a_saved_kernel_run_records_the_profile_it_was_built_with(
         config.load_config(constants.DEFAULT_CONFIG_PATH), 100, n_reps=2
     )
 
-    directory = run.run(
-        settings,
-        tmp_path,
-        implementation=kernel.run_chunk,
-        implementation_name="kernel",
-        build_profile=kernel.BUILD_PROFILE,
-    )
+    directory = run.run(settings, tmp_path, implementation="kernel")
 
     manifest = results.Manifest.model_validate_json(
         (directory / results.MANIFEST_NAME).read_text(encoding="utf-8")

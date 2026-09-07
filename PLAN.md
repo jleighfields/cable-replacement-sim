@@ -1474,8 +1474,8 @@ that matters, and a handful of crossings per policy does not touch it.
     emergency_multiplier, mobilization_per_segment,
     emergency_charged_to_budget, n_classes, n_years,
 ))]
-fn run_chunk(
-    py: Python<'_>,
+fn run_chunk<'py>(
+    py: Python<'py>,
     // per-segment arrays, all length n_segments, ordered by segment_id
     length_ft:                    PyReadonlyArray1<f64>,
     customers:                    PyReadonlyArray1<f64>,  // count, for SAIFI
@@ -1855,6 +1855,37 @@ Which comparisons share random draws, and which do not:
 - **Parity is checked on saved runs**, not only in memory. Two runs written to
   disk (Section 7, Results, metrics, and reporting) can be diffed after the
   fact, which is what makes a failure diagnosable rather than merely red.
+
+**What the single-threaded kernel is worth, measured.** At 12,000 segments,
+50 replications and a 30-year horizon, release build, one thread, against the
+reference on the same draws: 1.9x with no candidates at all, 5.8x under an age
+threshold of 45 years — which leaves 655 of 12,000 eligible — and **1.0x for
+the three policies that use the neutral threshold**, where every segment is a
+candidate every year. The kernel scores only candidates while the reference
+scores the whole population every year, which is the whole of that spread.
+
+So the kernel's advantage is in the candidate set being a fraction of the
+population, and it disappears exactly where the candidate set *is* the
+population. That is not the picture 2.9, Annual simulation loop, anticipates
+when it calls the budget-constrained core the reason this workload suits Rust,
+and it is worth holding onto: the reference is a per-year-vectorized NumPy
+loop, which is already most of what the batched baseline of 6.5 will be, so the
+comparison there will be less flattering than that sentence implies rather than
+more. The case for the kernel single-threaded rests on the policies that fund a
+minority of the fleet; the case at large rests on rayon, where NumPy cannot
+follow without multiprocessing.
+
+**One exact saving is identified and deliberately not taken.** The annual
+failure probability needs `((t+1)/lambda)^k` and `(t/lambda)^k`, and this
+year's subtrahend is next year's minuend, so carrying the accumulated hazard
+forward halves the `powf` calls — from two per candidate-year to one. It is an
+identity rather than an approximation. It is deferred to Phase 5 for two
+reasons: it puts per-segment state in the year loop that has to be invalidated
+in three places, and getting that wrong yields a run that completes with
+plausible curves; and it would make `simulate.rs` stop reading line for line
+against `simulate.py`, which is what makes a parity failure diagnosable. Phase
+5 is where it can be measured against the batched baseline that is the honest
+comparison anyway.
 
 ### 6.5 Benchmarks
 
@@ -2467,8 +2498,11 @@ Each phase ends in a working, committed state.
 
 **Phase 0 — scaffold**
 `pyproject.toml` (maturin backend), `Cargo.toml`, config schema + loader,
-`configs/base.yaml`, `.gitignore`, README. Confirm `maturin develop` builds a
-trivial `add(a, b)` and imports in Python. *Do not skip this smoke test.*
+`configs/base.yaml`, `.gitignore`, README. Confirm `maturin develop` builds
+the crate and that the extension module imports in Python. *Do not skip this
+smoke test.* It began as a trivial `add(a, b)`; Phase 4 replaced it with a
+two-segment run through the real boundary, which checks the same thing and one
+more — that an array survives the crossing in both directions.
 
 `main` was already protected against direct pushes and merges without a pull
 request, so this phase landed through one. The remaining half of Section 10.4,

@@ -23,7 +23,7 @@ import argparse
 import logging
 import pathlib
 
-from cablesim import config, constants, kernel, run
+from cablesim import config, constants, run
 
 log = logging.getLogger("budget_sweep")
 
@@ -51,7 +51,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--implementation",
-        choices=sorted(run.IMPLEMENTATIONS),
+        choices=sorted(run.RUNNABLE),
         default="reference",
         help="which annual loop to run; the name is recorded in the manifest",
     )
@@ -90,13 +90,6 @@ def main(argv: list[str] | None = None) -> None:
             shipped.population.total_customers,
         )
 
-    # Read from the compiled extension rather than assumed, because a debug
-    # build is the one way this sweep silently takes far longer than it should,
-    # and a timing recorded without the profile it ran under says nothing.
-    build_profile = (
-        kernel.BUILD_PROFILE if arguments.implementation == "kernel" else None
-    )
-
     grid = run.budget_grid(settings.budget.annual)
     log.info(
         "sweeping %d budget levels into %s, through the %s implementation",
@@ -109,9 +102,7 @@ def main(argv: list[str] | None = None) -> None:
         directory = run.run(
             point,
             arguments.out,
-            implementation=run.IMPLEMENTATIONS[arguments.implementation],
-            implementation_name=arguments.implementation,
-            build_profile=build_profile,
+            implementation=arguments.implementation,
             batch_size=arguments.batch_size,
             swept={"annual_budget": level},
         )

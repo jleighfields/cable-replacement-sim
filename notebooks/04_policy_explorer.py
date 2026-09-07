@@ -563,13 +563,7 @@ def _(pathlib, pl, results, run, saved, settings, tempfile):
     from cablesim import kernel
 
     with tempfile.TemporaryDirectory(prefix="cablesim_04_kernel_") as _root:
-        _directory = run.run(
-            settings,
-            pathlib.Path(_root),
-            implementation=kernel.run_chunk,
-            implementation_name="kernel",
-            build_profile=kernel.BUILD_PROFILE,
-        )
+        _directory = run.run(settings, pathlib.Path(_root), implementation="kernel")
         from_kernel = pl.read_parquet(_directory / results.RESULTS_NAME)
 
     _order = ["policy", "replication", "year", "class"]

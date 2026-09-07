@@ -7,6 +7,7 @@ belong in `conftest.py`.
 import pathlib
 import re
 
+import numpy as np
 from cablesim import config, constants, policies
 
 PLAN_PATH: pathlib.Path = constants.PROJECT_ROOT / "PLAN.md"
@@ -107,3 +108,98 @@ def resolved(name: str, **params: float | str) -> policies.Resolved:
         The resolved policy.
     """
     return policies.resolve(config.PolicySpec(name=name, params=params))
+
+
+SEGMENT_ARGUMENTS: tuple[str, ...] = (
+    "length_ft",
+    "customers",
+    "customer_minutes_per_failure",
+    "customer_minutes_per_planned",
+    "outage_cost_per_failure",
+    "class_index",
+    "age0",
+    "shape",
+    "scale",
+    "replacement_shape",
+    "replacement_scale",
+    "cost_per_ft",
+)
+"""The annual loop's arguments that carry one entry per segment.
+
+Named here rather than derived, because the two draw arrays are also per
+segment and are indexed on a different axis, so a rule of the form "every array
+whose length is the segment count" would catch them and slice the wrong one.
+"""
+
+
+def first_segments(
+    arguments: dict[str, object], n_segments: int
+) -> dict[str, object]:
+    """Copies one call's arguments down to its first ``n_segments`` segments.
+
+    A segment's array position is its identifier, so a prefix is still a valid
+    population: the identifiers stay 0 upwards and the tie-break still means
+    what it meant. This is what lets a test that needs a handful of segments
+    reuse the fixture's population instead of building a second one that would
+    drift away from it.
+
+    The draw arrays are sliced on their segment axis and made contiguous again,
+    because the kernel reads every array as a flat slice in C order and a
+    strided view is not one.
+
+    Args:
+        arguments: The arguments to copy, as the parity fixtures build them.
+        n_segments: How many segments to keep, counting from segment 0.
+
+    Returns:
+        A new argument dictionary; the original is untouched.
+    """
+    kept = {name: arguments[name][:n_segments] for name in SEGMENT_ARGUMENTS}
+    return {
+        **arguments,
+        **kept,
+        "lifetime_uniforms": np.ascontiguousarray(
+            arguments["lifetime_uniforms"][:, :n_segments, :]
+        ),
+        "policy_uniforms": np.ascontiguousarray(
+            arguments["policy_uniforms"][:, :n_segments]
+        ),
+    }
+
+
+FAILS_AT_ONCE = 1e-6
+"""A Weibull scale that puts every segment's remaining life inside year one.
+
+Randomness is removed through the ordinary ``scale`` and ``replacement_scale``
+arrays rather than through an argument only tests pass, so a test using this
+exercises the shipped path rather than a branch nothing else reaches.
+"""
+
+NEVER_FAILS = 1e6
+"""A scale that puts the first failure hundreds of thousands of years out."""
+
+
+def forced_lifetimes(
+    arguments: dict[str, object], scale: float, replacement: float | None = None
+) -> dict[str, object]:
+    """Copies a call's arguments with every Weibull scale replaced.
+
+    Args:
+        arguments: The arguments to copy.
+        scale: What to put in ``scale``.
+        replacement: What to put in ``replacement_scale``, or None to use
+            ``scale`` for both.
+
+    Returns:
+        A new argument dictionary; the original is untouched, which matters
+        because the fixture it usually comes from is shared by every test in
+        the session.
+    """
+    segments = np.shape(arguments["age0"])
+    return {
+        **arguments,
+        "scale": np.full(segments, scale),
+        "replacement_scale": np.full(
+            segments, scale if replacement is None else replacement
+        ),
+    }

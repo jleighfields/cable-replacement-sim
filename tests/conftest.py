@@ -18,7 +18,6 @@ own sizes: they compare against a closed form rather than against another
 implementation, so they have nothing to share.
 """
 
-import numpy as np
 import pytest
 from cablesim import config as config_module
 from cablesim import constants, population, random_draws, run
@@ -52,9 +51,7 @@ fifty rather than the thousand the batched baseline will carry once it exists.
 """
 
 
-def simulation_arguments(
-    settings: config_module.Config, n_reps: int
-) -> dict[str, object]:
+def simulation_arguments(settings: config_module.Config) -> dict[str, object]:
     """Builds one call's arguments from a configuration.
 
     Assembled through the same package functions a real run uses — the
@@ -63,8 +60,10 @@ def simulation_arguments(
     hands it.
 
     Args:
-        settings: The configuration to build from.
-        n_reps: Replications in the chunk.
+        settings: The configuration to build from, which carries the
+            replication count. Taken from there rather than passed alongside
+            it, so a fixture cannot resize the population to one count and
+            build draws for another.
 
     Returns:
         Every argument of ``simulate.run_chunk`` except ``policy``, keyed by
@@ -74,7 +73,7 @@ def simulation_arguments(
     segments = run.segment_arrays(population.generate(settings))
     n_segments = segments["age0"].size
     sources = random_draws.spawn_sources(simulation.seed)
-    replications = range(n_reps)
+    replications = range(simulation.n_reps)
 
     return {
         **segments,
@@ -112,7 +111,7 @@ def deterministic_arguments() -> dict[str, object]:
         DETERMINISTIC_SEGMENTS,
         n_reps=DETERMINISTIC_REPS,
     )
-    return simulation_arguments(settings, DETERMINISTIC_REPS)
+    return simulation_arguments(settings)
 
 
 @pytest.fixture(scope="session")
@@ -127,34 +126,4 @@ def statistical_arguments() -> dict[str, object]:
         STATISTICAL_SEGMENTS,
         n_reps=STATISTICAL_REPS,
     )
-    return simulation_arguments(settings, STATISTICAL_REPS)
-
-
-def forced_lifetimes(
-    arguments: dict[str, object], scale: float, replacement: float | None = None
-) -> dict[str, object]:
-    """Copies the arguments with every Weibull scale replaced.
-
-    Randomness is removed through the ordinary ``scale`` and
-    ``replacement_scale`` arrays rather than through an argument only tests
-    pass, so what runs is the shipped path. A scale near zero makes every
-    segment fail inside its first year; one far past the horizon makes none
-    fail at all.
-
-    Args:
-        arguments: The arguments to copy.
-        scale: What to put in ``scale``.
-        replacement: What to put in ``replacement_scale``, or None for
-            ``scale``.
-
-    Returns:
-        A new argument dictionary; the original is untouched.
-    """
-    segments = np.shape(arguments["age0"])
-    return {
-        **arguments,
-        "scale": np.full(segments, scale),
-        "replacement_scale": np.full(
-            segments, scale if replacement is None else replacement
-        ),
-    }
+    return simulation_arguments(settings)

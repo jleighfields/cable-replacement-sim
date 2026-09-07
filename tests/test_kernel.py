@@ -18,9 +18,6 @@ from cablesim import kernel
 
 from tests import helpers
 
-FAILS_AT_ONCE = 1e-6
-"""A scale that puts every segment's remaining life inside its first year."""
-
 
 def minimal_arguments(
     n_segments: int, n_years: int = 1, n_reps: int = 1, n_classes: int = 1
@@ -55,9 +52,9 @@ def minimal_arguments(
         "class_index": np.zeros(n_segments, dtype=np.uint8),
         "age0": np.full(n_segments, 10.0),
         "shape": np.full(n_segments, 6.2),
-        "scale": np.full(n_segments, FAILS_AT_ONCE),
+        "scale": np.full(n_segments, helpers.FAILS_AT_ONCE),
         "replacement_shape": np.full(n_segments, 6.2),
-        "replacement_scale": np.full(n_segments, FAILS_AT_ONCE),
+        "replacement_scale": np.full(n_segments, helpers.FAILS_AT_ONCE),
         "cost_per_ft": np.full(n_segments, 10.0),
         "lifetime_uniforms": np.full((n_reps, n_segments, n_years + 1), 0.5),
         "policy_uniforms": np.full((n_reps, n_segments), 0.5),
@@ -132,3 +129,68 @@ def test_the_kernel_raises_rather_than_panicking_on_a_class_past_the_axis() -> N
 
     with pytest.raises(ValueError):
         kernel.run_chunk(**arguments, policy=helpers.resolved("run_to_failure"))
+
+
+def test_the_kernel_refuses_a_per_segment_array_of_the_wrong_length() -> None:
+    """A short per-segment array is refused, naming which one it was.
+
+    Every array is indexed by segment position, so one entry short reads past
+    the end of a buffer. This is the guard that keeps that a Python exception
+    rather than a panic, and the argument's name is in the message because
+    twelve arrays are checked by one loop.
+    """
+    arguments = {**minimal_arguments(4), "cost_per_ft": np.full(3, 10.0)}
+
+    with pytest.raises(ValueError, match="cost_per_ft has 3 entries"):
+        kernel.run_chunk(**arguments, policy=helpers.resolved("run_to_failure"))
+
+
+def test_the_kernel_refuses_a_draw_array_that_is_short_a_year() -> None:
+    """The draw array must carry one column per year plus the initial draw.
+
+    A column short raises on its own only when a replacement happens to fall in
+    the final year, so without this check a run completes against the wrong
+    array and is wrong nowhere visible.
+    """
+    arguments = minimal_arguments(4, n_years=3)
+    arguments["lifetime_uniforms"] = np.full((1, 4, 3), 0.5)
+
+    with pytest.raises(ValueError, match="lifetime_uniforms is"):
+        kernel.run_chunk(**arguments, policy=helpers.resolved("run_to_failure"))
+
+
+def test_the_kernel_refuses_a_policy_tag_it_does_not_recognize() -> None:
+    """A tag outside the mapping is refused rather than scored as zero.
+
+    The tags are authored in the Python policy module and read again as
+    constants in the Rust one. An unrecognized one would otherwise fall to the
+    catch-all branch, score every candidate zero, and fund them in segment
+    order — a run that completes and means nothing.
+    """
+    unmapped = helpers.resolved("worst_first")._replace(kind=9)
+
+    with pytest.raises(ValueError, match="policy.kind is 9"):
+        kernel.run_chunk(**minimal_arguments(4), policy=unmapped)
+
+
+def test_a_rank_key_that_is_not_a_number_reaches_python_as_an_error() -> None:
+    """The NaN check propagates out of the loop and across the boundary.
+
+    The Rust unit tests cover the comparator itself, so what is untested there
+    is the path: the error has to travel out of the year loop and be converted
+    at the binding. Unconverted, a NaN sorts last under the total comparator
+    and the segment is silently never funded.
+
+    A NaN arrives the way one actually would, through a per-segment input the
+    score reads, rather than through a rank array no caller can pass.
+    """
+    arguments = {
+        **minimal_arguments(4),
+        "scale": np.full(4, helpers.NEVER_FAILS),
+        "replacement_scale": np.full(4, helpers.NEVER_FAILS),
+        "outage_cost_per_failure": np.array([1.0, np.nan, 3.0, 4.0]),
+        "budget": np.full(1, 1e9),
+    }
+
+    with pytest.raises(ValueError, match="scored NaN, first at segment_id 1"):
+        kernel.run_chunk(**arguments, policy=helpers.resolved("risk_ranked"))

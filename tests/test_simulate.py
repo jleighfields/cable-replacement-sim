@@ -12,23 +12,14 @@ import numpy as np
 import pytest
 from cablesim import simulate
 
+from tests import helpers
 from tests.helpers import resolved
 
 N_SEGMENTS = 4
 N_YEARS = 3
 N_CLASSES = 2
 
-FAILS_AT_ONCE = 1e-6
-"""A scale that puts every segment's remaining life at zero.
 
-Verified rather than assumed: the conditional draw returns exactly 0.0 at this
-scale for any age the model reaches, and a replacement's fresh lifetime comes
-out near a millionth of a year, so it fails again in the year after it enters
-service.
-"""
-
-NEVER_FAILS = 1e6
-"""A scale that puts the first failure hundreds of thousands of years out."""
 
 
 def inputs(**overrides: object) -> dict[str, object]:
@@ -81,8 +72,8 @@ def test_forcing_the_scale_to_zero_fails_every_segment_every_year() -> None:
     """
     results = simulate.run_chunk(
         **inputs(
-            scale=np.full(N_SEGMENTS, FAILS_AT_ONCE),
-            replacement_scale=np.full(N_SEGMENTS, FAILS_AT_ONCE),
+            scale=np.full(N_SEGMENTS, helpers.FAILS_AT_ONCE),
+            replacement_scale=np.full(N_SEGMENTS, helpers.FAILS_AT_ONCE),
         )
     )
 
@@ -98,8 +89,8 @@ def test_forcing_the_scale_past_the_horizon_fails_nothing() -> None:
     """The other end of the deterministic case."""
     results = simulate.run_chunk(
         **inputs(
-            scale=np.full(N_SEGMENTS, NEVER_FAILS),
-            replacement_scale=np.full(N_SEGMENTS, NEVER_FAILS),
+            scale=np.full(N_SEGMENTS, helpers.NEVER_FAILS),
+            replacement_scale=np.full(N_SEGMENTS, helpers.NEVER_FAILS),
         )
     )
 
@@ -120,7 +111,7 @@ def test_the_initial_draw_is_conditional_on_the_age_already_survived() -> None:
         **inputs(
             age0=np.full(N_SEGMENTS, 80.0),
             lifetime_uniforms=np.full((1, N_SEGMENTS, N_YEARS + 1), 0.5),
-            replacement_scale=np.full(N_SEGMENTS, NEVER_FAILS),
+            replacement_scale=np.full(N_SEGMENTS, helpers.NEVER_FAILS),
         )
     )
 
@@ -138,8 +129,8 @@ def test_a_segment_that_failed_this_year_is_not_also_planned_work() -> None:
     results = simulate.run_chunk(
         **inputs(
             policy=resolved("risk_ranked"),
-            scale=np.full(N_SEGMENTS, FAILS_AT_ONCE),
-            replacement_scale=np.full(N_SEGMENTS, FAILS_AT_ONCE),
+            scale=np.full(N_SEGMENTS, helpers.FAILS_AT_ONCE),
+            replacement_scale=np.full(N_SEGMENTS, helpers.FAILS_AT_ONCE),
         )
     )
 
@@ -159,8 +150,8 @@ def test_unspent_budget_does_not_carry_into_the_next_year() -> None:
         **inputs(
             policy=resolved("risk_ranked"),
             budget=np.full(N_YEARS, 1_400.0),
-            scale=np.full(N_SEGMENTS, NEVER_FAILS),
-            replacement_scale=np.full(N_SEGMENTS, NEVER_FAILS),
+            scale=np.full(N_SEGMENTS, helpers.NEVER_FAILS),
+            replacement_scale=np.full(N_SEGMENTS, helpers.NEVER_FAILS),
         )
     )
 
@@ -173,8 +164,8 @@ def test_the_budget_funds_candidates_down_the_ranked_order() -> None:
         **inputs(
             policy=resolved("risk_ranked"),
             budget=np.array([5_000.0, 0.0, 0.0]),
-            scale=np.full(N_SEGMENTS, NEVER_FAILS),
-            replacement_scale=np.full(N_SEGMENTS, NEVER_FAILS),
+            scale=np.full(N_SEGMENTS, helpers.NEVER_FAILS),
+            replacement_scale=np.full(N_SEGMENTS, helpers.NEVER_FAILS),
         )
     )
 
@@ -194,8 +185,8 @@ def test_planned_work_reports_its_customer_minutes_outside_the_indices() -> None
         **inputs(
             policy=resolved("risk_ranked"),
             budget=np.array([1e9, 0.0, 0.0]),
-            scale=np.full(N_SEGMENTS, NEVER_FAILS),
-            replacement_scale=np.full(N_SEGMENTS, NEVER_FAILS),
+            scale=np.full(N_SEGMENTS, helpers.NEVER_FAILS),
+            replacement_scale=np.full(N_SEGMENTS, helpers.NEVER_FAILS),
         )
     )
 
@@ -212,7 +203,9 @@ def test_charging_emergency_spend_to_the_budget_crowds_out_planned_work() -> Non
     bucket, the remaining three segments are all affordable; charged first,
     what is left will not cover even one.
     """
-    scale = np.array([FAILS_AT_ONCE, NEVER_FAILS, NEVER_FAILS, NEVER_FAILS])
+    scale = np.array(
+        [helpers.FAILS_AT_ONCE, *[helpers.NEVER_FAILS] * (N_SEGMENTS - 1)]
+    )
     arguments = inputs(
         policy=resolved("risk_ranked"),
         budget=np.full(N_YEARS, 5_000.0),
@@ -236,8 +229,8 @@ def test_a_tie_is_broken_on_segment_identifier_when_only_one_fits() -> None:
             policy=resolved("age_threshold", threshold_years=5),
             age0=np.full(N_SEGMENTS, 40.0),
             budget=np.array([1_500.0, 0.0, 0.0]),
-            scale=np.full(N_SEGMENTS, NEVER_FAILS),
-            replacement_scale=np.full(N_SEGMENTS, NEVER_FAILS),
+            scale=np.full(N_SEGMENTS, helpers.NEVER_FAILS),
+            replacement_scale=np.full(N_SEGMENTS, helpers.NEVER_FAILS),
         )
     )
 
@@ -303,8 +296,8 @@ def test_cost_escalation_lifts_every_dollar_in_the_year_together() -> None:
     results = simulate.run_chunk(
         **inputs(
             cost_escalation=escalation,
-            scale=np.full(N_SEGMENTS, FAILS_AT_ONCE),
-            replacement_scale=np.full(N_SEGMENTS, FAILS_AT_ONCE),
+            scale=np.full(N_SEGMENTS, helpers.FAILS_AT_ONCE),
+            replacement_scale=np.full(N_SEGMENTS, helpers.FAILS_AT_ONCE),
         )
     )
 
@@ -326,8 +319,8 @@ def test_a_replaced_segment_is_age_zero_when_the_next_year_is_scored() -> None:
             policy=resolved("age_threshold", threshold_years=40),
             age0=np.full(N_SEGMENTS, 40.0),
             budget=np.full(N_YEARS, 1_500.0),
-            scale=np.full(N_SEGMENTS, NEVER_FAILS),
-            replacement_scale=np.full(N_SEGMENTS, NEVER_FAILS),
+            scale=np.full(N_SEGMENTS, helpers.NEVER_FAILS),
+            replacement_scale=np.full(N_SEGMENTS, helpers.NEVER_FAILS),
         )
     )
 
@@ -356,8 +349,8 @@ def test_the_value_of_lost_load_escalates_with_construction_cost() -> None:
             outage_cost_per_failure=np.array([10_000.0, 1_000.0, 0.0, 0.0]),
             age0=np.full(N_SEGMENTS, 40.0),
             # The last two never fail and score zero, so they rank below both.
-            scale=np.array([50.0, 50.0, NEVER_FAILS, NEVER_FAILS]),
-            replacement_scale=np.full(N_SEGMENTS, NEVER_FAILS),
+            scale=np.array([50.0, 50.0, helpers.NEVER_FAILS, helpers.NEVER_FAILS]),
+            replacement_scale=np.full(N_SEGMENTS, helpers.NEVER_FAILS),
             class_index=np.array([0, 1, 1, 1], dtype=np.uint8),
             cost_escalation=np.array([4.0, 1.0, 1.0]),
             # Covers the first candidate at escalated prices and not the second.
@@ -421,8 +414,8 @@ def test_a_replaced_segment_is_scored_at_age_zero_not_age_one() -> None:
             policy=resolved("age_threshold", threshold_years=1),
             age0=np.full(N_SEGMENTS, 40.0),
             budget=np.full(N_YEARS, 1e9),
-            scale=np.full(N_SEGMENTS, NEVER_FAILS),
-            replacement_scale=np.full(N_SEGMENTS, NEVER_FAILS),
+            scale=np.full(N_SEGMENTS, helpers.NEVER_FAILS),
+            replacement_scale=np.full(N_SEGMENTS, helpers.NEVER_FAILS),
         )
     )
 

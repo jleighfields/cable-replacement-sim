@@ -67,6 +67,29 @@ class Results(NamedTuple):
     emergency_spend: np.ndarray
 
 
+def running_total(values: np.ndarray) -> float:
+    """Adds an array one element at a time, left to right.
+
+    ``sum`` is free to add pairwise, which is faster and gives a different
+    answer in the last bits. That difference is tolerable wherever the result
+    is only reported, and is not tolerable where it feeds a comparison that
+    decides a discrete outcome: both places this is used reach the greedy
+    budget fill, where a last-bit difference changes which segment is the last
+    one funded. Accumulating left to right is also what a running total in
+    another language does, so it is what makes the two implementations agree
+    exactly rather than approximately.
+
+    Args:
+        values: What to add. May be empty.
+
+    Returns:
+        The total, or 0.0 for an empty array.
+    """
+    if values.size == 0:
+        return 0.0
+    return float(np.cumsum(values)[-1])
+
+
 def run_chunk(
     length_ft: np.ndarray,
     customers: np.ndarray,
@@ -210,7 +233,16 @@ def run_chunk(
                 # positive, so the greedy fill funds nothing at zero or below —
                 # and it stops a year whose failures cost more than the budget
                 # from carrying a negative that reads as a debt.
-                available = max(0.0, available - float(emergency_now.sum()))
+                #
+                # `cumsum` rather than `sum`, for the reason the greedy fill
+                # uses it: this total is subtracted from the budget that the
+                # fill then compares a cumulative cost against, so a last-bit
+                # difference here decides which segment is funded last. `sum`
+                # is free to add pairwise, and on a few hundred uneven costs it
+                # disagrees with a running total often enough to change that
+                # decision — measured, the two orders differ in the last bits
+                # for most years with more than a handful of failures.
+                available = max(0.0, available - running_total(emergency_now))
 
             candidates = np.flatnonzero(policies.eligible(policy, age, replaced))
             if candidates.size > 0:

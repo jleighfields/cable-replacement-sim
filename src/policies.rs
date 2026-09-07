@@ -270,11 +270,16 @@ pub fn order_by_rank(rank: &[f64], candidates: &[usize]) -> Result<Vec<usize>, N
     // **The key travels with the identifier rather than being looked up.**
     // Sorting the candidate positions directly would make every comparison
     // read `rank[left]` and `rank[right]`, two scattered accesses into an
-    // array as long as the population; at twelve thousand candidates a year
-    // that is hundreds of millions of cache misses across a run, and it made
-    // the sort cost more than the whole rest of the year loop. Pairing each
-    // key with its position first costs one pass and one allocation, and the
-    // comparator then reads two adjacent machine words.
+    // array as long as the population. Pairing each key with its position
+    // first costs one pass and one allocation, and the comparator then reads
+    // two adjacent machine words. Measured on one thread at 12,000 segments, 5
+    // replications and a 30-year horizon under `risk_ranked`, in a release
+    // build: 0.197 s paired against 0.216 s looked up, so about nine percent.
+    //
+    // Scoring, sorting and filling is where that run's time goes, which is why
+    // nine percent of it is worth one allocation: `run_to_failure` over the
+    // same inputs does none of the three and takes 0.009 s, against 0.216 s
+    // for `risk_ranked`.
     //
     // `.iter().map(...).collect()` is a list comprehension read left to right:
     // iterate, build a pair from each position, and collect into a `Vec` —
