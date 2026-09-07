@@ -161,7 +161,10 @@ def test_a_horizon_total_sums_each_replication_before_averaging() -> None:
 def test_bands_summarize_across_replications_rather_than_collapsing_years() -> None:
     """One row per policy and year, with the spread the replications showed."""
     frame = pl.concat(
-        [rows(replication=index, customer_minutes=1_000.0 * index) for index in range(5)]
+        [
+            rows(replication=index, customer_minutes=1_000.0 * index)
+            for index in range(5)
+        ]
     )
 
     banded = metrics.bands(
