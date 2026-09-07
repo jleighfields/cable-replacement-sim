@@ -168,6 +168,79 @@ pub fn block(block: u64, key: [u64; 2]) -> [u64; LANES] {
     philox([block + NUMPY_COUNTER_LEAD, 0, 0, 0], key)
 }
 
+/// Bits reserved for the year within a draw's index.
+///
+/// Sixty-four years of horizon. A simulation is thirty, and a study that wanted
+/// more would be a different question than this one answers.
+const YEAR_BITS: u64 = 6;
+
+/// Bits reserved for the segment.
+const SEGMENT_BITS: u64 = 32;
+
+/// Bits reserved for the replication.
+const REPLICATION_BITS: u64 = 20;
+
+/// Where each field sits in the index.
+const SEGMENT_SHIFT: u64 = YEAR_BITS;
+/// Where the replication field starts.
+const REPLICATION_SHIFT: u64 = SEGMENT_SHIFT + SEGMENT_BITS;
+/// Where the purpose field starts, leaving six bits above it.
+const PURPOSE_SHIFT: u64 = REPLICATION_SHIFT + REPLICATION_BITS;
+
+/// The largest year an index can carry.
+pub const MAX_YEAR: u64 = (1 << YEAR_BITS) - 1;
+/// The largest segment identifier an index can carry.
+pub const MAX_SEGMENT: u64 = (1 << SEGMENT_BITS) - 1;
+/// The largest replication an index can carry.
+pub const MAX_REPLICATION: u64 = (1 << REPLICATION_BITS) - 1;
+
+// The shipped run has to fit with room to spare, and narrowing a field is the
+// way that would quietly stop being true — two positions would then share one
+// draw, which is a correlation nothing downstream could detect. Checked when
+// this compiles rather than by a test, because a test comparing one constant
+// against another can never fail and is worth nothing.
+const _: () = assert!(12_000 < MAX_SEGMENT, "the shipped population must fit");
+const _: () = assert!(1_000 < MAX_REPLICATION, "the shipped run must fit");
+const _: () = assert!(30 < MAX_YEAR, "the shipped horizon must fit");
+// And the fields must not overlap: together they have to leave room above.
+const _: () = assert!(YEAR_BITS + SEGMENT_BITS + REPLICATION_BITS < 64);
+
+/// Where in the stream the draw for one position of the simulation lives.
+///
+/// **Fixed bit fields rather than a product of the run's dimensions.** Packing
+/// as `((purpose * n_reps + replication) * n_segments + segment) * years + year`
+/// would work, but it would make a segment's draws depend on how many segments
+/// the run happened to have — so resizing the population would reshuffle
+/// everyone's randomness, and a small run would stop being a smaller version of
+/// a large one. With fixed fields, segment 5 of replication 3 in year 2 draws
+/// the same number whatever else is in the run.
+///
+/// The purpose field is what keeps the replacement-policy priorities from
+/// correlating with the same segments' lifetime draws. That separation is
+/// load-bearing rather than tidy: a larger uniform gives a shorter lifetime, so
+/// without it the random policy would rank segments by imminence of failure and
+/// stop being a control.
+///
+/// # Arguments
+///
+/// * `purpose` - which stream, keeping unrelated draws independent.
+/// * `replication` - at most `MAX_REPLICATION`.
+/// * `segment` - at most `MAX_SEGMENT`.
+/// * `year` - at most `MAX_YEAR`.
+///
+/// # Returns
+///
+/// The position in the stream, which is unique for each distinct argument set.
+pub fn index(purpose: u64, replication: u64, segment: u64, year: u64) -> u64 {
+    debug_assert!(replication <= MAX_REPLICATION, "replication out of range");
+    debug_assert!(segment <= MAX_SEGMENT, "segment out of range");
+    debug_assert!(year <= MAX_YEAR, "year out of range");
+    (purpose << PURPOSE_SHIFT)
+        | (replication << REPLICATION_SHIFT)
+        | (segment << SEGMENT_SHIFT)
+        | year
+}
+
 /// The uniform at one position in the flat stream of draws.
 ///
 /// A position is a block and a lane within it, which is what lets any draw be
@@ -240,6 +313,26 @@ mod tests {
                 assert!((0.0..1.0).contains(&draw), "{draw} outside [0, 1)");
             }
         }
+    }
+
+    #[test]
+    fn every_field_of_an_index_is_distinguishable() {
+        // Each field moved on its own must land somewhere different. A shift
+        // that overlapped its neighbour would alias two positions onto one
+        // draw, which is a correlation nothing downstream could detect.
+        let base = index(0, 0, 0, 0);
+        for moved in [
+            index(1, 0, 0, 0),
+            index(0, 1, 0, 0),
+            index(0, 0, 1, 0),
+            index(0, 0, 0, 1),
+        ] {
+            assert_ne!(base, moved);
+        }
+        // And the fields must not run into each other at their limits.
+        assert_ne!(index(0, 0, MAX_SEGMENT, 0), index(0, 1, 0, 0));
+        assert_ne!(index(0, 0, 0, MAX_YEAR), index(0, 0, 1, 0));
+        assert_ne!(index(0, MAX_REPLICATION, 0, 0), index(1, 0, 0, 0));
     }
 
     #[test]

@@ -574,12 +574,163 @@ fn philox_uniforms(
     values.into_pyarray(py)
 }
 
+/// Uniforms for a block of the simulation, every replication and segment.
+///
+/// The dense case: the left-truncated draw every segment takes at the start of
+/// a run, and the fixed per-segment priority the random policy ranks on. Both
+/// are read for every segment of every replication, so there is nothing to
+/// select and the positions are known from the shape alone.
+///
+/// # Arguments
+///
+/// * `key_low` - low word of the key, derived from the run's seed.
+/// * `key_high` - high word of the key.
+/// * `purpose` - which stream, keeping unrelated draws independent.
+/// * `first_replication` - the replication this chunk starts at, so a chunk
+///   draws the same numbers wherever it sits in a run.
+/// * `n_reps` - replications in this chunk.
+/// * `n_segments` - segments in the population.
+/// * `year` - the year these draws belong to.
+///
+/// # Returns
+///
+/// `n_reps * n_segments` doubles, replication-major.
+///
+/// # Errors
+///
+/// `ValueError` if any position would not fit the index, which is a run larger
+/// than the packing allows rather than anything about this call.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn uniforms_dense<'py>(
+    py: Python<'py>,
+    key_low: u64,
+    key_high: u64,
+    purpose: u64,
+    first_replication: u64,
+    n_reps: usize,
+    n_segments: usize,
+    year: u64,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    within_the_index(first_replication + n_reps as u64, n_segments as u64, year)?;
+    let key = [key_low, key_high];
+    let values: Vec<f64> = py.detach(|| {
+        (0..n_reps as u64)
+            .flat_map(|offset| {
+                let replication = first_replication + offset;
+                (0..n_segments as u64).map(move |segment| {
+                    draws::uniform_at(draws::index(purpose, replication, segment, year), key)
+                })
+            })
+            .collect()
+    });
+    Ok(values.into_pyarray(py))
+}
+
+/// Uniforms at named positions, for the segments that actually need one.
+///
+/// The sparse case, and the reason the generator is indexed at all: a year's
+/// replacement draw is consumed only by a segment replaced that year, which is
+/// a few percent of them. A stream would have to produce the rest anyway to
+/// keep its position; this produces what is asked for and nothing else.
+///
+/// # Arguments
+///
+/// * `key_low` - low word of the key, derived from the run's seed.
+/// * `key_high` - high word of the key.
+/// * `purpose` - which stream.
+/// * `replications` - one entry per wanted draw.
+/// * `segments` - the matching segment of each.
+/// * `year` - the year these draws belong to.
+///
+/// # Returns
+///
+/// One double per position, in the order given.
+///
+/// # Errors
+///
+/// `ValueError` if the two position arrays are different lengths, or if a
+/// position would not fit the index.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn uniforms_at<'py>(
+    py: Python<'py>,
+    key_low: u64,
+    key_high: u64,
+    purpose: u64,
+    replications: PyReadonlyArray1<'py, u32>,
+    segments: PyReadonlyArray1<'py, u32>,
+    year: u64,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let replications = contiguous("replications", &replications)?;
+    let segments = contiguous("segments", &segments)?;
+    if replications.len() != segments.len() {
+        return Err(PyValueError::new_err(format!(
+            "replications has {} entries against {} segments; a draw is named \
+             by both, so they pair up one for one",
+            replications.len(),
+            segments.len()
+        )));
+    }
+    within_the_index(
+        u64::from(replications.iter().copied().max().unwrap_or(0)),
+        u64::from(segments.iter().copied().max().unwrap_or(0)),
+        year,
+    )?;
+    let key = [key_low, key_high];
+    let values: Vec<f64> = py.detach(|| {
+        (0..replications.len())
+            .map(|row| {
+                draws::uniform_at(
+                    draws::index(
+                        purpose,
+                        u64::from(replications[row]),
+                        u64::from(segments[row]),
+                        year,
+                    ),
+                    key,
+                )
+            })
+            .collect()
+    });
+    Ok(values.into_pyarray(py))
+}
+
+/// Refuses a position the index cannot represent.
+///
+/// The packing gives each field a fixed width, so a run past one of them would
+/// silently alias two positions onto the same draw — a correlation nothing
+/// downstream could detect. The shipped run is nowhere near any of the bounds.
+///
+/// # Arguments
+///
+/// * `replication` - the largest replication in this call.
+/// * `segment` - the largest segment.
+/// * `year` - the year.
+fn within_the_index(replication: u64, segment: u64, year: u64) -> PyResult<()> {
+    for (name, value, limit) in [
+        ("replication", replication, draws::MAX_REPLICATION),
+        ("segment", segment, draws::MAX_SEGMENT),
+        ("year", year, draws::MAX_YEAR),
+    ] {
+        if value > limit {
+            return Err(PyValueError::new_err(format!(
+                "{name} {value} is past the {limit} a draw index can carry; \
+                 beyond it two positions would share one draw"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Registers the extension module's contents under the name `_cablesim`.
 #[pymodule]
 fn _cablesim(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_chunk, m)?)?;
     m.add_function(wrap_pyfunction!(available_threads, m)?)?;
     m.add_function(wrap_pyfunction!(philox_uniforms, m)?)?;
+    m.add_function(wrap_pyfunction!(uniforms_dense, m)?)?;
+    m.add_function(wrap_pyfunction!(uniforms_at, m)?)?;
     // The engine names are authored in this crate and read on the Python side,
     // so the two cannot drift into disagreeing about what a name means.
     m.add("SCALAR_ENGINE", SCALAR_ENGINE)?;
