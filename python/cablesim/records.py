@@ -89,63 +89,42 @@ that looks like data.
 """
 
 
-def episode_table(
+def draw_segment_setup(
     config: config_module.Config,
-    *,
-    technologies: list[config_module.Technology] | None = None,
-    length_ft: config_module.LogNormalSpec | float | None = None,
-    n_conductors: list[int] | None = None,
-    n_segments: int | None = None,
-    seed_offset: int = 0,
-) -> pl.DataFrame:
-    """Builds the failure history, one row per installation episode.
+    technologies: list[config_module.Technology],
+    length_ft: config_module.LogNormalSpec | float | None,
+    n_conductors: list[int] | None,
+    total: int,
+    seed_offset: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Draws what each segment is, before any lifetime is drawn for it.
 
-    Each segment is installed once, and is replaced every time it fails inside
-    the study window. Every installation is one row: a segment installed in
-    1972, failed in 2006 and still in service at a 2026 study end contributes
-    an uncensored lifetime of 34 years and a censored one of 20. Collapsing
-    that to one row per segment would discard the failure or mismeasure the age
-    at which it happened, and both bias the fit toward longer life.
+    Everything here is decided once per segment and never changes: when it went
+    in, what insulation that vintage implies, how long it is and how many
+    conductors it carries. The episode loop that follows draws lifetimes
+    against these and is the only part that repeats.
 
     Args:
-        config: The validated run configuration. Supplies the study window, the
-            install-year range, the reference length and exponent, and the
-            replacement technology.
-        technologies: Technologies to draw from, defaulting to the configured
-            list. A single-element list gives the one-technology data the first
-            three rungs of the recovery ladder need. A replacement installs
-            `population.replacement_technology` where that name is among the
-            technologies supplied, and the last one supplied where it is not —
-            so a one-technology table replaces like with like rather than
-            reaching for a technology it does not contain.
-        length_ft: Length distribution, or a fixed length in feet. Defaults to
-            the configured mix. A fixed value removes length as a source of
-            variation, which is what isolates the earlier rungs.
-        n_conductors: Conductor counts to draw from, uniformly. Defaults to the
-            counts the configured classes use.
-        n_segments: Segments to draw, defaulting to the configured record size.
-        seed_offset: Added to the configured seed, so a rung can draw a fresh
+        config: The validated run configuration, for the class shares, the
+            install-year curve and the length reference.
+        technologies: Technologies to draw from, already resolved to a list.
+        length_ft: Length distribution, or a fixed length in feet, or None to
+            take each class's own distribution.
+        n_conductors: Conductor counts to draw from uniformly, or None to take
+            each class's own count.
+        total: Segments to draw.
+        seed_offset: Added to the configured seed, so a caller can draw a fresh
             table without disturbing any other.
 
     Returns:
-        One row per installation episode, with `failure_year` null where the
-        episode was still in service at the study end. Lifetimes are
-        **continuous**: the year columns hold fractional years, because the
-        likelihood is continuous-time and rounding would make this
-        interval-censored data fitted with the wrong likelihood.
+        Install year, index into `technologies`, length in feet, and conductor
+        count, one entry per segment.
 
     Raises:
-        ValueError: If any segment needs more than `MAX_EPISODES` installations,
-            which means the lifetimes are implausibly short for the window
-            rather than that the history is long.
+        ValueError: If two or more technologies leave a year in the
+            install-year range uncovered.
     """
     settings = config.population
-    records = config.records
-    technologies = list(
-        technologies if technologies is not None else settings.technologies
-    )
-    total = n_segments if n_segments is not None else records.n_segments
-
     source = random_draws.spawn_sources(config.simulation.seed + seed_offset).records
     setup = random_draws.uniforms(source, 4 * total).reshape(4, total)
 
@@ -216,6 +195,70 @@ def episode_table(
         if n_conductors is None:
             conductors[rows] = segment_class.n_conductors
 
+    return install_year, technology_index, length, conductors
+
+
+def episode_table(
+    config: config_module.Config,
+    *,
+    technologies: list[config_module.Technology] | None = None,
+    length_ft: config_module.LogNormalSpec | float | None = None,
+    n_conductors: list[int] | None = None,
+    n_segments: int | None = None,
+    seed_offset: int = 0,
+) -> pl.DataFrame:
+    """Builds the failure history, one row per installation episode.
+
+    Each segment is installed once, and is replaced every time it fails inside
+    the study window. Every installation is one row: a segment installed in
+    1972, failed in 2006 and still in service at a 2026 study end contributes
+    an uncensored lifetime of 34 years and a censored one of 20. Collapsing
+    that to one row per segment would discard the failure or mismeasure the age
+    at which it happened, and both bias the fit toward longer life.
+
+    Args:
+        config: The validated run configuration. Supplies the study window, the
+            install-year range, the reference length and exponent, and the
+            replacement technology.
+        technologies: Technologies to draw from, defaulting to the configured
+            list. A single-element list gives the one-technology data the first
+            three rungs of the recovery ladder need. A replacement installs
+            `population.replacement_technology` where that name is among the
+            technologies supplied, and the last one supplied where it is not —
+            so a one-technology table replaces like with like rather than
+            reaching for a technology it does not contain.
+        length_ft: Length distribution, or a fixed length in feet. Defaults to
+            the configured mix. A fixed value removes length as a source of
+            variation, which is what isolates the earlier rungs.
+        n_conductors: Conductor counts to draw from, uniformly. Defaults to the
+            counts the configured classes use.
+        n_segments: Segments to draw, defaulting to the configured record size.
+        seed_offset: Added to the configured seed, so a rung can draw a fresh
+            table without disturbing any other.
+
+    Returns:
+        One row per installation episode, with `failure_year` null where the
+        episode was still in service at the study end. Lifetimes are
+        **continuous**: the year columns hold fractional years, because the
+        likelihood is continuous-time and rounding would make this
+        interval-censored data fitted with the wrong likelihood.
+
+    Raises:
+        ValueError: If any segment needs more than `MAX_EPISODES` installations,
+            which means the lifetimes are implausibly short for the window
+            rather than that the history is long.
+    """
+    settings = config.population
+    records = config.records
+    technologies = list(
+        technologies if technologies is not None else settings.technologies
+    )
+    total = n_segments if n_segments is not None else records.n_segments
+
+    install_year, technology_index, length, conductors = draw_segment_setup(
+        config, technologies, length_ft, n_conductors, total, seed_offset
+    )
+
     shapes = np.array([t.weibull.shape for t in technologies])
     scales = np.array([t.weibull.scale for t in technologies])
     replacement = next(
@@ -275,7 +318,8 @@ def episode_table(
             raise ValueError(
                 f"{alive.size} segments still failing after {MAX_EPISODES} episodes; "
                 f"the drawn lifetimes are short against a "
-                f"{records.study_end - min(years)}-year window"
+                f"{records.study_end - settings.initial_age.install_year_range[0]}"
+                f"-year window"
             )
 
     frame = pl.DataFrame(

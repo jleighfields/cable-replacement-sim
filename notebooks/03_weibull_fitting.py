@@ -68,18 +68,47 @@ def _(mo):
 
 
 @app.cell
-def _(config, records, settings):
-    complete = records.episode_table(
-        config.Config.model_validate(
+def _(config, overridden, settings):
+    def overridden(
+        seed: int | None = None, monitoring_start: int | None = None
+    ) -> config.Config:
+        """The checked-in configuration with one or two knobs replaced.
+
+        Several sections below need the same table under a different record
+        window or a different draw, and building that by hand takes a dozen
+        lines of nested dictionaries each time -- enough that which knob moved
+        stops being the thing the reader notices.
+
+        Args:
+            seed: Replaces the simulation seed, giving an independent draw.
+            monitoring_start: Replaces the year the record system begins.
+
+        Returns:
+            A validated configuration. Validated rather than mutated, so a
+            combination the model refuses is refused here too.
+        """
+        simulation = settings.simulation.model_dump()
+        window = settings.records.model_dump()
+        if seed is not None:
+            simulation["seed"] = seed
+        if monitoring_start is not None:
+            window["monitoring_start"] = monitoring_start
+        return config.Config.model_validate(
             {
                 **settings.model_dump(),
-                "records": {
-                    **settings.records.model_dump(),
-                    "monitoring_start": (
-                        settings.population.initial_age.install_year_range[0]
-                    ),
-                },
+                "simulation": simulation,
+                "records": window,
             }
+        )
+
+    return (overridden,)
+
+
+@app.cell
+def _(overridden, records, settings):
+    complete = records.episode_table(
+        overridden(
+            monitoring_start=settings.population.initial_age.install_year_range[0]
         ),
         technologies=[settings.population.technologies[0]],
         length_ft=settings.population.length_ref_ft,
@@ -251,21 +280,13 @@ def _(mo):
 
 
 @app.cell
-def _(config, np, pl, records, settings, truth_scale, truth_shape):
+def _(np, overridden, pl, records, settings, truth_scale, truth_shape):
     _cohort = (1965, 1975)
     _late = 2018
 
     def _built(monitoring_start: int) -> pl.DataFrame:
         """Episodes visible to a study beginning in the given year."""
-        _cfg = config.Config.model_validate(
-            {
-                **settings.model_dump(),
-                "records": {
-                    **settings.records.model_dump(),
-                    "monitoring_start": monitoring_start,
-                },
-            }
-        )
+        _cfg = overridden(monitoring_start=monitoring_start)
         return records.episode_table(
             _cfg,
             technologies=[settings.population.technologies[0]],
@@ -360,7 +381,7 @@ def _(mo):
 
 
 @app.cell
-def _(np, records, settings, visible, weibull):
+def _(records, settings, visible):
     end, entry, observed = records.lifetimes(visible, settings.records.study_end)
 
     assert len(end) == visible.height, "one term per visible row, never more"
@@ -476,7 +497,7 @@ def _(mo):
 
 
 @app.cell
-def _(config, np, records, settings, weibull):
+def _(np, overridden, records, settings, weibull):
     def refit(seed: int) -> tuple[float, float, float]:
         """Fit one draw three ways: complete record, corrected, uncorrected.
 
@@ -490,19 +511,7 @@ def _(config, np, records, settings, weibull):
 
         def ages(start_year: int):
             table = records.episode_table(
-                config.Config.model_validate(
-                    {
-                        **settings.model_dump(),
-                        "simulation": {
-                            **settings.simulation.model_dump(),
-                            "seed": seed,
-                        },
-                        "records": {
-                            **settings.records.model_dump(),
-                            "monitoring_start": start_year,
-                        },
-                    }
-                ),
+                overridden(seed=seed, monitoring_start=start_year),
                 technologies=[settings.population.technologies[0]],
                 length_ft=settings.population.length_ref_ft,
                 n_conductors=[1],
@@ -605,7 +614,7 @@ def _(mo):
 
 
 @app.cell
-def _(config, pl, records, settings):
+def _(overridden, pl, records, settings):
     def episodes(start_year: int, n_segments: int = 30_000):
         """The episode table a study opening in the given year would hold.
 
@@ -619,15 +628,7 @@ def _(config, pl, records, settings):
             One row per installation episode.
         """
         return records.episode_table(
-            config.Config.model_validate(
-                {
-                    **settings.model_dump(),
-                    "records": {
-                        **settings.records.model_dump(),
-                        "monitoring_start": start_year,
-                    },
-                }
-            ),
+            overridden(monitoring_start=start_year),
             technologies=[settings.population.technologies[0]],
             length_ft=settings.population.length_ref_ft,
             n_conductors=[1],
@@ -701,19 +702,11 @@ def _(mo):
 
 
 @app.cell
-def _(config, np, plt, records, settings, truth_scale, weibull):
+def _(np, overridden, plt, records, settings, truth_scale, weibull):
     _starts = [1965, 1980, 1990, 1998, 2006, 2014, 2018]
     _corrected, _ignored = [], []
     for _start in _starts:
-        _cfg = config.Config.model_validate(
-            {
-                **settings.model_dump(),
-                "records": {
-                    **settings.records.model_dump(),
-                    "monitoring_start": _start,
-                },
-            }
-        )
+        _cfg = overridden(monitoring_start=_start)
         _table = records.episode_table(
             _cfg,
             technologies=[settings.population.technologies[0]],
@@ -894,7 +887,7 @@ def _(mo):
 
 
 @app.cell
-def _(config, np, records, settings, truth_scale, truth_shape, weibull):
+def _(np, overridden, records, settings, truth_scale, truth_shape, weibull):
     def covers(seed: int) -> tuple[bool, bool]:
         """Whether one draw's intervals contain the true shape and scale.
 
@@ -906,12 +899,7 @@ def _(config, np, records, settings, truth_scale, truth_shape, weibull):
             scale interval contains the true scale.
         """
         table = records.episode_table(
-            config.Config.model_validate(
-                {
-                    **settings.model_dump(),
-                    "simulation": {**settings.simulation.model_dump(), "seed": seed},
-                }
-            ),
+            overridden(seed=seed),
             technologies=[settings.population.technologies[0]],
             length_ft=settings.population.length_ref_ft,
             n_conductors=[1],
