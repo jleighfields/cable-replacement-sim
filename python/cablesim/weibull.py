@@ -252,7 +252,7 @@ def fit_censored(
     scale whatever the censoring.
 
     Implemented as `fit_regression` with no covariates, which is exactly what
-    this is, so the likelihood and its gradient exist once.
+    this is, so the likelihood exists once.
 
     Args:
         age_at_end: Age at failure, or at the study end for a censored episode.
@@ -269,9 +269,9 @@ def fit_censored(
     """
     # Delegates rather than repeating the model. This is `fit_regression` with
     # no covariates: one shape, one scale, the same censored and left-truncated
-    # likelihood, the same analytic gradient and the same rescaling of the
-    # objective. Keeping a second copy meant maintaining two gradients, and the
-    # averaging that made large samples converge had to be written into both.
+    # likelihood and the same rescaling of the objective. Keeping a second copy
+    # meant the averaging that made large samples converge had to be written
+    # into both.
     #
     # The separate entry point is worth keeping even so. Rungs 1 and 2 and the
     # notebook fit lifetimes with no covariates at all, and asking them to
@@ -419,38 +419,6 @@ def fit_regression(
         shape, scale = unpack(parameters)
         return -log_likelihood(shape, scale, age_at_end, entry_age, observed) / episodes
 
-    def gradient(parameters: np.ndarray) -> np.ndarray:
-        shape, scale = unpack(parameters)
-        # Guarded on the age, not on whether the episode failed. Both terms
-        # below take the logarithm of this ratio, and the accumulated-hazard
-        # one applies to censored rows as much as to failures, so keying the
-        # substitution off `observed` would delete real exposure. At zero age
-        # the hazard is zero and the product is meant to be zero, but the
-        # unguarded form computes `0 * -inf`, which is `nan` and takes the
-        # whole gradient with it. Anywhere the age is positive this is exactly
-        # the ratio itself.
-        end_ratio = age_at_end / scale
-        positive_end = np.where(age_at_end > 0.0, end_ratio, 1.0)
-        entry_ratio = entry_age / scale
-        end_hazard = end_ratio**shape
-        entry_hazard = entry_ratio**shape
-        safe_entry = np.where(entry_age > 0.0, entry_ratio, 1.0)
-        entry_term = np.where(entry_age > 0.0, entry_hazard * np.log(safe_entry), 0.0)
-
-        # Both blocks act through one per-episode quantity, because every
-        # parameter in a block shifts log(shape_i) or log(scale_i) identically.
-        by_shape = shape * (
-            observed * (1.0 / shape + np.log(positive_end))
-            - (end_hazard * np.log(positive_end) - entry_term)
-        )
-        by_scale = shape * ((end_hazard - entry_hazard) - observed)
-
-        blocks = [[np.sum(by_shape)]]
-        if ancillary is not None:
-            blocks.append(ancillary.T @ by_shape)
-        blocks.extend([[np.sum(by_scale)], covariates.T @ by_scale])
-        return -np.concatenate(blocks) / episodes
-
     start = np.concatenate(
         [
             [0.0],
@@ -459,7 +427,20 @@ def fit_regression(
             np.zeros(len(names)),
         ]
     )
-    result = optimize.minimize(negative, start, jac=gradient, method="BFGS")
+    # No analytic gradient. One was carried here until the averaging above
+    # existed, on the reasoning that finite differences lost precision near the
+    # optimum and made BFGS report failure at the right answer. That diagnosis
+    # was wrong: the stall came from summing the objective, so the gradient
+    # norm grew with the sample while the tolerance stayed fixed. With the
+    # objective averaged, finite differences converge on every draw at every
+    # size tried, up to 240,000 episodes.
+    #
+    # What the derivative cost was a second encoding of the model -- thirty-odd
+    # lines of calculus that had to mirror `log_likelihood` exactly, with
+    # nothing checking that it did. It bought about a factor of two in a fit
+    # that runs in well under a second, on the reference path rather than the
+    # measured one, which is not worth a copy of the model that can drift.
+    result = optimize.minimize(negative, start, method="BFGS")
     if not result.success:
         raise ValueError(f"the fit did not converge: {result.message}")
 
