@@ -88,7 +88,7 @@ jobs:
         run: uv run ruff check .
 
       # The `notebooks` and `app` markers are excluded by addopts in
-      # pyproject.toml. Those run in notebooks.yml and app.yml, off the
-      # pull-request path.
+      # pyproject.toml. The app suite runs in app.yml, off the pull-request
+      # path; the notebook suite runs only when someone runs it.
       - name: Python tests
         run: uv run pytest -n auto

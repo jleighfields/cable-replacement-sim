@@ -76,9 +76,10 @@ uv sync --group notebooks && uv run pytest -m notebooks   # executes every marim
 uv sync --group app && uv run pytest -m app               # drives the Shiny app in a browser
 ```
 
-Neither gates a merge — they run on pushes to `main` and weekly — so a break
-in either surfaces on the next push rather than on the pull request that
-caused it.
+Neither gates a merge. The app suite runs weekly and on pushes to `main`, so a
+break in it surfaces within a week. **Nothing runs the notebooks for you** —
+they execute only when someone runs the command above, so run it after changing
+any package API a notebook imports.
 
 `cargo test` needs `--no-default-features` because the default build enables
 PyO3's `extension-module`, and a test binary linked against it cannot resolve
