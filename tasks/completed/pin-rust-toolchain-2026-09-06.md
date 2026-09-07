@@ -171,10 +171,18 @@ landing and that the extension module could not be rebuilt, is corrected in the
 same commit. What has *not* been watched is the rule refusing a merge, so that
 survives as an item rather than being deleted.
 
-**Deferred:** reading a continuous integration log to confirm one toolchain is
-installed rather than two. That needs the branch pushed, and it is the check
-the change exists to satisfy, so it is done before the pull request is called
-ready rather than dropped.
+**The run log shows one toolchain, which is the check this change exists to
+satisfy and the only place the failure would be visible.** In the pull
+request's `test` run: one `syncing channel updates for
+1.98-x86_64-unknown-linux-gnu`, one `the active toolchain ... has been
+installed`, and `it's active because: overridden by
+'/home/runner/work/.../rust-toolchain.toml'` — the runner naming the file as the
+reason. Zero auto-install warnings, so nothing fell through to the fallback,
+and no self-update line. Five components downloaded, which is clippy and
+rustfmt arriving with the compiler as the file asks. `Swatinem/rust-cache`
+lists `rust-toolchain.toml` among the files in its cache key, so a future bump
+invalidates the cache without anyone remembering to. The whole job took 1m1s
+and every gate passed inside it, 73 tests included.
 
 ### What the branch review changed
 
