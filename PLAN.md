@@ -1308,7 +1308,6 @@ cable-replacement-sim/
 ├── .github/
 │   ├── workflows/
 │   │   ├── test.yml            # runs on PRs; required at end of Phase 0
-│   │   ├── notebooks.yml       # headless notebook run, main + weekly
 │   │   └── app.yml             # Playwright app tests, main + weekly
 │   ├── rulesets/
 │   │   ├── protect-main.json   # applied; matches the live ruleset
@@ -2100,9 +2099,9 @@ requires every layer to be callable on its own with plain arguments.
 
 This is a constraint on the package rather than a style for the notebooks. If a
 step is awkward to show, the API is awkward, and that surfaces in Phase 1
-instead of Phase 6. Because the notebooks execute headless in continuous
-integration (10.2, Notebook execution on a slower cadence), the walkthrough is
-also an executable check that the package has seams at all.
+instead of Phase 6. The walkthrough is also an executable check that the
+package has seams at all — one that runs when someone runs it (10.2, Notebook
+execution is a manual step).
 
 It stays inside the rule above: the notebook *calls* each layer and never
 reimplements one.
@@ -2253,14 +2252,20 @@ The decisions behind it:
   a real browser takes minutes plus a browser download. Neither belongs on the
   critical path of every pull request.
 
-### 10.2 Notebook execution on a slower cadence
+### 10.2 Notebook execution is a manual step
 
 The headless notebook run (`uv run pytest -m notebooks`) is what stops the
-notebooks silently rotting, so it has to run somewhere. Put it in a second
-workflow, `.github/workflows/notebooks.yml`, on pushes to `main` plus a weekly
-schedule, and leave it off pull requests. A notebook breaks when the package
-API it imports changes, which the merge to `main` surfaces within one run —
-fast enough, given the cost of running it on every push.
+notebooks silently rotting, and **it runs nowhere automatically**. It was a
+scheduled workflow and is not any more: a notebook is a document rather than a
+gate, and paying minutes on every merge to recompute a figure that has not
+changed buys a signal nobody was acting on within the week it took to arrive.
+
+What that costs, stated rather than discovered: a notebook breaks when the
+package API it imports changes, and now nothing reports it. **Run
+`pytest -m notebooks` after changing any package API a notebook imports, and
+before opening a pull request that touches one.** The in-notebook assertions
+below are subject to the same rule — they are real checks, and they run when
+someone runs them.
 
 **The notebooks double as integration tests, and cheaply.** Each one already
 builds a population, fits or simulates, and computes a result — an end-to-end
@@ -2276,8 +2281,8 @@ regression in the effective-scale reduction (2.3) should fail a fast unit
 test, not a five-minute
 weekly notebook run.
 
-**This is not a required check.** A weekly schedule cannot report on a pull
-request, so requiring it would block every merge.
+**Nothing here is a required check**, and the notebook suite is not a check at
+all now — it is a command a person runs.
 
 ### 10.3 Shiny app integration tests (Playwright)
 
@@ -2434,7 +2439,7 @@ why they are listed with the mechanism rather than as a checklist:
 | What | Why it is required |
 |---|---|
 | `[features] extension-module = ["pyo3/extension-module"]` and `default = ["extension-module"]` in `Cargo.toml` | `cargo test --no-default-features` only drops the extension-module feature if it is *behind* a feature. The stock maturin template enables it directly, in which case the flag is a no-op and the test binary fails to link against the CPython symbols the interpreter would otherwise supply. |
-| dependency groups `dev`, `notebooks`, `app` in `pyproject.toml` | `notebooks.yml` and `app.yml` pass `--group notebooks` / `--group app`; `uv sync` fails on a group that does not exist. |
+| dependency groups `dev`, `notebooks`, `app` in `pyproject.toml` | `app.yml` passes `--group app` and the notebook command passes `--group notebooks`; `uv sync` fails on a group that does not exist. |
 | `pytest-xdist`, `maturin`, `ruff`, `detect-secrets`, `pytest-playwright` in `dev` | `test.yml` runs `pytest -n auto`; `security-scan` drives `detect-secrets`; `app.yml` runs `playwright install`. | <!-- pragma: allowlist secret — the tool name trips the keyword detector; there is no credential on this line -->
 | the `notebooks` and `app` markers plus `addopts` excluding them | `test.yml` asserts the default run excludes both. Without the markers, pytest warns and the exclusion silently does nothing. |
 | a committed `uv.lock` | every workflow runs `uv sync --locked`. |

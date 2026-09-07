@@ -1,9 +1,9 @@
 name: app
 
 # Playwright integration tests against the running Shiny app. Kept off the
-# pull-request path for the same reason as notebooks.yml: a browser run costs
-# minutes, and the browser download costs more. Promote it to a required
-# check once the app is the deliverable and the run is understood.
+# pull-request path because a browser run costs minutes and the browser
+# download costs more. Promote it to a required check once the app is the
+# deliverable and the run is understood.
 #
 # NOT a required status check while it runs on a schedule — a scheduled
 # workflow cannot report on a pull request.
@@ -12,7 +12,7 @@ on:
   push:
     branches: [main]
   schedule:
-    - cron: "30 7 * * 1"   # Mondays, 07:30 UTC, after notebooks.yml
+    - cron: "30 7 * * 1"   # Mondays, 07:30 UTC
   workflow_dispatch:
 
 concurrency:
