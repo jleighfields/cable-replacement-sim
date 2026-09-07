@@ -92,7 +92,7 @@ pub struct Results {
 
 impl Results {
     /// Seven zeroed buffers of `replications * years * classes`.
-    fn zeros(n_reps: usize, n_years: usize, n_classes: usize) -> Self {
+    pub fn zeros(n_reps: usize, n_years: usize, n_classes: usize) -> Self {
         let cells = n_reps * n_years * n_classes;
         Self {
             failures: vec![0.0; cells],
@@ -186,6 +186,8 @@ pub enum ChunkError {
     NanScore(policies::NanScore),
     /// The thread pool could not be built, so nothing ran.
     ThreadPool(rayon::ThreadPoolBuildError),
+    /// The frame engine refused a step, which only the polars loop can hit.
+    Polars(polars::error::PolarsError),
 }
 
 impl std::fmt::Display for ChunkError {
@@ -196,6 +198,7 @@ impl std::fmt::Display for ChunkError {
                 formatter,
                 "could not build a thread pool for this chunk: {error}"
             ),
+            ChunkError::Polars(error) => write!(formatter, "the frame engine refused: {error}"),
         }
     }
 }

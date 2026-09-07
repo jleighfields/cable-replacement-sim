@@ -101,6 +101,7 @@ RUNNABLE: dict[str, Implementation] = {
     "batched_numpy": batched.run_chunk_numpy,
     "batched_polars": batched.run_chunk_polars,
     "kernel": kernel.run_chunk,
+    "kernel_polars": kernel.run_chunk_polars,
 }
 """The annual loops that exist, by the name a manifest records them under.
 

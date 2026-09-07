@@ -24,6 +24,19 @@ import numpy as np
 
 from cablesim import _cablesim, policies, simulate
 
+SCALAR_ENGINE: str = _cablesim.SCALAR_ENGINE
+"""Runs the annual loop over plain slices, one replication at a time."""
+
+FRAME_ENGINE: str = _cablesim.FRAME_ENGINE
+"""Runs the same loop over a polars frame, inside the same extension module.
+
+Both names come from the crate rather than being written here, so the two sides
+cannot drift into disagreeing about what a name selects. The two engines compute
+the same numbers from the same draws and differ only in how the work is
+expressed, which is what makes timing one against the other a measurement of the
+expression rather than of the model.
+"""
+
 AVAILABLE_THREADS: int = _cablesim.available_threads()
 """How many threads this machine can run at once.
 
@@ -68,6 +81,7 @@ def run_chunk(
     n_classes: int,
     n_years: int,
     threads: int = 1,
+    engine: str = SCALAR_ENGINE,
 ) -> simulate.Results:
     """Runs one chunk of replications under one policy, in Rust.
 
@@ -117,6 +131,12 @@ def run_chunk(
             makes a single-threaded timing a baseline rather than a measurement
             of the pool's overhead. ``AVAILABLE_THREADS`` is this machine's
             count.
+        engine: Which form of the loop to run, ``SCALAR_ENGINE`` or
+            ``FRAME_ENGINE``. Both are compiled into the same extension module
+            and both read the same draws, so they return identical arrays; what
+            differs is whether the work is expressed as indexing into slices or
+            as operations on a frame. The frame engine sizes its own thread pool
+            and refuses a thread count above one.
 
     Returns:
         The seven per-year, per-class arrays for this chunk.
@@ -166,5 +186,35 @@ def run_chunk(
             n_classes,
             n_years,
             threads,
+            engine,
         )
     )
+
+
+def run_chunk_polars(**arguments: object) -> simulate.Results:
+    """Runs one chunk of replications under one policy, over a polars frame.
+
+    The frame form of the same loop, compiled into the same extension module.
+    It exists so that the Python polars implementation can be timed against it:
+    the Python polars package is an expression layer over the same compiled
+    query engine this reaches directly, so the difference between the two is
+    what it costs to drive that engine from Python rather than what the engine
+    itself costs — which neither one alone can say.
+
+    Args:
+        **arguments: Exactly ``run_chunk``'s arguments, forwarded unchanged.
+            Taken as keywords rather than restated, because a second copy of
+            twenty-two parameter names is a second place they can drift, and
+            every caller in this package passes them by name. ``threads`` must
+            be 1: polars parallelizes inside an operation and sizes its own
+            pool.
+
+    Returns:
+        The seven per-year, per-class arrays for this chunk.
+
+    Raises:
+        ValueError: Everything ``run_chunk`` refuses, and a thread count above
+            one.
+        RuntimeError: If the frame engine refuses a step.
+    """
+    return run_chunk(**arguments, engine=FRAME_ENGINE)

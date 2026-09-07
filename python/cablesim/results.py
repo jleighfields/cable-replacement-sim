@@ -46,13 +46,22 @@ IMPLEMENTATIONS: tuple[str, ...] = (
     "batched_numpy",
     "batched_polars",
     "kernel",
+    "kernel_polars",
 )
 """The implementations of the annual loop a result can come from.
 
 These name the *role* rather than the module: the reference is the one a parity
-failure is arbitrated against, whatever file it lives in. Two of the four do
-not exist yet, and the set is closed anyway, because a misspelled
-implementation in a manifest is provenance that reads as fact and is not.
+failure is arbitrated against, whatever file it lives in. The set is closed
+because a misspelled implementation in a manifest is provenance that reads as
+fact and is not.
+
+Two pairs run the same algorithm in different languages, and the pairing is the
+point. ``batched_numpy`` and ``kernel`` are the array form in Python and in
+Rust; ``batched_polars`` and ``kernel_polars`` are the frame form in each. The
+Python polars package is a binding over the same Rust query engine the crate
+exposes, so timing one frame implementation against the other separates what it
+costs to drive that engine from Python from what the engine itself costs — a
+question neither one alone can answer.
 """
 
 SCHEMA: dict[str, pl.DataType] = {

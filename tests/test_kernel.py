@@ -337,8 +337,9 @@ def test_both_implementations_refuse_a_per_year_series_longer_than_the_horizon(
         simulate.run_chunk(**arguments, policy=helpers.resolved("run_to_failure"))
 
 
-def test_a_per_segment_array_of_the_wrong_length_is_a_value_error_on_both_sides(
-) -> None:
+def test_a_per_segment_array_of_the_wrong_length_is_a_value_error_on_both_sides() -> (
+    None
+):
     """The same bad length must come back as the same kind of exception.
 
     ``simulate.run_chunk`` documents ``ValueError`` and nothing else, and the
@@ -543,3 +544,56 @@ def test_the_reference_refuses_a_thread_count_it_cannot_honour() -> None:
     with pytest.raises(ValueError, match="threads is 2"):
         simulate.run_chunk(**arguments, policy=policy, threads=2)
     kernel.run_chunk(**arguments, policy=policy, threads=2)
+
+
+def test_an_engine_that_names_no_loop_is_refused() -> None:
+    """A misspelled engine must not fall through to the default.
+
+    The boundary carries both forms of the loop and picks between them on a
+    string. Taken as a default when unrecognized, a typo would run the scalar
+    engine and record the frame one in the manifest, which is provenance that
+    reads as fact and is not.
+    """
+    arguments = minimal_arguments(4)
+
+    with pytest.raises(ValueError, match="engine is"):
+        kernel.run_chunk(
+            **arguments, policy=helpers.resolved("run_to_failure"), engine="numpy"
+        )
+
+
+def test_the_frame_engine_refuses_a_thread_count_it_cannot_honour() -> None:
+    """polars sizes its own pool, so a replication thread count is not its to take.
+
+    Both engines are reached through one call, so the thread count is offered to
+    both. Only the scalar one spreads replications over workers; the frame one
+    parallelizes inside an operation with a pool it manages itself. Accepting
+    and ignoring the number would let a benchmark row record a thread count
+    nothing acted on.
+    """
+    arguments = minimal_arguments(4)
+    policy = helpers.resolved("run_to_failure")
+
+    with pytest.raises(ValueError, match="does not spread"):
+        kernel.run_chunk(
+            **arguments, policy=policy, threads=2, engine=kernel.FRAME_ENGINE
+        )
+    # The same request through the scalar engine is honoured, which is what
+    # makes the refusal above about the engine rather than about the argument.
+    kernel.run_chunk(**arguments, policy=policy, threads=2)
+
+
+def test_both_engines_are_reachable_by_the_names_the_crate_publishes() -> None:
+    """The engine names are authored in Rust and read here, so neither can drift.
+
+    Asserting the names are strings would pass against any pair of strings.
+    Running a chunk through each is what shows both select something, and that
+    the two select different code: a name the boundary did not recognize is
+    refused by the guard above.
+    """
+    arguments = minimal_arguments(4)
+    policy = helpers.resolved("risk_ranked")
+
+    for engine in (kernel.SCALAR_ENGINE, kernel.FRAME_ENGINE):
+        produced = kernel.run_chunk(**arguments, policy=policy, engine=engine)
+        assert produced.failures.shape == (1, 1, 1)

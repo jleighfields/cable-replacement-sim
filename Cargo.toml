@@ -21,6 +21,7 @@ extension-module = ["pyo3/extension-module"]
 
 [dependencies]
 numpy = "0.27"
+polars = { version = "0.55.2", features = ["lazy", "cum_agg", "performant"] }
 pyo3 = { version = "0.27", features = ["abi3-py311"] }
 rayon = "1.12.0"
 

@@ -39,9 +39,22 @@
 //!   supports and any number of axes, and the compiler generates a separate
 //!   specialised copy for each combination actually used.
 
+mod batched;
 mod policies;
 mod simulate;
 mod weibull;
+
+/// Runs the annual loop over plain slices, one replication at a time.
+const SCALAR_ENGINE: &str = "scalar";
+
+/// Runs the same loop over a polars frame.
+///
+/// The two engines compute the same numbers from the same draws and differ only
+/// in how the work is expressed, which is what makes timing one against the
+/// other a measurement of the expression and not of the model. The names are
+/// read on the Python side of the boundary, so they are authored here and
+/// nowhere else.
+const FRAME_ENGINE: &str = "polars";
 
 use numpy::ndarray::{Array3, Dimension};
 use numpy::PyUntypedArrayMethods;
@@ -195,7 +208,7 @@ fn as_result_array(
     age0, shape, scale, replacement_shape, replacement_scale, cost_per_ft,
     lifetime_uniforms, policy_uniforms, budget, cost_escalation, policy,
     emergency_multiplier, mobilization_per_segment,
-    emergency_charged_to_budget, n_classes, n_years, threads=1,
+    emergency_charged_to_budget, n_classes, n_years, threads=1, engine="scalar",
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_chunk<'py>(
@@ -223,6 +236,7 @@ fn run_chunk<'py>(
     n_classes: usize,
     n_years: usize,
     threads: usize,
+    engine: &str,
 ) -> PyResult<Bound<'py, PyTuple>> {
     // An unrecognized tag would otherwise score every candidate zero and fund
     // them in segment_id order, which is a plausible-looking run rather than an
@@ -362,11 +376,28 @@ fn run_chunk<'py>(
         )));
     }
 
+    if !matches!(engine, SCALAR_ENGINE | FRAME_ENGINE) {
+        return Err(PyValueError::new_err(format!(
+            "engine is {engine:?}; the ones that exist are {SCALAR_ENGINE:?}, \
+             which runs the loop over slices, and {FRAME_ENGINE:?}, which runs \
+             it over a polars frame"
+        )));
+    }
     if threads == 0 {
         return Err(PyValueError::new_err(
             "threads is 0, so no replication would run; 1 is the sequential \
              path and the baseline a parallel run is measured against",
         ));
+    }
+    if engine == FRAME_ENGINE && threads != 1 {
+        // The frame engine parallelizes inside an operation and sizes its own
+        // pool, so a replication axis spread over workers is not something a
+        // caller sets here. Refusing rather than ignoring keeps a manifest from
+        // recording a thread count nothing acted on.
+        return Err(PyValueError::new_err(format!(
+            "threads is {threads}; the {FRAME_ENGINE:?} engine does not spread \
+             replications over workers and cannot use more than 1"
+        )));
     }
 
     // Every borrow is taken here, while the interpreter lock is still held,
@@ -411,37 +442,66 @@ fn run_chunk<'py>(
     // deprecation warning rather than failing outright.
     let results = py
         .detach(|| {
-            simulate::run_chunk(
-                length_ft,
-                customers,
-                customer_minutes_per_failure,
-                customer_minutes_per_planned,
-                outage_cost_per_failure,
-                classes,
-                age0,
-                shape,
-                scale,
-                replacement_shape,
-                replacement_scale,
-                cost_per_ft,
-                lifetime_uniforms,
-                policy_uniforms,
-                budget,
-                cost_escalation,
-                policy,
-                emergency_multiplier,
-                mobilization_per_segment,
-                emergency_charged_to_budget,
-                n_classes,
-                n_years,
-                threads,
-            )
+            if engine == FRAME_ENGINE {
+                batched::run_chunk(
+                    length_ft,
+                    customers,
+                    customer_minutes_per_failure,
+                    customer_minutes_per_planned,
+                    outage_cost_per_failure,
+                    classes,
+                    age0,
+                    shape,
+                    scale,
+                    replacement_shape,
+                    replacement_scale,
+                    cost_per_ft,
+                    lifetime_uniforms,
+                    policy_uniforms,
+                    budget,
+                    cost_escalation,
+                    policy,
+                    emergency_multiplier,
+                    mobilization_per_segment,
+                    emergency_charged_to_budget,
+                    n_classes,
+                    n_years,
+                )
+            } else {
+                simulate::run_chunk(
+                    length_ft,
+                    customers,
+                    customer_minutes_per_failure,
+                    customer_minutes_per_planned,
+                    outage_cost_per_failure,
+                    classes,
+                    age0,
+                    shape,
+                    scale,
+                    replacement_shape,
+                    replacement_scale,
+                    cost_per_ft,
+                    lifetime_uniforms,
+                    policy_uniforms,
+                    budget,
+                    cost_escalation,
+                    policy,
+                    emergency_multiplier,
+                    mobilization_per_segment,
+                    emergency_charged_to_budget,
+                    n_classes,
+                    n_years,
+                    threads,
+                )
+            }
         })
         .map_err(|failure| match failure {
             simulate::ChunkError::NanScore(_) => PyValueError::new_err(failure.to_string()),
             // The operating system refusing to start threads, rather than
             // anything wrong with the arguments, so not a `ValueError`.
             simulate::ChunkError::ThreadPool(_) => PyRuntimeError::new_err(failure.to_string()),
+            // The frame engine refusing a step it was asked to plan or run.
+            simulate::ChunkError::Polars(_) => PyRuntimeError::new_err(failure.to_string()),
         })?;
 
     let dimensions = (n_reps, n_years, n_classes);
@@ -481,6 +541,10 @@ fn available_threads() -> usize {
 fn _cablesim(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_chunk, m)?)?;
     m.add_function(wrap_pyfunction!(available_threads, m)?)?;
+    // The engine names are authored in this crate and read on the Python side,
+    // so the two cannot drift into disagreeing about what a name means.
+    m.add("SCALAR_ENGINE", SCALAR_ENGINE)?;
+    m.add("FRAME_ENGINE", FRAME_ENGINE)?;
     // Which profile this was compiled with, so a run records what actually ran
     // rather than what the person starting it believed. `debug_assertions` is
     // on in a debug build and off in a release one, and it is resolved at
