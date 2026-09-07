@@ -249,3 +249,78 @@ The answer goes in `PLAN.md`, not only in a notebook.
   it was run at.
 - The 30-year calibration behaviour is recorded in `PLAN.md` beside the
   year-zero numbers.
+
+## Review
+
+All eight steps are done, the notebook runs headless with its own assertions,
+and the calibration question the phase was to answer is answered.
+
+**The end-to-end check passes exactly, not approximately.** At zero budget all
+five policies land on the same customer-minute total as run-to-failure, to the
+last bit, because none of them funds anything and they read the identical
+draws. That covers the population, the streams, the scoring, the fill, the year
+loop and the whole reduction in one assertion.
+
+**The measured ordering is the one the design predicts.** Over a 30-year
+horizon at 2,000 segments and 40 replications, customer-minutes lost run
+risk-ranked < worst-first < age-threshold < random < run-to-failure, and the
+age threshold saturates at the top of the grid once it has no eligible segments
+left. Worst-first sitting close behind risk-ranked is what says consequence
+weighting is worth something but not everything here; random sitting near
+run-to-failure is what says the ranking rather than the spending is doing the
+work.
+
+**The calibration survives the horizon.** Run-to-failure fails 1.97% of the
+fleet in year 0 — the figure the configuration was tuned to — falls to about
+1.20% by year 9 and returns to 1.81% by year 29. The dip and return is the
+replacement wave, a damped echo of the installation history, and it is the
+reason a 30-year horizon reads differently from a 10-year one. Recorded in
+`PLAN.md` §13.2, Still open, item 3.
+
+### What the mutation passes found
+
+Fifty-one mutations across six modules, all now caught. Six tests exist because
+of that pass rather than before it, and five of those were passing tests that
+could not fail:
+
+- **Ranking per dollar** passed under the wrong divisor. Emergency cost is
+  planned cost times a scalar, so dividing by it rescales every candidate
+  identically and no ordering can tell them apart. Asserted on the value now.
+- **The saved schema** was compared against the same declaration that built it,
+  which passes for any writer and declaration that agree on the wrong thing.
+- **The row-layout fixture** had as many replications as segment classes, and
+  at those extents a fully transposed layout produces the identical key array.
+- **The horizon-total fixture** had as many replications as years, so summing
+  over entirely the wrong axis gave the same mean.
+- **The stream wiring** was checked at the helper that builds the draws rather
+  than at the module that wires them, so taking the random policy's priorities
+  from the lifetime stream went unnoticed — a run that completes with plausible
+  numbers and a control that has stopped being one.
+- **Figure colours** were compared between two figures and agreed perfectly,
+  being equally wrong.
+
+One mutation was written with the wrong indentation and matched nothing, so it
+reported a pass against an unmodified file. The helper now asserts its target
+is unique before replacing, which is what caught it.
+
+### Two defects found by writing the code rather than by testing it
+
+**`SeedSequence.spawn` is stateful.** It counts the children it has handed out,
+so a run calling it once per chunk gives replication 7 different draws
+depending on how the run was batched. That would have made the batch size a
+modelled parameter and every archived result dependent on the machine that
+produced it. Children are derived by index now, and the check that caught it
+runs as a test.
+
+**A lint failure was reported and not read.** The gate printed a non-zero exit
+and a commit went in on top of it. Fixed in the following commit; the lesson is
+that printing an exit code is not the same as acting on one.
+
+### Carried into Phase 4
+
+- The reference's greedy fill, tie-break and replacement timing are the
+  contract the kernel has to match exactly, not approximately.
+- The sweep script's reduced default should be revisited once the kernel makes
+  full size affordable, rather than inherited silently.
+- The manifest's implementation field already names all four implementations,
+  so the batched ones need no schema change when they arrive.
