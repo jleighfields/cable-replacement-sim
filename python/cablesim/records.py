@@ -337,12 +337,10 @@ def episode_table(
     # with zero exposure after entry, which would contribute nothing to the
     # likelihood while inflating the apparent sample size.
     #
-    # The second filter drops cable installed at or after the study end, which
-    # nothing observed. Replacements cannot reach it -- one is installed at the
-    # moment its predecessor failed, and a failure only counts as one when it
-    # lands inside the window -- so it fires only where `study_end` precedes
-    # the last install year the configuration allows, a window nothing
-    # cross-checks the install range against.
+    # Nothing filters out cable installed after the study end, because nothing
+    # can be. A replacement is installed at the moment its predecessor failed
+    # and a failure only counts as one inside the window, and `Config` refuses
+    # a `study_end` at or before the last install year the population allows.
     return (
         frame.with_columns(
             pl.max_horizontal(
@@ -353,7 +351,6 @@ def episode_table(
             pl.col("failure_year").is_null()
             | (pl.col("failure_year") > records.monitoring_start)
         )
-        .filter(pl.col("install_year") < records.study_end)
         .select(
             "segment_id",
             "technology",
