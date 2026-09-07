@@ -27,32 +27,59 @@ budget sweep draws the reliability-against-budget curve — at zero budget every
 policy lands on the same point as run-to-failure, which is the end-to-end check
 that costs nothing to run.
 
-The Rust kernel computes the same loop from the same draws and returns the same
-result type, so either implementation can be named at the call. It is
-single-threaded so far: rayon, the batched baselines and the benchmark numbers
-come next, and the kernel is deliberately unchanged by that work so the
-parallel speedup has a fixed thing to be measured against. The two are compared
-by a set of tests that force the lifetimes and compare every cell exactly, by a
-paired test over drawn lifetimes, and by two runs written to disk and diffed
-row for row; on this platform they agree bit for bit. See
-[PLAN.md](PLAN.md) for the model, the decisions behind it, and the phased
-roadmap.
+**The annual loop is implemented five times**, and that is the validation
+strategy rather than duplication. A scalar Python reference written to be
+checkable by reading; a batched NumPy loop and a batched polars loop that hold
+every replication in flight at once; a Rust kernel that spreads replications
+over worker threads; and a Rust loop over a polars frame. All five take the
+same arguments, read the same draws and return the same result type, so any of
+them can be named at the call.
+
+They are compared by tests that force the lifetimes and check every cell, by a
+paired test over drawn lifetimes, and by runs written to disk and diffed row for
+row. **All five agree in every cell of every array**, with no tolerance
+anywhere — which takes deliberate care rather than luck, because floating-point
+addition is not associative and the year's emergency bill decides which segment
+the budget reaches last.
+
+What the timings say, at 12,000 segments over 30 years under `risk_ranked`, on
+a release build with 48 cores available:
+
+| Implementation | Seconds per replication |
+|---|---|
+| Scalar Python reference | 0.0410 |
+| Batched NumPy | 0.0444 |
+| Rust kernel, 1 thread | 0.0418 |
+| **Rust kernel, 48 threads** | **0.0020** |
+
+**On one thread the kernel is level with Python for this policy**, because the
+reference's NumPy expressions are already compiled loops over the same arrays.
+The win is the replication axis: they are independent, the interpreter lock is
+released for the whole computation, and no Python implementation follows
+without multiprocessing. Where a policy makes only part of the population
+eligible the single-threaded kernel does pull ahead — 7.9x under
+`age_threshold` — because it scores the candidates rather than everything.
+
+Run the table yourself with `uv run python scripts/run_benchmarks.py`, after
+building with `--release`. See [PLAN.md](PLAN.md) for the model, the decisions
+behind it, the rest of the table, and the phased roadmap.
 
 ## Layout
 
 | Path | What it holds |
 |---|---|
-| `src/` | the Rust crate: the compute kernel, built as a Python extension module |
-| `python/cablesim/` | the Python package: configuration, the sources of randomness, the Weibull forms, the population generator, the synthetic failure history and its censored maximum-likelihood fit, the replacement policies, the annual loop that is the correctness reference for the kernel, the wrapper that puts the kernel behind that same call, and the run, metrics and figure layers above it |
+| `src/` | the Rust crate: the compute kernel and a second loop over a polars frame, built as one Python extension module |
+| `python/cablesim/` | the Python package: configuration, the sources of randomness, the Weibull forms, the population generator, the synthetic failure history and its censored maximum-likelihood fit, the replacement policies, the annual loop that is the correctness reference for every other implementation, the two batched loops and the wrapper that puts the kernel behind that same call, the benchmark harness, and the run, metrics and figure layers above it |
 | `scripts/` | driver scripts that build configuration overrides and call the package in a loop; they hold no modelling logic |
 | `configs/base.yaml` | the documented default run configuration |
 | `notebooks/` | marimo notebooks that walk the package interface layer by layer |
 | `tests/` | the test suite |
 | [PLAN.md](PLAN.md) | the model, the configuration schema, the kernel contract, and the roadmap |
 
-The Python reference and the Rust kernel implement the same model twice. That is
-deliberate: the parity tests between them are what validate the kernel, so
-neither side is redundant.
+The Python reference and everything else implement the same model repeatedly.
+That is deliberate: the parity tests between them are what validate the fast
+ones, so no side is redundant. When any two disagree, the reference arbitrates,
+because it is the one written to be checkable by reading.
 
 ## Getting started
 
@@ -85,11 +112,25 @@ the kernel records which profile it was compiled with, read from the binary
 rather than assumed, so a debug build shows up in the saved manifest instead of
 being discovered later.
 
-The sweep script runs either implementation:
+The sweep script runs any of the implementations, and takes a thread count:
 
 ```bash
-uv run python scripts/budget_sweep.py                          # the Python reference
-uv run python scripts/budget_sweep.py --implementation kernel  # the Rust kernel
+uv run python scripts/budget_sweep.py                              # the Rust kernel
+uv run python scripts/budget_sweep.py --threads 8                  # over 8 workers
+uv run python scripts/budget_sweep.py --implementation reference   # the Python reference
+```
+
+Only the Rust kernel uses more than one thread. Every other implementation
+refuses a larger count rather than ignoring it, so a saved run cannot record a
+thread count that nothing acted on.
+
+The benchmark script times all five and checks each against the reference in
+the same pass, because timing an implementation that has drifted measures
+something else being computed:
+
+```bash
+uv run python scripts/run_benchmarks.py            # the shipped population
+uv run python scripts/run_benchmarks.py --reduced  # while someone watches
 ```
 
 ## Testing

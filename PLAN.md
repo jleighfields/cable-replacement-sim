@@ -6,14 +6,20 @@ number-sections: false
 
 # Cable Replacement Simulation — Project Plan
 
-Status: **Phase 3 is landing.** The configuration schema and its validators,
+Status: **Phase 5 is landing.** The configuration schema and its validators,
 the random streams, the Weibull forms, the population generator, the synthetic
 record table and the censored maximum-likelihood fit exist, and so does the
-annual loop: policy scoring, the greedy budget fill, the reference simulation,
-the run directory, the reliability metrics, the shared figures and the budget
-sweep, with notebooks 01 to 04. The reliability-against-budget curve is
-drawable. Phase 4, the Rust kernel, is next, and this is what it will be
-validated against.
+annual loop: policy scoring, the greedy budget fill, the run directory, the
+reliability metrics, the shared figures and the budget sweep, with notebooks 01
+to 05. The reliability-against-budget curve is drawable.
+
+The annual loop now exists five times — a scalar Python reference, a batched
+NumPy loop, a batched polars loop, a Rust kernel over slices and a Rust loop
+over a polars frame — and **every one of them reproduces the reference in every
+cell of every array**, with no tolerance anywhere. That duplication is the
+validation strategy rather than an accident. The kernel runs replications over
+worker threads with the interpreter lock released, and the benchmark table
+exists. Phase 6, the Shiny application and the wheel it needs, is next.
 `rust-toolchain.toml` pins the compiler a checkout and continuous integration
 both build against, so `maturin develop` rebuilds the extension module and the
 format, lint and test gates all run — rustup installs what that file names, so
@@ -1329,7 +1335,8 @@ cable-replacement-sim/
 │   ├── lib.rs                  # PyO3 module definition
 │   ├── weibull.rs              # conditional p(t), left-truncated lifetime draw
 │   ├── policies.rs             # scoring + greedy budget allocation
-│   └── simulate.rs             # replication loop
+│   ├── simulate.rs             # replication loop, rayon over replications
+│   └── batched.rs              # the same loop over a polars frame; benchmark only
 ├── python/cablesim/
 │   ├── __init__.py
 │   ├── config.py               # pydantic schema + loader
@@ -1341,6 +1348,7 @@ cable-replacement-sim/
 │   ├── policies.py             # scoring + greedy budget allocation
 │   ├── simulate.py             # the annual loop; the correctness reference
 │   ├── batched.py              # batched NumPy and polars loops; benchmark only
+│   ├── benchmarks.py           # times them and checks agreement in one pass
 │   ├── metrics.py              # SAIFI / SAIDI / CAIDI / CMI, discounting
 │   ├── run.py                  # config -> run directory; the only writer
 │   ├── results.py              # the directory format run.py writes, and the reader
@@ -1419,6 +1427,7 @@ question with a different answer.
 | **Greedy budget allocation** | `policies.py` | `policies.rs` | **Mirrored** |
 | **Annual replication loop** | `simulate.py` | `simulate.rs` | **Mirrored** |
 | Parallelism over replications | — | `simulate.rs` (rayon) | The reference stays single-threaded and readable; it is the reference, not the fast path |
+| Batched annual loop | `batched.py` | `src/batched.rs` | **Mirrored**, and for the benchmark only (6.5). The Python module carries a NumPy form and a polars form; the Rust file carries the polars form, so the frame implementations can be compared across the boundary |
 | Reliability metrics and discounting | `metrics.py` | — | Ratios derived once from returned counts, so both implementations are compared on what they compute (7.4) |
 | Kernel wrapper | `kernel.py` | — | Rebuilds the reference's `Results` from the seven arrays the binding returns, so both implementations hand back one type (5.2) |
 | Run orchestration and writing | `run.py` | — | Owns the chunk and policy loops, the concatenation, and every write (7.1) |
@@ -1450,11 +1459,26 @@ Three rules decide that table, and each is a rule rather than a preference:
   both sides, which is a decision about where it goes, not about what it is
   called.
 
-Two further implementations of the annual loop exist **for the benchmark only**
-(`batched.py`, Section 6.5, Benchmarks): a batched NumPy baseline and a batched
-polars implementation. Neither is the correctness reference, nothing imports
-them outside the benchmark and their parity tests, and they arrive in Phase 5
-once the model has stopped moving.
+Three further implementations of the annual loop exist **for the benchmark
+only** (Section 6.5, Benchmarks): a batched NumPy baseline and a batched polars
+implementation in `batched.py`, and a polars implementation in `src/batched.rs`.
+None is the correctness reference, nothing imports them outside the benchmark
+and their parity tests, and they arrive in Phase 5 once the model has stopped
+moving.
+
+The Rust frame implementation **passes no DataFrame across the boundary**. It
+takes the same arrays every implementation takes, builds its frames inside the
+extension, and returns the same seven arrays, so the comparison is about the
+engine rather than about interop and no additional binding crate is needed.
+Which form runs is selected by a name at the one existing entry point, and the
+names are authored in the crate and read from it in Python.
+
+**The cost of that implementation is build time**, which is worth stating where
+someone deciding to keep it will read it: adding the polars crate takes a cold
+release build of this crate from about 9 seconds to 297 on a 48-core machine,
+and the final link-time optimisation pass is single-threaded, so slower
+hardware will not recover it. Continuous integration caches it; a cache miss, a
+dependency bump or a fresh clone pays it.
 
 ### 5.2 The call
 
@@ -1917,7 +1941,8 @@ it is the only implementation there is.
 | Scalar reference | `simulate.py` | Plainly correct and slow. One replication at a time, vectorized over segments within a year, readable end to end |
 | Batched NumPy | `batched.py` | The honest baseline. State is a `(n_reps_chunk, n_segments)` array, so the year loop runs 30 times rather than 30,000 |
 | Batched polars | `batched.py` | Whether a frame-based implementation is competitive. Ranking and the greedy fill are `sort` plus `cum_sum().over("rep")`; metrics are a `group_by` |
-| Rust kernel | `src/` | Reported single-threaded and rayon-parallel separately, so the language win and the parallelism win are not conflated |
+| Rust kernel | `src/simulate.rs` | Reported single-threaded and rayon-parallel separately, so the language win and the parallelism win are not conflated |
+| Rust polars | `src/batched.rs` | Whether the frame form's cost is the engine or the trip into it. The Python polars package is an expression layer over the same compiled engine this calls directly, so the pair separates the two |
 
 - **Every implementation passes the same parity tests.** A baseline that has
   not been checked against the reference benchmarks something that may be wrong,
@@ -1947,9 +1972,60 @@ it is the only implementation there is.
   measurement is the deliverable. Carrying a fourth mirror of the annual loop
   to answer a question that has already been answered is not.
 - Always build with `maturin develop --release` before benchmarking; debug
-  builds are slow enough to make timing numbers meaningless. Record the
-  measured ratios here once Phase 5 produces them — nothing has been measured
-  yet, so no number is quoted.
+  builds are slow enough to make timing numbers meaningless.
+
+**The measured table.** 12,000 segments over a 30-year horizon under
+`risk_ranked`, release build, 48 cores available, polars 1.44.1, reported as
+seconds per replication. **Every row reproduced the reference exactly**, which
+is asserted rather than observed: the benchmark harness checks agreement in the
+same pass that times, because timing an implementation that has drifted
+measures something else being computed.
+
+| Implementation | s/replication | Against the fastest Python |
+|---|---|---|
+| Scalar reference | 0.0410 | 1.00 |
+| Batched NumPy | 0.0444 | 0.92 |
+| Batched polars | 0.1430 | 0.29 |
+| Rust kernel, 1 thread | 0.0418 | 0.98 |
+| Rust kernel, 48 threads | 0.0020 | **20.2** |
+| Rust polars, 1 thread | 0.1443 | 0.28 |
+
+Four things in that table were not what this section anticipated, and each is a
+finding rather than a disappointment:
+
+- **Single-threaded, the Rust kernel is level with Python** for a policy that
+  scores every segment. It is not a language win at all there. The reference's
+  NumPy expressions are already compiled loops over the same arrays, and the
+  kernel's advantage — scoring only the candidates — is worth nothing when
+  every segment is one. The kernel reaches 1.7x under `run_to_failure` and 7.9x
+  under `age_threshold`, where the candidate set is empty or a small fraction.
+- **The whole win is the replication axis.** 20x on 48 threads, and that is the
+  claim this project can actually make: replications are embarrassingly
+  parallel, the interpreter lock is released for the entire computation, and no
+  Python implementation can follow without multiprocessing.
+- **Batching does not reliably beat the scalar reference.** The greedy fill's
+  candidate set differs per replication, so a compacted form would be ragged
+  and the batched loop sorts every segment where the reference sorts only the
+  candidates. Under `age_threshold`, 655 of 12,000 are eligible and the
+  reference wins by about a quarter. So a speedup quoted only against
+  `batched.py` is flattered whenever the reference beats it, and the benchmark
+  reports a second ratio against whichever Python implementation was actually
+  fastest. **That is the ratio an outside claim should use.**
+- **The two frame implementations land within one percent of each other.** If
+  driving the engine from Python were expensive, the Rust one would be far
+  ahead; they share a query engine, so the gap between them is the cost of
+  getting there, and it is nearly nothing. What the frame form loses — about
+  three and a half times against the array form — it loses inside the engine.
+
+**The batched baseline has to be written as carefully as the kernel**, which is
+a rule this table produced rather than assumed. As first written it was slower
+than the reference on every policy by up to 3.8x, for two reasons that were its
+own rather than batching's: it drew a replacement lifetime for every segment
+when a few percent are replaced in a year, and it rearranged whole arrays to
+total quantities only the funded cells contribute to. Anything gratuitously
+slow in the baseline flatters every speedup measured against it, so the
+baseline is the implementation where a wasted pass is a correctness problem for
+the *claim*.
 - Drawing lifetimes rather than evaluating hazard every segment-year (2.9)
   removes most of the floating-point work and leaves the scoring, sort, and
   greedy fill dominant. That changes what the benchmark is measuring, which is
@@ -2163,7 +2239,7 @@ notebook needs a function, it belongs in the package.
 | `03_weibull_fitting.py` | Censored MLE walkthrough. Slider for censoring fraction; show the likelihood surface, fitted vs true survival curve, and the recovery test result. Demonstrates *why* censoring must be handled. |
 | `02_effective_scale.py` | The effective-scale reduction derived and made visual (2.3). Numbered ahead of the fitting notebook because the fitting notebook's third rung tests what this one establishes. Sliders for `k`, `lambda`, `n` and length; overlay conductor-level and segment-level survival curves against the empirical minimum of sampled draws, and against draws for a longer segment. Shows scale shrinking by `(n * L/L_ref)^(-1/k)` while shape holds, which is the claim the recovery ladder's rung 3 tests numerically. |
 | `04_policy_explorer.py` | Sliders for annual budget, policy, and policy params; plot SAIDI/SAIFI trajectories over 30 years, spend, and failures by class. **This is the reliability-vs-budget curve** — the deliverable the original work produced. |
-| `05_parity_and_bench.py` | Reference-vs-Rust agreement plots plus the benchmark table. Its rows are the four implementations of Section 6.5, with Rust appearing twice as its two thread configurations — scalar reference, batched NumPy, batched polars, Rust single-threaded, Rust with rayon — at a stated chunk size. The scalar reference is shown for scale and is explicitly **not** the baseline the speedup is claimed against; 6.5 rules that comparison out as flattering, and the batched NumPy row is the honest one. |
+| `05_parity_and_bench.py` | Agreement and the benchmark table. Its rows are the five implementations of Section 6.5, with the Rust kernel appearing twice as its two thread configurations, at a stated population size and replication count. It reads the implementations from the runnable registry rather than naming them, so one added there is timed and checked without being added here. The scalar reference is shown for scale and is explicitly **not** the baseline a speedup is claimed against; 6.5 rules that comparison out as flattering. |
 
 **Each notebook walks the API layer by layer rather than making the top-level
 call.** A notebook that calls one function and plots what comes back teaches
@@ -2578,14 +2654,22 @@ The draw array of 2.11 arrives with Phase 3, not here — `simulate.py` cannot
 run without it — so this phase consumes it rather than deciding it.
 
 **Phase 5 — parallel, batched baselines, and benchmarks**
-`py.allow_threads` + rayon over replications. `batched.py`: the batched NumPy
-baseline and the batched polars implementation, both passing the same parity
-tests as the kernel. The benchmark harness is
-`scripts/run_benchmarks.py`, and notebook 05 renders what it writes.
+Rayon over replications with the interpreter lock released. `batched.py`: the
+batched NumPy baseline and the batched polars implementation. `src/batched.rs`:
+the same frame loop in Rust, added so the frame form's cost can be split
+between the engine and the trip into it. All of them pass the same parity tests
+as the kernel — exactly, every cell. The benchmark harness is
+`cablesim/benchmarks.py`, driven by `scripts/run_benchmarks.py`, and notebook
+05 renders the same table.
 
 The batched implementations land here rather than in Phase 3 because each is
 another mirror of the annual loop and another place divergence can hide. The
 model has to have stopped moving first.
+
+The method PyO3 provides for releasing the interpreter lock is `Python::detach`.
+It was called `allow_threads` until PyO3 renamed it, which is what examples
+found elsewhere still use; the old name compiles with a deprecation warning
+rather than failing, so `cargo clippy` is what catches it.
 
 **Phase 6 — Shiny app, and the wheel it needs**
 `app/` with config-override wiring, ExtendedTask + progress, cached default
@@ -2797,56 +2881,52 @@ the argument belongs beside the model it constrains.
    coefficient shrunk toward zero would indicate failures concentrating at
    splices and terminations. Whether that becomes a modeled term or stays a
    documented diagnostic is a v2 question.
-8. **Is there a polars implementation on the Rust side, as there is on the
-   Python side?** 6.5, Benchmarks, times a batched NumPy implementation against
-   a batched polars one, which asks whether a frame engine is competitive for
-   this work. The same question can be asked in Rust, and there is a reason to
-   want it: the Python pair cannot separate the two things it measures. The
-   Python polars package is a binding over the Rust polars crate, so a loss
-   there could be the engine being wrong for this shape of work or could be
-   interop, and the pair gives no way to tell which.
+8. **Settled: there is a polars implementation on the Rust side, and the
+   answer it gave is that there was nothing to find.** The question was whether
+   the frame form's cost is the engine being wrong for this shape of work or
+   the cost of reaching it from Python, and the Python pair could not tell
+   those apart, because the Python polars package is an expression layer over
+   the same compiled Rust engine.
 
-   Two ways to answer it, and they differ by an order of magnitude in cost.
+   Measured, the two frame implementations land **within one percent of each
+   other** at the shipped population. Driving that engine from Python costs
+   essentially nothing at this granularity — one call per year per operation,
+   over twelve thousand rows a time — so the three-and-a-half-times gap between
+   the frame form and the array form is inside the engine.
 
-   The expensive one is a sixth implementation of the annual loop, in polars
-   from Rust, held to the parity tests every other implementation passes. That
-   is the comparison stated plainly, and it carries the tax Phase 5 already
-   names for the batched implementations: each is another mirror of the loop
-   and another place divergence can hide. It would also inherit the limits the
-   Python polars implementation has — the greedy fill of 2.9 stops at the first
-   candidate that does not fit, which is sequential, and the uniforms have to
-   arrive from outside because polars has no addressable per-element generator
-   — so it would be a partial frame implementation benchmarked as a whole one.
-
-   The cheap one is to time the same polars expressions from both languages on
-   the grouping step alone: the `group_by` behind the metrics and the
-   `cum_sum().over("rep")` behind the greedy fill. Tens of lines, no parity
-   obligation because it implements none of the model, and it isolates
-   interop from engine cost directly. If the overhead turns out negligible,
-   the Python number already says what a Rust implementation would, and the
-   expensive option is answered without being built.
-
-   Do the cheap one first, and only then decide whether the row is worth it.
-   Either way this belongs in Phase 5 with the rest of the benchmark work,
-   for the reason that phase gives: the model has to have stopped moving
-   before another mirror of it is worth maintaining.
+   The cheap alternative was to time the same expressions from both languages
+   without implementing the model. It would have measured those expressions
+   rather than this workload, and the expensive answer is the one that can be
+   quoted. What it cost is build time — see 5.1, What is implemented where —
+   and that cost is the reason to decide deliberately whether to keep it now
+   that it has answered its question.
 
 ---
 
 ## 14. First actions in the next session
 
-1. Phase 5, the parallel kernel, the batched baselines and the benchmarks.
-   Section 11, Phased roadmap, has what it owes. The single-threaded kernel it
-   measures against is in place and unchanged by that work, which is what makes
-   the parallel speedup a number rather than an impression.
+1. Phase 6, the Shiny application and the wheel it needs. Section 11, Phased
+   roadmap, has what it owes, and the sentence in it worth not skipping is that
+   the wheel must be built and proven to install on the deployment target in
+   that phase rather than in Phase 7 — the application deploys to an
+   environment that installs this package itself, so a working wheel is a
+   prerequisite for the application being deliverable at all.
 
-   Two things it inherits. The batched implementations are two more mirrors of
-   the annual loop, so the deterministic parity tests have to cover them as
-   they cover the kernel; and the budget sweep script's reduced default was
-   chosen when the reference was the only implementation, so it is worth
-   revisiting once the kernel makes full size affordable rather than inheriting
-   it silently.
-2. Confirm branch protection refuses what it claims to. Both rulesets in
+   The application inherits a decision from Phase 5 that its own design section
+   already half-anticipates. The kernel is level with Python on one thread and
+   twenty times faster on forty-eight, so what makes an interactive run fast is
+   the thread count rather than the language. The application should pass one,
+   and its manifest already has the field to record what it used.
+
+2. **Decide whether to keep the Rust polars implementation.** It answered the
+   question it was written to ask — 13.2, Still open — and the answer was that
+   driving the engine from Python costs almost nothing. Carrying a mirror of
+   the annual loop to answer a question already answered is what 6.5,
+   Benchmarks, says not to do, and this one costs about five minutes of cold
+   build. Against that: it is the evidence for the claim, and deleting it
+   leaves the claim resting on a measurement nobody can reproduce. Decide it
+   deliberately rather than by default.
+3. Confirm branch protection refuses what it claims to. Both rulesets in
    Section 10.4, Branch protection on `main`, are applied and match their
    checked-in files, and every change since continuous integration existed has
    arrived through a pull request with a green `test` — the two commits that
@@ -2855,5 +2935,5 @@ the argument belongs beside the model it constrains.
    the merge button refuses, then confirm a direct `git push origin main` is
    rejected. A protection rule nobody has watched refuse something is not
    known to work.
-3. Source the placeholder numbers in 13.2, Still open, before any result is
+4. Source the placeholder numbers in 13.2, Still open, before any result is
    presented as a finding rather than as a demonstration of the machinery.
