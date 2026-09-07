@@ -1,0 +1,380 @@
+"""The annual loop, checked against cases whose answers are known by hand.
+
+Randomness is removed wherever it is not the thing under test, by forcing the
+Weibull scale through the ordinary ``scale`` array rather than through a
+test-only argument. A scale near zero makes every segment fail in its first
+year; one far past the horizon makes none fail at all. Both arrive the way
+every run's scales arrive, so these exercise the shipped path rather than a
+branch only tests reach.
+"""
+
+import numpy as np
+import pytest
+from cablesim import config, policies, simulate
+
+N_SEGMENTS = 4
+N_YEARS = 3
+N_CLASSES = 2
+
+FAILS_AT_ONCE = 1e-6
+"""A scale that puts every segment's remaining life at zero.
+
+Verified rather than assumed: the conditional draw returns exactly 0.0 at this
+scale for any age the model reaches, and a replacement's fresh lifetime comes
+out near a millionth of a year, so it fails again in the year after it enters
+service.
+"""
+
+NEVER_FAILS = 1e6
+"""A scale that puts the first failure hundreds of thousands of years out."""
+
+
+def resolved(name: str, **params: float | str) -> policies.Resolved:
+    """Validates a policy and reduces it to what the loop reads.
+
+    Args:
+        name: The policy name.
+        **params: Policy parameters.
+
+    Returns:
+        The resolved policy.
+    """
+    return policies.resolve(config.PolicySpec(name=name, params=params))
+
+
+def inputs(**overrides: object) -> dict[str, object]:
+    """Builds one call's arguments, with everything varied deliberately.
+
+    Costs are round so that a budget can be set to fund an exact number of
+    segments: every segment is 100 feet at 10 dollars a foot plus 500 of
+    mobilization, so planned replacement is 1,500 and emergency is 3,750.
+
+    Args:
+        **overrides: Arguments to replace.
+
+    Returns:
+        Keyword arguments for the annual loop.
+    """
+    arguments: dict[str, object] = {
+        "length_ft": np.full(N_SEGMENTS, 100.0),
+        "customers": np.array([10.0, 20.0, 30.0, 40.0]),
+        "customer_minutes_per_failure": np.array([100.0, 200.0, 300.0, 400.0]),
+        "customer_minutes_per_planned": np.array([1.0, 2.0, 3.0, 4.0]),
+        "outage_cost_per_failure": np.array([1_000.0, 2_000.0, 3_000.0, 4_000.0]),
+        "class_index": np.array([0, 0, 1, 1], dtype=np.uint8),
+        "age0": np.array([10.0, 20.0, 30.0, 40.0]),
+        "shape": np.full(N_SEGMENTS, 6.2),
+        "scale": np.full(N_SEGMENTS, 50.0),
+        "replacement_shape": np.full(N_SEGMENTS, 6.2),
+        "replacement_scale": np.full(N_SEGMENTS, 65.0),
+        "cost_per_ft": np.full(N_SEGMENTS, 10.0),
+        "lifetime_uniforms": np.full((1, N_SEGMENTS, N_YEARS + 1), 0.5),
+        "policy_uniforms": np.full((1, N_SEGMENTS), 0.5),
+        "budget": np.full(N_YEARS, 1e9),
+        "cost_escalation": np.ones(N_YEARS),
+        "policy": resolved("run_to_failure"),
+        "emergency_multiplier": 2.5,
+        "mobilization_per_segment": 500.0,
+        "emergency_charged_to_budget": False,
+        "n_classes": N_CLASSES,
+        "n_years": N_YEARS,
+    }
+    arguments.update(overrides)
+    return arguments
+
+
+def test_forcing_the_scale_to_zero_fails_every_segment_every_year() -> None:
+    """The deterministic case, and the one that pins the replacement rule.
+
+    A replacement enters service at the start of the following year, so nothing
+    can fail twice in one year and the year loop needs no inner iteration.
+    Without that rule this case does not terminate.
+    """
+    results = simulate.simulate(
+        **inputs(
+            scale=np.full(N_SEGMENTS, FAILS_AT_ONCE),
+            replacement_scale=np.full(N_SEGMENTS, FAILS_AT_ONCE),
+        )
+    )
+
+    for year in range(N_YEARS):
+        assert results.failures[0, year].tolist() == [2.0, 2.0], year
+        assert results.customers_interrupted[0, year].tolist() == [30.0, 70.0]
+        assert results.customer_minutes[0, year].tolist() == [300.0, 700.0]
+        # Two segments a class, at 1,500 planned times the 2.5 multiplier.
+        assert results.emergency_spend[0, year].tolist() == [7_500.0, 7_500.0]
+
+
+def test_forcing_the_scale_past_the_horizon_fails_nothing() -> None:
+    """The other end of the deterministic case."""
+    results = simulate.simulate(
+        **inputs(
+            scale=np.full(N_SEGMENTS, NEVER_FAILS),
+            replacement_scale=np.full(N_SEGMENTS, NEVER_FAILS),
+        )
+    )
+
+    assert not results.failures.any()
+    assert not results.emergency_spend.any()
+    assert not results.customer_minutes.any()
+
+
+def test_the_initial_draw_is_conditional_on_the_age_already_survived() -> None:
+    """Drawing unconditionally makes an old population behave as though new.
+
+    An 80-year-old segment at a scale of 50 is far past its median life and has
+    months left, not decades. Drawn unconditionally it would get the lifetime
+    of new cable — about 47 years at this uniform — and fail nowhere inside the
+    horizon, which is a run that completes with plausible-looking curves.
+    """
+    results = simulate.simulate(
+        **inputs(
+            age0=np.full(N_SEGMENTS, 80.0),
+            lifetime_uniforms=np.full((1, N_SEGMENTS, N_YEARS + 1), 0.5),
+            replacement_scale=np.full(N_SEGMENTS, NEVER_FAILS),
+        )
+    )
+
+    assert results.failures[0, 0].tolist() == [2.0, 2.0], "all four fail in year 0"
+    assert not results.failures[0, 1:].any(), "their replacements outlive the horizon"
+
+
+def test_a_segment_that_failed_this_year_is_not_also_planned_work() -> None:
+    """Eligibility means not already replaced this year, and nothing else.
+
+    Everything fails every year here, so a policy that funds from the whole
+    population has an empty candidate set every year despite an unlimited
+    budget.
+    """
+    results = simulate.simulate(
+        **inputs(
+            policy=resolved("risk_ranked"),
+            scale=np.full(N_SEGMENTS, FAILS_AT_ONCE),
+            replacement_scale=np.full(N_SEGMENTS, FAILS_AT_ONCE),
+        )
+    )
+
+    assert results.failures.sum() == N_SEGMENTS * N_YEARS
+    assert not results.planned_replacements.any()
+    assert not results.planned_spend.any()
+
+
+def test_unspent_budget_does_not_carry_into_the_next_year() -> None:
+    """Each year gets the amount in the series and no more.
+
+    A budget of 1,400 a year never funds a 1,500 segment. Carried forward it
+    would reach 2,800 by the second year and fund one, which is what this
+    refuses.
+    """
+    results = simulate.simulate(
+        **inputs(
+            policy=resolved("risk_ranked"),
+            budget=np.full(N_YEARS, 1_400.0),
+            scale=np.full(N_SEGMENTS, NEVER_FAILS),
+            replacement_scale=np.full(N_SEGMENTS, NEVER_FAILS),
+        )
+    )
+
+    assert not results.planned_replacements.any()
+
+
+def test_the_budget_funds_candidates_down_the_ranked_order() -> None:
+    """Three segments at 1,500 fit inside 5,000; the fourth does not."""
+    results = simulate.simulate(
+        **inputs(
+            policy=resolved("risk_ranked"),
+            budget=np.array([5_000.0, 0.0, 0.0]),
+            scale=np.full(N_SEGMENTS, NEVER_FAILS),
+            replacement_scale=np.full(N_SEGMENTS, NEVER_FAILS),
+        )
+    )
+
+    assert results.planned_replacements[0, 0].sum() == 3.0
+    assert results.planned_spend[0, 0].sum() == pytest.approx(4_500.0)
+    assert not results.planned_replacements[0, 1:].any(), "no budget after year 0"
+
+
+def test_planned_work_reports_its_customer_minutes_outside_the_indices() -> None:
+    """Planned minutes are a real cost and enter no reliability index.
+
+    A customer out for four hours does not care that the work was scheduled,
+    but the indices are defined over unplanned interruptions, so the two totals
+    stay apart.
+    """
+    results = simulate.simulate(
+        **inputs(
+            policy=resolved("risk_ranked"),
+            budget=np.array([1e9, 0.0, 0.0]),
+            scale=np.full(N_SEGMENTS, NEVER_FAILS),
+            replacement_scale=np.full(N_SEGMENTS, NEVER_FAILS),
+        )
+    )
+
+    assert results.planned_customer_minutes[0, 0].tolist() == [3.0, 7.0]
+    assert not results.customer_minutes.any(), "no failures, so no index minutes"
+    assert not results.customers_interrupted.any()
+
+
+def test_charging_emergency_spend_to_the_budget_crowds_out_planned_work() -> None:
+    """The ordering is part of the contract, not an implementation detail.
+
+    One segment fails every year and the other three never do. Its emergency
+    replacement costs 3,750 against a 5,000 budget. Left in its own operations
+    bucket, the remaining three segments are all affordable; charged first,
+    what is left will not cover even one.
+    """
+    scale = np.array([FAILS_AT_ONCE, NEVER_FAILS, NEVER_FAILS, NEVER_FAILS])
+    arguments = inputs(
+        policy=resolved("risk_ranked"),
+        budget=np.full(N_YEARS, 5_000.0),
+        scale=scale,
+        replacement_scale=scale,
+    )
+
+    separate = simulate.simulate(**{**arguments, "emergency_charged_to_budget": False})
+    charged = simulate.simulate(**{**arguments, "emergency_charged_to_budget": True})
+
+    assert separate.planned_replacements[0, 0].sum() == 3.0
+    assert charged.planned_replacements[0, 0].sum() == 0.0
+    # The failure itself is unaffected either way; only what follows it moves.
+    assert separate.failures[0, 0].sum() == charged.failures[0, 0].sum() == 1.0
+
+
+def test_a_tie_is_broken_on_segment_identifier_when_only_one_fits() -> None:
+    """Equal ages, a budget for exactly one, and the lower identifier wins."""
+    results = simulate.simulate(
+        **inputs(
+            policy=resolved("age_threshold", threshold_years=5),
+            age0=np.full(N_SEGMENTS, 40.0),
+            budget=np.array([1_500.0, 0.0, 0.0]),
+            scale=np.full(N_SEGMENTS, NEVER_FAILS),
+            replacement_scale=np.full(N_SEGMENTS, NEVER_FAILS),
+        )
+    )
+
+    # Segments 0 and 1 are class 0; 2 and 3 are class 1.
+    assert results.planned_replacements[0, 0].tolist() == [1.0, 0.0]
+
+
+def test_every_policy_at_zero_budget_matches_run_to_failure() -> None:
+    """A free end-to-end check on the whole loop.
+
+    Nothing funded means nothing differs, whatever the policy would have
+    ranked, so any divergence here is the loop leaking policy state into
+    something other than the funding decision.
+    """
+    draws = np.linspace(0.01, 0.99, N_SEGMENTS * (N_YEARS + 1)).reshape(
+        1, N_SEGMENTS, N_YEARS + 1
+    )
+    # Old enough at the shipped scale that failures land inside the horizon;
+    # at the default ages nothing fails in three years and the comparison
+    # below would hold for the wrong reason.
+    aged = np.array([60.0, 70.0, 80.0, 85.0])
+    baseline = simulate.simulate(
+        **inputs(age0=aged, lifetime_uniforms=draws, budget=np.full(N_YEARS, 1e9))
+    )
+    assert baseline.failures.any(), "the comparison is vacuous without failures"
+
+    for name, params in (
+        ("age_threshold", {"threshold_years": 5}),
+        ("risk_ranked", {}),
+        ("risk_ranked", {"rank_by": "score_per_dollar"}),
+        ("worst_first", {}),
+        ("random", {}),
+    ):
+        starved = simulate.simulate(
+            **inputs(
+                policy=resolved(name, **params),
+                age0=aged,
+                lifetime_uniforms=draws,
+                budget=np.zeros(N_YEARS),
+            )
+        )
+        for field, left, right in zip(
+            simulate.Results._fields, baseline, starved, strict=True
+        ):
+            assert np.array_equal(left, right), f"{name} {params} differs on {field}"
+
+
+def test_a_draw_array_with_the_wrong_year_axis_is_refused() -> None:
+    """It would otherwise raise only if a replacement fell in the final year."""
+    with pytest.raises(ValueError, match="lifetime_uniforms"):
+        simulate.simulate(
+            **inputs(lifetime_uniforms=np.full((1, N_SEGMENTS, N_YEARS), 0.5))
+        )
+
+
+def test_cost_escalation_lifts_every_dollar_in_the_year_together() -> None:
+    """Escalating construction while holding lost load fixed reweights scoring.
+
+    Over a long horizon that quietly shrinks the consequence term against the
+    cost term, so the multiplier applies to both or to neither.
+    """
+    escalation = np.array([1.0, 2.0, 4.0])
+    results = simulate.simulate(
+        **inputs(
+            cost_escalation=escalation,
+            scale=np.full(N_SEGMENTS, FAILS_AT_ONCE),
+            replacement_scale=np.full(N_SEGMENTS, FAILS_AT_ONCE),
+        )
+    )
+
+    spend = results.emergency_spend[0].sum(axis=1)
+    assert spend.tolist() == pytest.approx([15_000.0, 30_000.0, 60_000.0])
+
+
+def test_a_replaced_segment_is_age_zero_when_the_next_year_is_scored() -> None:
+    """Otherwise the same segment wins the same tie-break every year.
+
+    Four segments of equal age, a budget for exactly one, and a threshold they
+    all meet. The tie goes to the lowest identifier, so year 0 funds segment 0.
+    In year 1 that segment is new cable and below the threshold, so the tie is
+    now between the other three and segment 1 wins it; in year 2, segment 2.
+    Without the reset, segment 0 stays oldest-equal and is funded three times.
+    """
+    results = simulate.simulate(
+        **inputs(
+            policy=resolved("age_threshold", threshold_years=40),
+            age0=np.full(N_SEGMENTS, 40.0),
+            budget=np.full(N_YEARS, 1_500.0),
+            scale=np.full(N_SEGMENTS, NEVER_FAILS),
+            replacement_scale=np.full(N_SEGMENTS, NEVER_FAILS),
+        )
+    )
+
+    # Segments 0 and 1 are class 0; 2 and 3 are class 1.
+    funded = [results.planned_replacements[0, year].tolist() for year in range(N_YEARS)]
+    assert funded == [[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]]
+
+
+def test_the_value_of_lost_load_escalates_with_construction_cost() -> None:
+    """Escalating one and not the other reweights the score year by year.
+
+    Two candidates with the same failure probability: one where most of the
+    score is customer value at risk, one where most of it is the emergency
+    premium avoided. Escalating both terms leaves their order alone, which is
+    the point of applying the multiplier to every dollar in the year. Escalate
+    only construction and the second overtakes the first, and it is dear enough
+    that the budget then funds nothing at all.
+    """
+    results = simulate.simulate(
+        **inputs(
+            policy=resolved("risk_ranked"),
+            # Planned cost is 1,000 and 6,000 at par, so 4,000 and 24,000 once
+            # the year's escalation is applied; the last two are inert.
+            cost_per_ft=np.array([10.0, 60.0, 100.0, 100.0]),
+            mobilization_per_segment=0.0,
+            outage_cost_per_failure=np.array([10_000.0, 1_000.0, 0.0, 0.0]),
+            age0=np.full(N_SEGMENTS, 40.0),
+            # The last two never fail and score zero, so they rank below both.
+            scale=np.array([50.0, 50.0, NEVER_FAILS, NEVER_FAILS]),
+            replacement_scale=np.full(N_SEGMENTS, NEVER_FAILS),
+            class_index=np.array([0, 1, 1, 1], dtype=np.uint8),
+            cost_escalation=np.array([4.0, 1.0, 1.0]),
+            # Covers the first candidate at escalated prices and not the second.
+            budget=np.array([4_000.0, 0.0, 0.0]),
+        )
+    )
+
+    assert results.planned_replacements[0, 0].tolist() == [1.0, 0.0]
+    assert results.planned_spend[0, 0].tolist() == pytest.approx([4_000.0, 0.0])
