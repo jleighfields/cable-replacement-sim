@@ -21,15 +21,6 @@ extension-module = ["pyo3/extension-module"]
 
 [dependencies]
 numpy = "0.27"
-# Default features off, and only the two this crate needs turned on. The
-# defaults pull in the CSV and Parquet readers and everything under them, none
-# of which is reached: the frame is built from arrays already in memory and
-# returned as arrays. Measured on a 48-core machine with the release profile
-# below, a cold build is 191 s against 297 s with the defaults and `performant`,
-# and the runtime is unchanged — 0.1466 s per replication against 0.1443, which
-# is inside the run-to-run spread. `lazy` is the query planner; `cum_agg` is
-# `cum_sum`, which is how a total is made to accumulate in a stated order.
-polars = { version = "0.55.2", default-features = false, features = ["lazy", "cum_agg"] }
 pyo3 = { version = "0.27", features = ["abi3-py311"] }
 rayon = "1.12.0"
 

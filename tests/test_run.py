@@ -279,43 +279,52 @@ def test_a_name_no_result_may_claim_is_reported_as_unknown() -> None:
     assert run.unknown_implementations([]) == set()
 
 
-def test_the_run_takes_policy_priorities_from_the_policy_stream(
+def test_the_run_derives_the_draw_key_from_the_configured_seed(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Checked at the wiring, not only at the helper that builds the draws.
+    """Checked at the wiring, not only at the helper that derives it.
 
-    Both arrays are uniforms of the same shape, so passing the wrong stream
-    produces a run that completes with plausible numbers. What it costs is the
-    random policy: a larger uniform gives a shorter lifetime, so priorities
-    taken from the lifetime stream would rank by imminence of failure — the
-    thing the policy exists to be a control against. No parity test would see
-    it, because every implementation would read the same wrong array.
+    The key is the whole of a run's randomness now: every uniform is a function
+    of it and of a position. A run that derived it from anything but the
+    configured seed — a constant, the clock, a chunk index — would still
+    complete with plausible numbers, and no parity test would see it, because
+    every implementation would compute from the same wrong key.
+
+    What the chunk offset does is checked with it. A run splits replications
+    into chunks to bound memory, and that split is provenance rather than part
+    of the model, so chunk two has to start at the replication it actually
+    covers or the same run at a different batch size would produce different
+    numbers.
     """
     settings = small_config()
-    captured: dict[str, np.ndarray] = {}
+    seen: list[dict[str, object]] = []
 
     def capturing(**arguments: object) -> simulate.Results:
-        captured.update(
-            lifetime_uniforms=arguments["lifetime_uniforms"],
-            policy_uniforms=arguments["policy_uniforms"],
+        seen.append(
+            {
+                "draw_key": arguments["draw_key"],
+                "first_replication": arguments["first_replication"],
+                "n_reps": arguments["n_reps"],
+            }
         )
         return simulate.run_chunk(**arguments)
 
     monkeypatch.setitem(run.RUNNABLE, "reference", capturing)
     run.run(settings, tmp_path, batch_size=6)
 
-    sources = random_draws.spawn_sources(settings.simulation.seed)
-    n_segments = settings.population.n_segments
-    assert np.array_equal(
-        captured["policy_uniforms"],
-        random_draws.replication_uniforms(
-            sources.policies, range(0, settings.simulation.n_reps), (n_segments,)
-        ),
-    )
-    assert not np.array_equal(
-        captured["policy_uniforms"], captured["lifetime_uniforms"][:, :, 0]
-    )
+    expected = random_draws.draw_key(settings.simulation.seed)
+    assert {call["draw_key"] for call in seen} == {expected}
+    # A different seed has to give a different key, or deriving it from the seed
+    # would be indistinguishable from ignoring the seed.
+    assert random_draws.draw_key(settings.simulation.seed + 1) != expected
 
+    # Every replication of the run is covered exactly once, in order.
+    covered: list[int] = []
+    for call in seen[: len(seen) // len(settings.policies) or 1]:
+        covered.extend(
+            range(call["first_replication"], call["first_replication"] + call["n_reps"])
+        )
+    assert covered == list(range(settings.simulation.n_reps))
 
 def test_the_budget_series_uses_the_budget_rate_and_not_the_cost_rate(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch

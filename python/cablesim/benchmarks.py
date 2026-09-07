@@ -1,9 +1,8 @@
 """Timing the implementations of the annual loop against each other.
 
-Five programs compute the same numbers from the same draws — a scalar Python
-reference, a batched NumPy loop, a batched polars loop, a Rust kernel over
-slices and a Rust loop over a polars frame — and this module times them and
-checks that they still agree while doing it.
+Three programs compute the same numbers from the same draws — a scalar Python
+reference, a batched NumPy loop and the Rust kernel — and this module times them
+and checks that they still agree while doing it.
 
 **A timing without its agreement is worth nothing**, so the two are produced
 together rather than in separate passes. An implementation that has drifted is
@@ -51,9 +50,7 @@ log = logging.getLogger(__name__)
 DEFAULT_REPEATS = 3
 """Runs per configuration, averaged into the reported time."""
 
-PYTHON_IMPLEMENTATIONS: frozenset[str] = frozenset(
-    {"reference", "batched_numpy", "batched_polars"}
-)
+PYTHON_IMPLEMENTATIONS: frozenset[str] = frozenset({"reference", "batched_numpy"})
 """The implementations that run in Python, whatever they call underneath.
 
 Named here rather than derived from the runnable registry, because what makes a
@@ -98,35 +95,26 @@ def label(configuration: Configuration) -> str:
     return configuration.implementation
 
 
-def chunk_arguments(settings: config_module.Config, n_reps: int) -> dict[str, object]:
-    """Builds one call's arguments, the way a real run builds them.
+def population_arguments(settings: config_module.Config) -> dict[str, object]:
+    """The arguments a run builds once, however many chunks it then runs.
 
-    Every implementation timed against a given replication count is handed this
-    one set of objects, so "the same draws" is true by construction rather than
-    by coincidence.
+    Separated from the draws because the two are paid at different rates and
+    only one of them belongs inside a timing. A run generates its population
+    once and its draws once per chunk, so a per-chunk measurement that included
+    the population would charge every chunk for work the run did once.
 
     Args:
         settings: The configuration to build from.
-        n_reps: Replications this chunk covers.
 
     Returns:
-        Every argument of ``simulate.run_chunk`` except ``policy`` and
-        ``threads``.
+        Every argument of ``simulate.run_chunk`` except the two uniform arrays,
+        ``policy`` and ``threads``.
     """
     simulation = settings.simulation
     segments = run.segment_arrays(population.generate(settings))
-    n_segments = segments["age0"].size
-    sources = random_draws.spawn_sources(simulation.seed)
-    replications = range(n_reps)
 
     return {
         **segments,
-        "lifetime_uniforms": random_draws.replication_uniforms(
-            sources.lifetimes, replications, (n_segments, simulation.n_years + 1)
-        ),
-        "policy_uniforms": random_draws.replication_uniforms(
-            sources.policies, replications, (n_segments,)
-        ),
         "budget": settings.budget.annual
         * run.escalation_series(settings.budget.escalation, simulation.n_years),
         "cost_escalation": run.escalation_series(
@@ -138,6 +126,43 @@ def chunk_arguments(settings: config_module.Config, n_reps: int) -> dict[str, ob
         "n_classes": len(settings.population.classes),
         "n_years": simulation.n_years,
     }
+
+
+def draw_arguments(settings: config_module.Config, n_reps: int) -> dict[str, object]:
+    """What a chunk needs to produce its own draws.
+
+    A key and a position, rather than the uniforms themselves. **Every
+    implementation now generates inside the timed region**, which is where the
+    work belongs: an implementation that produces only the draws it reads
+    deserves the credit, and one that produces eighteen million to read a few
+    hundred thousand should be charged for it.
+
+    Args:
+        settings: The configuration to build from, which fixes the seed.
+        n_reps: Replications this chunk covers.
+
+    Returns:
+        The key and the chunk's position, keyed by argument name.
+    """
+    return {
+        "draw_key": random_draws.draw_key(settings.simulation.seed),
+        "first_replication": 0,
+        "n_reps": n_reps,
+    }
+
+
+def chunk_arguments(settings: config_module.Config, n_reps: int) -> dict[str, object]:
+    """One call's arguments, population and draws together.
+
+    Args:
+        settings: The configuration to build from.
+        n_reps: Replications this chunk covers.
+
+    Returns:
+        Every argument of ``simulate.run_chunk`` except ``policy`` and
+        ``threads``.
+    """
+    return {**population_arguments(settings), **draw_arguments(settings, n_reps)}
 
 
 def agrees(expected: simulate.Results, produced: simulate.Results) -> bool:
@@ -163,6 +188,7 @@ def agrees(expected: simulate.Results, produced: simulate.Results) -> bool:
 
 def time_once(
     configuration: Configuration,
+    settings: config_module.Config,
     arguments: dict[str, object],
     policy: policies.Resolved,
     repeats: int,
@@ -171,7 +197,8 @@ def time_once(
 
     Args:
         configuration: What to run and how.
-        arguments: The chunk's arguments, without ``policy`` or ``threads``.
+        settings: The configuration, for rebuilding the draws each run.
+        arguments: The population arguments, built once outside this.
         policy: The resolved policy to run under.
         repeats: How many times to run it.
 
@@ -188,12 +215,17 @@ def time_once(
     if repeats < 1:
         raise ValueError(f"repeats must be at least 1, got {repeats}")
     annual_loop = run.RUNNABLE[configuration.implementation]
-    call = {**arguments, "policy": policy, "threads": configuration.threads}
     elapsed = []
     produced = None
     for _ in range(repeats):
         started = time.perf_counter()
-        produced = annual_loop(**call)
+        # The draws are built inside the clock because a run builds them once
+        # per chunk, so they are part of what a chunk costs. The population is
+        # not, because a run builds that once however many chunks follow.
+        draws = draw_arguments(settings, configuration.n_reps)
+        produced = annual_loop(
+            **arguments, **draws, policy=policy, threads=configuration.threads
+        )
         elapsed.append(time.perf_counter() - started)
     return produced, sum(elapsed) / len(elapsed), min(elapsed)
 
@@ -209,6 +241,13 @@ def compare(
     The reference is run once per distinct replication count and its result
     kept, so the agreement column compares like with like without paying for a
     reference run per row.
+
+    **Draw generation is inside the timing and population generation is not**,
+    because a run pays for one per chunk and the other once. That boundary is
+    not a detail: producing eighteen million uniforms to read a few hundred
+    thousand of them costs about a tenth of a second per chunk, and with it
+    outside the clock a change that stopped doing so would read as a
+    regression.
 
     Args:
         settings: The configuration to run, which fixes the population size,
@@ -246,16 +285,17 @@ def compare(
     policy = policies.resolve(
         next(spec for spec in settings.policies if spec.name == policy_name)
     )
-    arguments: dict[int, dict[str, object]] = {}
+    shared = population_arguments(settings)
     reference: dict[int, simulate.Results] = {}
     rows = []
     for configuration in configurations:
         n_reps = configuration.n_reps
-        if n_reps not in arguments:
-            arguments[n_reps] = chunk_arguments(settings, n_reps)
-            reference[n_reps] = simulate.run_chunk(**arguments[n_reps], policy=policy)
+        if n_reps not in reference:
+            reference[n_reps] = simulate.run_chunk(
+                **shared, **draw_arguments(settings, n_reps), policy=policy
+            )
         produced, seconds, fastest = time_once(
-            configuration, arguments[n_reps], policy, repeats
+            configuration, settings, shared, policy, repeats
         )
         log.info(
             "%s: %.3f s, mean of %d, over %d replications",

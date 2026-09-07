@@ -9,6 +9,13 @@ driven. `threads` is one of those arguments on both sides: the reference accepts
 it and refuses anything but one, which says what it cannot do rather than
 silently ignoring the request.
 
+**No draw array crosses this boundary.** The kernel computes each uniform from
+its position — the purpose, the replication, the segment and the year — under a
+key derived from the run's seed, so a worker produces what it needs without a
+stream to share or an array to be handed. `random_draws` computes the identical
+values in NumPy for the implementations that stay in Python, and the two are
+held to agreeing bit for bit.
+
 The extension module returns seven arrays rather than a result object of its
 own. Rebuilding the reference's NamedTuple from them here is what keeps a
 single result type in the package: anything that unpacks a result, reads
@@ -23,19 +30,6 @@ working tree.
 import numpy as np
 
 from cablesim import _cablesim, policies, simulate
-
-SCALAR_ENGINE: str = _cablesim.SCALAR_ENGINE
-"""Runs the annual loop over plain slices, one replication at a time."""
-
-FRAME_ENGINE: str = _cablesim.FRAME_ENGINE
-"""Runs the same loop over a polars frame, inside the same extension module.
-
-Both names come from the crate rather than being written here, so the two sides
-cannot drift into disagreeing about what a name selects. The two engines compute
-the same numbers from the same draws and differ only in how the work is
-expressed, which is what makes timing one against the other a measurement of the
-expression rather than of the model.
-"""
 
 AVAILABLE_THREADS: int = _cablesim.available_threads()
 """How many threads this machine can run at once.
@@ -70,8 +64,9 @@ def run_chunk(
     replacement_shape: np.ndarray,
     replacement_scale: np.ndarray,
     cost_per_ft: np.ndarray,
-    lifetime_uniforms: np.ndarray,
-    policy_uniforms: np.ndarray,
+    draw_key: tuple[int, int],
+    first_replication: int,
+    n_reps: int,
     budget: np.ndarray,
     cost_escalation: np.ndarray,
     policy: policies.Resolved,
@@ -81,7 +76,6 @@ def run_chunk(
     n_classes: int,
     n_years: int,
     threads: int = 1,
-    engine: str = SCALAR_ENGINE,
 ) -> simulate.Results:
     """Runs one chunk of replications under one policy, in Rust.
 
@@ -108,11 +102,15 @@ def run_chunk(
             for this segment's own geometry.
         replacement_scale: The same for scale.
         cost_per_ft: Installed cost per foot.
-        lifetime_uniforms: ``(replications, segments, n_years + 1)`` uniforms.
-            Index 0 is the left-truncated draw made at the start of the run,
-            and a replacement made in year ``y`` reads index ``y + 1``.
-        policy_uniforms: ``(replications, segments)``, one fixed priority per
-            segment, which only the random policy ranks on.
+        draw_key: The two key words every uniform is computed under. **The
+            kernel produces its own draws from these**, which is why no array
+            of them crosses the boundary: a draw is a function of where it
+            sits, so a worker computes the one it needs and coordinates with
+            nobody. The Python implementations compute the identical values
+            from the identical key, which the draw tests establish.
+        first_replication: Where this chunk starts in the run, so splitting a
+            run into chunks changes no number.
+        n_reps: Replications this chunk covers.
         budget: Planned capital per year, already escalated.
         cost_escalation: Per-year multiplier applied to every dollar quantity.
         policy: The resolved replacement policy.
@@ -131,13 +129,6 @@ def run_chunk(
             makes a single-threaded timing a baseline rather than a measurement
             of the pool's overhead. ``AVAILABLE_THREADS`` is this machine's
             count.
-        engine: Which form of the loop to run, ``SCALAR_ENGINE`` or
-            ``FRAME_ENGINE``. Both are compiled into the same extension module
-            and both read the same draws, so they return identical arrays; what
-            differs is whether the work is expressed as indexing into slices or
-            as operations on a frame. The frame engine sizes its own thread pool
-            and refuses a thread count above one.
-
     Returns:
         The seven per-year, per-class arrays for this chunk.
 
@@ -175,8 +166,9 @@ def run_chunk(
             replacement_shape,
             replacement_scale,
             cost_per_ft,
-            lifetime_uniforms,
-            policy_uniforms,
+            draw_key,
+            first_replication,
+            n_reps,
             budget,
             cost_escalation,
             policy,
@@ -186,35 +178,5 @@ def run_chunk(
             n_classes,
             n_years,
             threads,
-            engine,
         )
     )
-
-
-def run_chunk_polars(**arguments: object) -> simulate.Results:
-    """Runs one chunk of replications under one policy, over a polars frame.
-
-    The frame form of the same loop, compiled into the same extension module.
-    It exists so that the Python polars implementation can be timed against it:
-    the Python polars package is an expression layer over the same compiled
-    query engine this reaches directly, so the difference between the two is
-    what it costs to drive that engine from Python rather than what the engine
-    itself costs — which neither one alone can say.
-
-    Args:
-        **arguments: Exactly ``run_chunk``'s arguments, forwarded unchanged.
-            Taken as keywords rather than restated, because a second copy of
-            twenty-two parameter names is a second place they can drift, and
-            every caller in this package passes them by name. ``threads`` must
-            be 1: polars parallelizes inside an operation and sizes its own
-            pool.
-
-    Returns:
-        The seven per-year, per-class arrays for this chunk.
-
-    Raises:
-        ValueError: Everything ``run_chunk`` refuses, and a thread count above
-            one.
-        RuntimeError: If the frame engine refuses a step.
-    """
-    return run_chunk(**arguments, engine=FRAME_ENGINE)

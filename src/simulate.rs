@@ -59,8 +59,28 @@
 
 use rayon::prelude::*;
 
+use crate::draws;
 use crate::policies::{self, Resolved};
 use crate::weibull;
+
+/// The lifetime uniform one segment reads in one year of one replication.
+///
+/// A helper because the address is four fields and writing them out at each of
+/// the three call sites would put the same arithmetic in three places.
+///
+/// # Arguments
+///
+/// * `key` - the two key words for this run.
+/// * `replication` - which replication of the whole run, not of the chunk.
+/// * `segment` - the segment's identifier.
+/// * `year` - 0 for the left-truncated draw at the start of the run, and
+///   `y + 1` for a replacement made in year `y`.
+fn weibull_draw(key: [u64; 2], replication: u64, segment: usize, year: u64) -> f64 {
+    draws::uniform_at(
+        draws::index(draws::purpose::LIFETIMES, replication, segment as u64, year),
+        key,
+    )
+}
 
 /// One chunk of replications, per year and per segment class.
 ///
@@ -186,8 +206,6 @@ pub enum ChunkError {
     NanScore(policies::NanScore),
     /// The thread pool could not be built, so nothing ran.
     ThreadPool(rayon::ThreadPoolBuildError),
-    /// The frame engine refused a step, which only the polars loop can hit.
-    Polars(polars::error::PolarsError),
 }
 
 impl std::fmt::Display for ChunkError {
@@ -198,7 +216,6 @@ impl std::fmt::Display for ChunkError {
                 formatter,
                 "could not build a thread pool for this chunk: {error}"
             ),
-            ChunkError::Polars(error) => write!(formatter, "the frame engine refused: {error}"),
         }
     }
 }
@@ -229,11 +246,15 @@ impl std::fmt::Display for ChunkError {
 ///   for this segment's own geometry.
 /// * `replacement_scale` - the same for scale.
 /// * `cost_per_ft` - installed cost per foot.
-/// * `lifetime_uniforms` - `replications * segments * (n_years + 1)` uniforms
-///   in C order. Index 0 of a segment's row is the left-truncated draw made at
-///   the start of the run, and a replacement made in year `y` reads `y + 1`.
-/// * `policy_uniforms` - `replications * segments` in C order, one fixed
-///   priority per segment, which only the random policy ranks on.
+/// * `draw_key` - the two key words every uniform is computed under. **No
+///   draws are passed in.** A uniform here is a function of where it sits —
+///   the purpose, the replication, the segment and the year — so a worker
+///   produces the one it needs and coordinates with nobody, and the year draws
+///   nobody reads are never produced.
+/// * `first_replication` - where this chunk starts in the run. The replication
+///   is part of a draw's address, so a chunk has to know where it sits or
+///   splitting a run into chunks would change its numbers.
+/// * `n_reps` - replications this chunk covers.
 /// * `budget` - planned capital per year, already escalated.
 /// * `cost_escalation` - per-year multiplier applied to every dollar quantity.
 /// * `policy` - the resolved replacement policy.
@@ -275,8 +296,9 @@ pub fn run_chunk(
     replacement_shape: &[f64],
     replacement_scale: &[f64],
     cost_per_ft: &[f64],
-    lifetime_uniforms: &[f64],
-    policy_uniforms: &[f64],
+    draw_key: [u64; 2],
+    first_replication: u64,
+    n_reps: usize,
     budget: &[f64],
     cost_escalation: &[f64],
     policy: Resolved,
@@ -287,12 +309,10 @@ pub fn run_chunk(
     n_years: usize,
     threads: usize,
 ) -> Result<Results, ChunkError> {
-    // Python reads these off the draw array's shape. A flat slice carries only
-    // a length, so the shapes are recovered by division — and the binding has
-    // already checked that they divide exactly.
+    // The segment count is the population's; the replication count is an
+    // argument, because there is no longer a draw array whose shape it could be
+    // read from.
     let n_segments = age0.len();
-    let n_reps = policy_uniforms.len() / n_segments;
-    let draws_per_segment = n_years + 1;
 
     // Costs at year-0 prices; the year's escalation is applied inside the loop.
     // `(0..n_segments).map(...).collect()` builds a list the way a Python
@@ -345,20 +365,16 @@ pub fn run_chunk(
         current_shape.copy_from_slice(shape);
         current_scale.copy_from_slice(scale);
 
-        // Slicing twice reads as `x[start:][:length]` in Python and means the
-        // same: take everything from `start`, then the first `length` of that.
-        // The leading `&` makes it a borrowed view rather than a copy, so
-        // these two lines move no data — they are this replication's rows of
-        // the draw arrays, in place.
-        let priority = &policy_uniforms[replication * n_segments..][..n_segments];
-        let lifetimes = &lifetime_uniforms[replication * n_segments * draws_per_segment..]
-            [..n_segments * draws_per_segment];
+        // Where this replication sits in the whole run, which is part of every
+        // draw's address. Using the position within the chunk instead would
+        // make the chunking change the numbers.
+        let replication_in_run = first_replication + replication as u64;
 
         // Conditional on survival to age0: a population that starts partway
         // through its life must not behave as though it were new.
         for segment in 0..n_segments {
             failure_time[segment] = weibull::draw_remaining_life(
-                lifetimes[segment * draws_per_segment],
+                weibull_draw(draw_key, replication_in_run, segment, 0),
                 age[segment],
                 current_shape[segment],
                 current_scale[segment],
@@ -438,7 +454,15 @@ pub fn run_chunk(
                         outage_cost_per_failure[segment] * escalation,
                         planned_now[segment],
                         emergency_multiplier,
-                        priority[segment],
+                        draws::uniform_at(
+                            draws::index(
+                                draws::purpose::POLICIES,
+                                replication_in_run,
+                                segment as u64,
+                                0,
+                            ),
+                            draw_key,
+                        ),
                     );
                 }
                 // The `?` returns early with the error if there was one, and
@@ -468,7 +492,7 @@ pub fn run_chunk(
                     current_scale[segment] = replacement_scale[segment];
                     failure_time[segment] = (year + 1) as f64
                         + weibull::draw_lifetime(
-                            lifetimes[segment * draws_per_segment + year + 1],
+                            weibull_draw(draw_key, replication_in_run, segment, year as u64 + 1),
                             replacement_shape[segment],
                             replacement_scale[segment],
                         );

@@ -47,9 +47,26 @@
 
 use polars::prelude::*;
 
+use crate::draws;
 use crate::policies::{self, Resolved};
 use crate::simulate::{ChunkError, Results};
 use crate::weibull;
+
+/// The lifetime uniform one row of the frame reads in one year.
+///
+/// # Arguments
+///
+/// * `key` - the two key words for this run.
+/// * `replication` - which replication of the whole run, not of the chunk.
+/// * `segment` - the segment's identifier.
+/// * `year` - 0 for the left-truncated draw, `y + 1` for a replacement in
+///   year `y`.
+fn lifetime_draw(key: [u64; 2], replication: u64, segment: usize, year: u64) -> f64 {
+    draws::uniform_at(
+        draws::index(draws::purpose::LIFETIMES, replication, segment as u64, year),
+        key,
+    )
+}
 
 /// Column names the year loop reads and writes, so a typo is a compile error
 /// in one place rather than a runtime lookup failure in several.
@@ -259,8 +276,9 @@ pub fn run_chunk(
     replacement_shape: &[f64],
     replacement_scale: &[f64],
     cost_per_ft: &[f64],
-    lifetime_uniforms: &[f64],
-    policy_uniforms: &[f64],
+    draw_key: [u64; 2],
+    first_replication: u64,
+    n_reps: usize,
     budget: &[f64],
     cost_escalation: &[f64],
     policy: Resolved,
@@ -271,8 +289,13 @@ pub fn run_chunk(
     n_years: usize,
 ) -> Result<Results, ChunkError> {
     let n_segments = age0.len();
-    let n_reps = policy_uniforms.len() / n_segments;
-    let draws_per_segment = n_years + 1;
+    // Where each row of the frame sits in the run, which is what a draw is
+    // addressed by. Built once: the frame's row order never changes.
+    let row_replication: Vec<u64> = (0..n_reps)
+        .flat_map(|replication| {
+            std::iter::repeat_n(first_replication + replication as u64, n_segments)
+        })
+        .collect();
 
     let planned_at_par: Vec<f64> = (0..n_segments)
         .map(|segment| {
@@ -283,10 +306,9 @@ pub fn run_chunk(
             )
         })
         .collect();
-    // The uniforms for the left-truncated draw are the first of each segment's
-    // row, so they are gathered rather than sliced.
+    // The left-truncated draw every segment takes at the start of the run.
     let first_uniforms: Vec<f64> = (0..n_reps * n_segments)
-        .map(|row| lifetime_uniforms[row * draws_per_segment])
+        .map(|row| lifetime_draw(draw_key, row_replication[row], row % n_segments, 0))
         .collect();
 
     let ages = tile(age0, n_reps);
@@ -321,7 +343,19 @@ pub fn run_chunk(
         column::AGE => ages,
         column::CURRENT_SHAPE => shapes,
         column::CURRENT_SCALE => scales,
-        column::PRIORITY => policy_uniforms.to_vec(),
+        column::PRIORITY => (0..n_reps * n_segments)
+            .map(|row| {
+                draws::uniform_at(
+                    draws::index(
+                        draws::purpose::POLICIES,
+                        row_replication[row],
+                        (row % n_segments) as u64,
+                        0,
+                    ),
+                    draw_key,
+                )
+            })
+            .collect::<Vec<f64>>(),
         column::FAILURE_TIME => failure_time,
     ]
     .map_err(ChunkError::Polars)?;
@@ -558,10 +592,12 @@ pub fn run_chunk(
         // that keep the one they have.
         for row in 0..replaced.len() {
             if replaced[row] {
-                let segment = row % n_segments;
-                let replication = row / n_segments;
-                let draw = lifetime_uniforms
-                    [(replication * n_segments + segment) * draws_per_segment + year + 1];
+                let draw = lifetime_draw(
+                    draw_key,
+                    row_replication[row],
+                    row % n_segments,
+                    year as u64 + 1,
+                );
                 failure_time[row] = (year + 1) as f64
                     + weibull::draw_lifetime(
                         draw,

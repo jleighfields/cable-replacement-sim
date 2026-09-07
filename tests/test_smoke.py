@@ -10,7 +10,7 @@ import pathlib
 
 import numpy as np
 import pytest
-from cablesim import config, constants, kernel
+from cablesim import config, constants, kernel, random_draws
 
 from tests import helpers
 
@@ -38,8 +38,9 @@ def test_the_kernel_runs_one_chunk_through_the_extension_module() -> None:
         replacement_shape=np.full(n_segments, 6.2),
         replacement_scale=np.full(n_segments, helpers.FAILS_AT_ONCE),
         cost_per_ft=np.full(n_segments, 10.0),
-        lifetime_uniforms=np.full((1, n_segments, n_years + 1), 0.5),
-        policy_uniforms=np.full((1, n_segments), 0.5),
+        draw_key=random_draws.draw_key(1),
+        first_replication=0,
+        n_reps=1,
         budget=np.zeros(n_years),
         cost_escalation=np.ones(n_years),
         policy=helpers.resolved("run_to_failure"),

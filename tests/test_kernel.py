@@ -14,7 +14,7 @@ panic message goes to stderr rather than into the traceback.
 
 import numpy as np
 import pytest
-from cablesim import kernel, policies, simulate
+from cablesim import kernel, policies, random_draws, simulate
 
 from tests import helpers
 
@@ -56,8 +56,9 @@ def minimal_arguments(
         "replacement_shape": np.full(n_segments, 6.2),
         "replacement_scale": np.full(n_segments, helpers.FAILS_AT_ONCE),
         "cost_per_ft": np.full(n_segments, 10.0),
-        "lifetime_uniforms": np.full((n_reps, n_segments, n_years + 1), 0.5),
-        "policy_uniforms": np.full((n_reps, n_segments), 0.5),
+        "draw_key": random_draws.draw_key(1),
+        "first_replication": 0,
+        "n_reps": n_reps,
         "budget": np.zeros(n_years),
         "cost_escalation": np.ones(n_years),
         "emergency_multiplier": 2.5,
@@ -66,35 +67,6 @@ def minimal_arguments(
         "n_classes": n_classes,
         "n_years": n_years,
     }
-
-
-def test_the_kernel_refuses_a_column_ordered_draw_array(
-    deterministic_arguments: dict[str, object],
-) -> None:
-    """A Fortran-ordered array is not C-contiguous and must be rejected.
-
-    The boundary reads every array as a flat slice in C order, so an array
-    whose memory runs down the columns puts a different segment's draw at every
-    position. Nothing about the values or the shape distinguishes it: the run
-    completes and returns a plausible number that is not the one the caller's
-    array describes. Measured on a six-segment chunk, the kernel returned
-    failure counts of ``[0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1]`` against the
-    reference's ``[0, 0, 1, 2, 0, 0, 1, 0, 0, 0, 0, 1]`` from the same array.
-
-    A row-ordered array and a column-ordered one are the same values, which is
-    why this cannot be caught by comparing results: it has to be refused at the
-    boundary.
-    """
-    arguments = {
-        **deterministic_arguments,
-        "lifetime_uniforms": np.asfortranarray(
-            deterministic_arguments["lifetime_uniforms"]
-        ),
-    }
-    assert not arguments["lifetime_uniforms"].flags["C_CONTIGUOUS"]
-
-    with pytest.raises(ValueError, match="lifetime_uniforms"):
-        kernel.run_chunk(**arguments, policy=helpers.resolved("worst_first"))
 
 
 def test_the_kernel_raises_rather_than_panicking_on_an_empty_population() -> None:
@@ -144,20 +116,6 @@ def test_the_kernel_refuses_a_per_segment_array_of_the_wrong_length() -> None:
     arguments = {**minimal_arguments(4), "cost_per_ft": np.full(3, 10.0)}
 
     with pytest.raises(ValueError, match="cost_per_ft has 3 entries"):
-        kernel.run_chunk(**arguments, policy=helpers.resolved("run_to_failure"))
-
-
-def test_the_kernel_refuses_a_draw_array_that_is_short_a_year() -> None:
-    """The draw array must carry one column per year plus the initial draw.
-
-    A column short raises on its own only when a replacement happens to fall in
-    the final year, so without this check a run completes against the wrong
-    array and is wrong nowhere visible.
-    """
-    arguments = minimal_arguments(4, n_years=3)
-    arguments["lifetime_uniforms"] = np.full((1, 4, 3), 0.5)
-
-    with pytest.raises(ValueError, match="lifetime_uniforms is"):
         kernel.run_chunk(**arguments, policy=helpers.resolved("run_to_failure"))
 
 
@@ -391,9 +349,9 @@ def test_both_implementations_refuse_a_tag_no_ranking_branch_covers(
 
 
 MISMATCHED_ARGUMENTS: dict[str, dict[str, object]] = {
-    "draw_array_short_a_year": {
-        **minimal_arguments(4, n_years=3),
-        "lifetime_uniforms": np.full((1, 4, 3), 0.5),
+    "a_replication_past_what_an_index_can_carry": {
+        **minimal_arguments(4),
+        "first_replication": 2**40,
     },
     "per_segment_array_too_short": {
         **minimal_arguments(4),
@@ -472,23 +430,6 @@ def test_both_implementations_refuse_an_unrankable_tag_the_same_way(tag: str) ->
     assert str(from_reference.value) == str(from_kernel.value)
 
 
-def test_the_reference_names_the_draw_array_it_cannot_read() -> None:
-    """A ``policy_uniforms`` that is not two-dimensional must say so.
-
-    The twelve per-segment arrays are checked for shape by name, because a
-    two-dimensional one of the right element count would otherwise fail later
-    inside NumPy as a broadcast error naming neither the argument nor the
-    reason. ``policy_uniforms`` reaches no such check: the reference recovers
-    the replication and segment counts by unpacking its shape on the first
-    line, so a one-dimensional array raises an unpacking error that names
-    nothing the caller passed. The kernel refuses it at the binding.
-    """
-    arguments = {**minimal_arguments(4), "policy_uniforms": np.full(4, 0.5)}
-
-    with pytest.raises(ValueError, match="policy_uniforms"):
-        simulate.run_chunk(**arguments, policy=helpers.resolved("run_to_failure"))
-
-
 def test_both_implementations_refuse_a_tag_that_is_not_an_integer() -> None:
     """A float tag must be refused, not matched against a branch by value.
 
@@ -544,56 +485,3 @@ def test_the_reference_refuses_a_thread_count_it_cannot_honour() -> None:
     with pytest.raises(ValueError, match="threads is 2"):
         simulate.run_chunk(**arguments, policy=policy, threads=2)
     kernel.run_chunk(**arguments, policy=policy, threads=2)
-
-
-def test_an_engine_that_names_no_loop_is_refused() -> None:
-    """A misspelled engine must not fall through to the default.
-
-    The boundary carries both forms of the loop and picks between them on a
-    string. Taken as a default when unrecognized, a typo would run the scalar
-    engine and record the frame one in the manifest, which is provenance that
-    reads as fact and is not.
-    """
-    arguments = minimal_arguments(4)
-
-    with pytest.raises(ValueError, match="engine is"):
-        kernel.run_chunk(
-            **arguments, policy=helpers.resolved("run_to_failure"), engine="numpy"
-        )
-
-
-def test_the_frame_engine_refuses_a_thread_count_it_cannot_honour() -> None:
-    """polars sizes its own pool, so a replication thread count is not its to take.
-
-    Both engines are reached through one call, so the thread count is offered to
-    both. Only the scalar one spreads replications over workers; the frame one
-    parallelizes inside an operation with a pool it manages itself. Accepting
-    and ignoring the number would let a benchmark row record a thread count
-    nothing acted on.
-    """
-    arguments = minimal_arguments(4)
-    policy = helpers.resolved("run_to_failure")
-
-    with pytest.raises(ValueError, match="does not spread"):
-        kernel.run_chunk(
-            **arguments, policy=policy, threads=2, engine=kernel.FRAME_ENGINE
-        )
-    # The same request through the scalar engine is honoured, which is what
-    # makes the refusal above about the engine rather than about the argument.
-    kernel.run_chunk(**arguments, policy=policy, threads=2)
-
-
-def test_both_engines_are_reachable_by_the_names_the_crate_publishes() -> None:
-    """The engine names are authored in Rust and read here, so neither can drift.
-
-    Asserting the names are strings would pass against any pair of strings.
-    Running a chunk through each is what shows both select something, and that
-    the two select different code: a name the boundary did not recognize is
-    refused by the guard above.
-    """
-    arguments = minimal_arguments(4)
-    policy = helpers.resolved("risk_ranked")
-
-    for engine in (kernel.SCALAR_ENGINE, kernel.FRAME_ENGINE):
-        produced = kernel.run_chunk(**arguments, policy=policy, engine=engine)
-        assert produced.failures.shape == (1, 1, 1)

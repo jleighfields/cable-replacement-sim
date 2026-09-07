@@ -1,11 +1,14 @@
 """The fixtures every parity test reads.
 
-**One builder makes the population, the draw arrays and the configuration, and
-both implementations under test are handed that one set of objects.** That is
-what makes "the same draws" true by construction rather than by coincidence: a
-stored draw file would be bypassed by a test that built its own inputs, exactly
-as a fixture would, and two builders that drift apart turn a parity failure
-into a question about the fixtures first.
+**One builder makes the population, the draw key and the configuration, and
+every implementation under test is handed that one set of objects.** Two
+builders that drifted apart would turn a parity failure into a question about
+the fixtures first.
+
+The draws themselves are no longer among those objects: each implementation
+computes them from the key and the position it is at. That they come out
+identical is established by `test_draws.py` rather than by construction, which
+is the one guarantee this design traded away.
 
 Across test functions the draws need not match. A parity test asserts that two
 implementations agree with *each other* on whatever they were handed, not that
@@ -83,18 +86,12 @@ def simulation_arguments(settings: config_module.Config) -> dict[str, object]:
         )
 
     segments = run.segment_arrays(population.generate(settings))
-    n_segments = segments["age0"].size
-    sources = random_draws.spawn_sources(simulation.seed)
-    replications = range(simulation.n_reps)
 
     return {
         **segments,
-        "lifetime_uniforms": random_draws.replication_uniforms(
-            sources.lifetimes, replications, (n_segments, simulation.n_years + 1)
-        ),
-        "policy_uniforms": random_draws.replication_uniforms(
-            sources.policies, replications, (n_segments,)
-        ),
+        "draw_key": random_draws.draw_key(simulation.seed),
+        "first_replication": 0,
+        "n_reps": simulation.n_reps,
         "budget": settings.budget.annual
         * run.escalation_series(settings.budget.escalation, simulation.n_years),
         "cost_escalation": run.escalation_series(

@@ -121,9 +121,11 @@ def first_segments(
     reuse the fixture's population instead of building a second one that would
     drift away from it.
 
-    The draw arrays are sliced on their segment axis and made contiguous again,
-    because the kernel reads every array as a flat slice in C order and a
-    strided view is not one.
+    Nothing has to be done about the draws. They are computed from the position
+    they sit at rather than handed over as an array, so keeping the first
+    ``n_segments`` segments keeps exactly the draws those segments would have
+    had in the larger population — which is what makes a cut-down fixture a
+    smaller version of the same run rather than a different one.
 
     Args:
         arguments: The arguments to copy, as the parity fixtures build them.
@@ -133,16 +135,7 @@ def first_segments(
         A new argument dictionary; the original is untouched.
     """
     kept = {name: arguments[name][:n_segments] for name in simulate.SEGMENT_ARGUMENTS}
-    return {
-        **arguments,
-        **kept,
-        "lifetime_uniforms": np.ascontiguousarray(
-            arguments["lifetime_uniforms"][:, :n_segments, :]
-        ),
-        "policy_uniforms": np.ascontiguousarray(
-            arguments["policy_uniforms"][:, :n_segments]
-        ),
-    }
+    return {**arguments, **kept}
 
 
 FAILS_AT_ONCE = 1e-6

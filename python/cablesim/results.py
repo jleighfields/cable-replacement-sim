@@ -44,9 +44,7 @@ MANIFEST_NAME = "manifest.json"
 IMPLEMENTATIONS: tuple[str, ...] = (
     "reference",
     "batched_numpy",
-    "batched_polars",
     "kernel",
-    "kernel_polars",
 )
 """The implementations of the annual loop a result can come from.
 
@@ -55,13 +53,11 @@ failure is arbitrated against, whatever file it lives in. The set is closed
 because a misspelled implementation in a manifest is provenance that reads as
 fact and is not.
 
-Two pairs run the same algorithm in different languages, and the pairing is the
-point. ``batched_numpy`` and ``kernel`` are the array form in Python and in
-Rust; ``batched_polars`` and ``kernel_polars`` are the frame form in each. The
-Python polars package is a binding over the same Rust query engine the crate
-exposes, so timing one frame implementation against the other separates what it
-costs to drive that engine from Python from what the engine itself costs — a
-question neither one alone can answer.
+``batched_numpy`` and ``kernel`` are the same algorithm in the two languages,
+which is the comparison this project exists to make.
+
+Two frame implementations were here and are not: they are in ``deprecated/``,
+with the measurement that retired them.
 """
 
 SCHEMA: dict[str, pl.DataType] = {

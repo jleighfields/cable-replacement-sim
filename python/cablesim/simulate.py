@@ -32,7 +32,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from cablesim import policies, weibull
+from cablesim import policies, random_draws, weibull
 
 SEGMENT_ARGUMENTS: tuple[str, ...] = (
     "length_ft",
@@ -156,7 +156,7 @@ def check_arguments(arguments: dict[str, object]) -> tuple[int, int]:
             still matched.
 
     Returns:
-        The replication and segment counts, read off ``policy_uniforms``.
+        The segment count, read off the population.
 
     Raises:
         ValueError: If the policy tag names no policy, if the population is
@@ -168,18 +168,18 @@ def check_arguments(arguments: dict[str, object]) -> tuple[int, int]:
             concurrently, and the compute kernel is the one that can.
         TypeError: If ``policy.kind`` is not an integer.
     """
-    policy_uniforms = arguments["policy_uniforms"]
     policy = arguments["policy"]
     n_classes = arguments["n_classes"]
     n_years = arguments["n_years"]
+    n_reps = arguments["n_reps"]
+    n_segments = arguments["age0"].size
 
-    if policy_uniforms.ndim != 2:
+    if n_reps < 1:
         raise ValueError(
-            f"policy_uniforms has shape {policy_uniforms.shape}, expected "
-            f"(replications, segments): one fixed priority per segment per "
-            f"replication"
+            f"n_reps is {n_reps}, so no replication would run; a chunk covering "
+            f"none of them is a caller's arithmetic gone wrong rather than an "
+            f"empty result"
         )
-    n_reps, n_segments = policy_uniforms.shape
     # Every check below is in the order `src/lib.rs` makes it and carries the
     # same message, so a caller gets the same answer whichever side of the
     # boundary it asked.
@@ -205,13 +205,13 @@ def check_arguments(arguments: dict[str, object]) -> tuple[int, int]:
         raise ValueError(
             "n_classes is 0, so the results have no class axis to accumulate into"
         )
-    lifetime_uniforms = arguments["lifetime_uniforms"]
-    if lifetime_uniforms.shape != (n_reps, n_segments, n_years + 1):
-        raise ValueError(
-            f"lifetime_uniforms is {list(lifetime_uniforms.shape)}, expected "
-            f"{[n_reps, n_segments, n_years + 1]}: one draw per segment per "
-            f"year, plus the left-truncated draw at index 0"
-        )
+    # Every position this chunk will draw at has to be one the index can carry.
+    # Past a field's width two positions would share a draw, which is a
+    # correlation nothing downstream could detect. Checked once here rather than
+    # per draw: the largest position is known from the shape.
+    random_draws.check_positions(
+        arguments["first_replication"] + n_reps - 1, n_segments - 1, n_years
+    )
     for name in SEGMENT_ARGUMENTS:
         column = arguments[name]
         if column.ndim != 1:
@@ -235,8 +235,7 @@ def check_arguments(arguments: dict[str, object]) -> tuple[int, int]:
         series = arguments[name]
         if series.size != n_years:
             raise ValueError(
-                f"{name} has {series.size} entries against a {n_years}-year "
-                f"horizon"
+                f"{name} has {series.size} entries against a {n_years}-year horizon"
             )
     class_index = arguments["class_index"]
     past_the_axis = class_index[class_index >= n_classes]
@@ -258,7 +257,7 @@ def check_arguments(arguments: dict[str, object]) -> tuple[int, int]:
             f"implementation that can"
         )
 
-    return n_reps, n_segments
+    return n_segments
 
 
 def run_chunk(
@@ -274,8 +273,9 @@ def run_chunk(
     replacement_shape: np.ndarray,
     replacement_scale: np.ndarray,
     cost_per_ft: np.ndarray,
-    lifetime_uniforms: np.ndarray,
-    policy_uniforms: np.ndarray,
+    draw_key: tuple[int, int],
+    first_replication: int,
+    n_reps: int,
     budget: np.ndarray,
     cost_escalation: np.ndarray,
     policy: policies.Resolved,
@@ -306,11 +306,17 @@ def run_chunk(
             for this segment's own geometry.
         replacement_scale: The same for scale.
         cost_per_ft: Installed cost per foot.
-        lifetime_uniforms: ``(replications, segments, n_years + 1)`` uniforms.
-            Index 0 is the left-truncated draw made at the start of the run,
-            and a replacement made in year ``y`` reads index ``y + 1``.
-        policy_uniforms: ``(replications, segments)``, one fixed priority per
-            segment, which only the random policy ranks on.
+        draw_key: The two key words every uniform is computed under, from
+            ``random_draws.draw_key``. **Not a seed and not a generator**: a
+            draw here is a function of where it sits rather than of how far a
+            stream has been read, so there is no position to carry and nothing
+            to hand across a thread boundary.
+        first_replication: Where this chunk starts in the run. The replication
+            is part of a draw's address, so a chunk has to know where it sits
+            or splitting a run into chunks would change its numbers — and the
+            split is provenance rather than a parameter of the model.
+        n_reps: Replications this chunk covers. Explicit because there is no
+            longer a draw array whose shape it could be read from.
         budget: Planned capital per year, already escalated.
         cost_escalation: Per-year multiplier applied to every dollar quantity.
         policy: The resolved replacement policy.
@@ -365,7 +371,7 @@ def run_chunk(
         TypeError: If ``policy.kind`` is not an integer, or an array is not
             one-dimensional where one entry per segment is expected.
     """
-    n_reps, n_segments = check_arguments(locals())
+    n_segments = check_arguments(locals())
     results = Results(
         *(np.zeros((n_reps, n_years, n_classes)) for _ in Results._fields)
     )
@@ -389,15 +395,36 @@ def run_chunk(
         """
         return np.bincount(bins[selected], weights=weights, minlength=n_classes)
 
+    # The two draws every segment takes whatever happens to it: the fixed
+    # priority the random policy ranks on, and the left-truncated lifetime at
+    # the start of the run. Both are read for every segment of every
+    # replication, so there is nothing to select and they are taken up front.
+    priorities = random_draws.uniforms_dense(
+        draw_key,
+        random_draws.PURPOSE["policies"],
+        first_replication,
+        n_reps,
+        n_segments,
+        0,
+    )
+    initial = random_draws.uniforms_dense(
+        draw_key,
+        random_draws.PURPOSE["lifetimes"],
+        first_replication,
+        n_reps,
+        n_segments,
+        0,
+    )
+
     for replication in range(n_reps):
         age = age0.astype(float, copy=True)
         current_shape = shape.astype(float, copy=True)
         current_scale = scale.astype(float, copy=True)
-        priority = policy_uniforms[replication]
+        priority = priorities[replication]
         # Conditional on survival to age0: a population that starts partway
         # through its life must not behave as though it were new.
         failure_time = weibull.draw_remaining_life(
-            lifetime_uniforms[replication, :, 0], age, current_shape, current_scale
+            initial[replication], age, current_shape, current_scale
         )
 
         for year in range(n_years):
@@ -477,8 +504,19 @@ def run_chunk(
             if replaced.any():
                 current_shape[replaced] = replacement_shape[replaced]
                 current_scale[replaced] = replacement_scale[replaced]
+                # Drawn at the replaced segments alone, which is what an
+                # indexed generator is for: the draw a segment takes in a year
+                # is the same number whether or not anything else was replaced,
+                # so there is no stream to keep aligned by producing the rest.
+                renewing = np.flatnonzero(replaced)
                 failure_time[replaced] = (year + 1) + weibull.draw_lifetime(
-                    lifetime_uniforms[replication, :, year + 1][replaced],
+                    random_draws.uniforms_at(
+                        draw_key,
+                        random_draws.PURPOSE["lifetimes"],
+                        np.full(renewing.size, first_replication + replication),
+                        renewing,
+                        year + 1,
+                    ),
                     replacement_shape[replaced],
                     replacement_scale[replaced],
                 )

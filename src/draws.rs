@@ -168,6 +168,25 @@ pub fn block(block: u64, key: [u64; 2]) -> [u64; LANES] {
     philox([block + NUMPY_COUNTER_LEAD, 0, 0, 0], key)
 }
 
+/// Which stream a draw belongs to, kept apart by a field of its index.
+///
+/// The separation is load-bearing rather than tidy: without it the
+/// replacement-policy priorities would come out correlated with the same
+/// segments' lifetime draws, and since a larger uniform gives a shorter
+/// lifetime the random policy would rank segments by imminence of failure and
+/// stop being a control. The names are read on the Python side, so they are
+/// authored here and nowhere else.
+pub mod purpose {
+    /// Segment lifetime draws.
+    pub const LIFETIMES: u64 = 0;
+    /// Replacement-policy randomness.
+    pub const POLICIES: u64 = 1;
+    /// The synthetic segment table.
+    pub const POPULATION: u64 = 2;
+    /// The synthetic censored failure history.
+    pub const RECORDS: u64 = 3;
+}
+
 /// Bits reserved for the year within a draw's index.
 ///
 /// Sixty-four years of horizon. A simulation is thirty, and a study that wanted
@@ -180,12 +199,23 @@ const SEGMENT_BITS: u64 = 32;
 /// Bits reserved for the replication.
 const REPLICATION_BITS: u64 = 20;
 
-/// Where each field sits in the index.
-const SEGMENT_SHIFT: u64 = YEAR_BITS;
+/// Where the segment field sits: the low bits, deliberately.
+///
+/// **Consecutive segments have to land on consecutive indices**, because the
+/// generator produces four words at a time and one block is therefore shared by
+/// four adjacent indices. With the segment field anywhere else, segment `s` and
+/// segment `s + 1` would be at least sixty-four apart, so every draw would cost
+/// a full encryption of which three quarters was thrown away. Here four
+/// adjacent segments come out of one call, which is what makes the dense case
+/// affordable — every segment's starting lifetime, and every segment's
+/// priority.
+pub const SEGMENT_SHIFT: u64 = 0;
+/// Where the year field starts, above the segment.
+pub const YEAR_SHIFT: u64 = SEGMENT_BITS;
 /// Where the replication field starts.
-const REPLICATION_SHIFT: u64 = SEGMENT_SHIFT + SEGMENT_BITS;
+pub const REPLICATION_SHIFT: u64 = YEAR_SHIFT + YEAR_BITS;
 /// Where the purpose field starts, leaving six bits above it.
-const PURPOSE_SHIFT: u64 = REPLICATION_SHIFT + REPLICATION_BITS;
+pub const PURPOSE_SHIFT: u64 = REPLICATION_SHIFT + REPLICATION_BITS;
 
 /// The largest year an index can carry.
 pub const MAX_YEAR: u64 = (1 << YEAR_BITS) - 1;
@@ -237,8 +267,8 @@ pub fn index(purpose: u64, replication: u64, segment: u64, year: u64) -> u64 {
     debug_assert!(year <= MAX_YEAR, "year out of range");
     (purpose << PURPOSE_SHIFT)
         | (replication << REPLICATION_SHIFT)
+        | (year << YEAR_SHIFT)
         | (segment << SEGMENT_SHIFT)
-        | year
 }
 
 /// The uniform at one position in the flat stream of draws.
@@ -330,9 +360,21 @@ mod tests {
             assert_ne!(base, moved);
         }
         // And the fields must not run into each other at their limits.
-        assert_ne!(index(0, 0, MAX_SEGMENT, 0), index(0, 1, 0, 0));
-        assert_ne!(index(0, 0, 0, MAX_YEAR), index(0, 0, 1, 0));
+        assert_ne!(index(0, 0, MAX_SEGMENT, 0), index(0, 0, 0, 1));
+        assert_ne!(index(0, 0, 0, MAX_YEAR), index(0, 1, 0, 0));
         assert_ne!(index(0, MAX_REPLICATION, 0, 0), index(1, 0, 0, 0));
+    }
+
+    #[test]
+    fn adjacent_segments_share_a_block() {
+        // The reason the segment field is at the bottom. Four adjacent segments
+        // have to come out of one encryption, or three quarters of the
+        // generator's work is discarded on the dense path — which is every
+        // segment's starting lifetime and every segment's priority.
+        let first = index(0, 3, 0, 7);
+        for segment in 0..LANES as u64 {
+            assert_eq!(index(0, 3, segment, 7), first + segment);
+        }
     }
 
     #[test]

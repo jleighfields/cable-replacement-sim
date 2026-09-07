@@ -39,30 +39,14 @@
 //!   supports and any number of axes, and the compiler generates a separate
 //!   specialised copy for each combination actually used.
 
-mod batched;
 mod draws;
 mod policies;
 mod simulate;
 mod weibull;
 
-/// Runs the annual loop over plain slices, one replication at a time.
-const SCALAR_ENGINE: &str = "scalar";
-
-/// Runs the same loop over a polars frame.
-///
-/// The two engines compute the same numbers from the same draws and differ only
-/// in how the work is expressed, which is what makes timing one against the
-/// other a measurement of the expression and not of the model. The names are
-/// read on the Python side of the boundary, so they are authored here and
-/// nowhere else.
-const FRAME_ENGINE: &str = "polars";
-
 use numpy::ndarray::{Array3, Dimension};
 use numpy::PyUntypedArrayMethods;
-use numpy::{
-    Element, IntoPyArray, PyArray1, PyArray3, PyReadonlyArray, PyReadonlyArray1, PyReadonlyArray2,
-    PyReadonlyArray3,
-};
+use numpy::{Element, IntoPyArray, PyArray1, PyArray3, PyReadonlyArray, PyReadonlyArray1};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
@@ -175,10 +159,14 @@ fn as_result_array(
 /// # Arguments
 ///
 /// See `simulate::run_chunk`, which these are passed straight through to.
-/// `lifetime_uniforms` is `(replications, segments, n_years + 1)` and
-/// `policy_uniforms` is `(replications, segments)`; every other array is one
-/// entry per segment, ordered by `segment_id`, except `budget` and
-/// `cost_escalation`, which are one entry per year.
+/// Every array is one entry per segment, ordered by `segment_id`, except
+/// `budget` and `cost_escalation`, which are one entry per year.
+///
+/// **No draws are passed in.** `draw_key` is the two key words every uniform is
+/// computed under, and `first_replication` says where this chunk sits in the
+/// run, because a draw is addressed by its position rather than read from a
+/// stream. `n_reps` is explicit for the same reason: there is no longer an
+/// array whose shape it could be recovered from.
 ///
 /// `threads` spreads the replications over that many workers and changes no
 /// number: each replication reads its own slice of the draws and writes its own
@@ -207,9 +195,9 @@ fn as_result_array(
     length_ft, customers, customer_minutes_per_failure,
     customer_minutes_per_planned, outage_cost_per_failure, class_index,
     age0, shape, scale, replacement_shape, replacement_scale, cost_per_ft,
-    lifetime_uniforms, policy_uniforms, budget, cost_escalation, policy,
+    draw_key, first_replication, n_reps, budget, cost_escalation, policy,
     emergency_multiplier, mobilization_per_segment,
-    emergency_charged_to_budget, n_classes, n_years, threads=1, engine="scalar",
+    emergency_charged_to_budget, n_classes, n_years, threads=1,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_chunk<'py>(
@@ -226,8 +214,9 @@ fn run_chunk<'py>(
     replacement_shape: PyReadonlyArray1<'py, f64>,
     replacement_scale: PyReadonlyArray1<'py, f64>,
     cost_per_ft: PyReadonlyArray1<'py, f64>,
-    lifetime_uniforms: PyReadonlyArray3<'py, f64>,
-    policy_uniforms: PyReadonlyArray2<'py, f64>,
+    draw_key: (u64, u64),
+    first_replication: u64,
+    n_reps: usize,
     budget: PyReadonlyArray1<'py, f64>,
     cost_escalation: PyReadonlyArray1<'py, f64>,
     policy: policies::Resolved,
@@ -237,7 +226,6 @@ fn run_chunk<'py>(
     n_classes: usize,
     n_years: usize,
     threads: usize,
-    engine: &str,
 ) -> PyResult<Bound<'py, PyTuple>> {
     // An unrecognized tag would otherwise score every candidate zero and fund
     // them in segment_id order, which is a plausible-looking run rather than an
@@ -274,27 +262,21 @@ fn run_chunk<'py>(
         )));
     }
 
-    if policy_uniforms.shape().len() != 2 {
-        return Err(PyValueError::new_err(format!(
-            "policy_uniforms has shape {:?}, expected (replications, \
-             segments): one fixed priority per segment per replication",
-            policy_uniforms.shape()
-        )));
+    if n_reps == 0 {
+        return Err(PyValueError::new_err(
+            "n_reps is 0, so no replication would run; a chunk covering none of \
+             them is a caller's arithmetic gone wrong rather than an empty \
+             result",
+        ));
     }
 
-    // Destructuring a slice into named parts, with the `else` branch required
-    // because the compiler cannot know the length from the type alone. The
-    // two-dimensional array type guarantees it, so the branch is unreachable.
-    let [n_reps, n_segments] = *policy_uniforms.shape() else {
-        unreachable!("a PyReadonlyArray2 has exactly two axes")
-    };
+    let n_segments = age0.len();
 
-    // `simulate::run_chunk` receives flat slices, so it recovers the
-    // replication count by dividing the draw array's length by the segment
-    // count — and an empty population divides by zero there. Rust does not
-    // raise on that: it panics, and PyO3 surfaces a panic as
-    // `PanicException`, which does not inherit from `Exception` and so passes
-    // straight through a driver script's error handling.
+    // Reaching the loop with no segments divides by zero or indexes past the
+    // end of a buffer. Rust does not raise on that: it panics, and PyO3
+    // surfaces a panic as `PanicException`, which does not inherit from
+    // `Exception` and so passes straight through a driver script's error
+    // handling.
     if n_segments == 0 {
         return Err(PyValueError::new_err(
             "the population is empty; there is nothing to simulate",
@@ -306,18 +288,17 @@ fn run_chunk<'py>(
         ));
     }
 
-    // The year axis is why this check exists: a short draw array raises on its
-    // own only when a replacement happens to fall in the final year, so a run
-    // can complete against the wrong array and be wrong nowhere visible. The
-    // other two axes are checked with it because they cost nothing to compare.
-    if lifetime_uniforms.shape() != [n_reps, n_segments, n_years + 1] {
-        return Err(PyValueError::new_err(format!(
-            "lifetime_uniforms is {:?}, expected {:?}: one draw per segment \
-             per year, plus the left-truncated draw at index 0",
-            lifetime_uniforms.shape(),
-            [n_reps, n_segments, n_years + 1]
-        )));
-    }
+    // Every position this chunk will draw at has to be one the index can carry.
+    // Past a field's width two positions would share a draw, which is a
+    // correlation nothing downstream could detect. This replaces the check on
+    // the draw array's shape, which existed because a short array raised on its
+    // own only when a replacement happened to fall in the final year — an error
+    // that cannot be constructed now that the draws are not passed in.
+    within_the_index(
+        first_replication + n_reps as u64 - 1,
+        n_segments as u64 - 1,
+        n_years as u64,
+    )?;
 
     // A fixed-size array of name-and-length pairs, checked in one loop so that
     // adding a per-segment argument without checking it is a visible omission
@@ -377,30 +358,12 @@ fn run_chunk<'py>(
         )));
     }
 
-    if !matches!(engine, SCALAR_ENGINE | FRAME_ENGINE) {
-        return Err(PyValueError::new_err(format!(
-            "engine is {engine:?}; the ones that exist are {SCALAR_ENGINE:?}, \
-             which runs the loop over slices, and {FRAME_ENGINE:?}, which runs \
-             it over a polars frame"
-        )));
-    }
     if threads == 0 {
         return Err(PyValueError::new_err(
             "threads is 0, so no replication would run; 1 is the sequential \
              path and the baseline a parallel run is measured against",
         ));
     }
-    if engine == FRAME_ENGINE && threads != 1 {
-        // The frame engine parallelizes inside an operation and sizes its own
-        // pool, so a replication axis spread over workers is not something a
-        // caller sets here. Refusing rather than ignoring keeps a manifest from
-        // recording a thread count nothing acted on.
-        return Err(PyValueError::new_err(format!(
-            "threads is {threads}; the {FRAME_ENGINE:?} engine does not spread \
-             replications over workers and cannot use more than 1"
-        )));
-    }
-
     // Every borrow is taken here, while the interpreter lock is still held,
     // because each one reads the NumPy object's own metadata. What crosses into
     // the released region below is plain slices of `f64` and `u8`.
@@ -421,8 +384,6 @@ fn run_chunk<'py>(
     let replacement_shape = contiguous("replacement_shape", &replacement_shape)?;
     let replacement_scale = contiguous("replacement_scale", &replacement_scale)?;
     let cost_per_ft = contiguous("cost_per_ft", &cost_per_ft)?;
-    let lifetime_uniforms = contiguous("lifetime_uniforms", &lifetime_uniforms)?;
-    let policy_uniforms = contiguous("policy_uniforms", &policy_uniforms)?;
     let budget = contiguous("budget", &budget)?;
     let cost_escalation = contiguous("cost_escalation", &cost_escalation)?;
 
@@ -443,32 +404,7 @@ fn run_chunk<'py>(
     // deprecation warning rather than failing outright.
     let results = py
         .detach(|| {
-            if engine == FRAME_ENGINE {
-                batched::run_chunk(
-                    length_ft,
-                    customers,
-                    customer_minutes_per_failure,
-                    customer_minutes_per_planned,
-                    outage_cost_per_failure,
-                    classes,
-                    age0,
-                    shape,
-                    scale,
-                    replacement_shape,
-                    replacement_scale,
-                    cost_per_ft,
-                    lifetime_uniforms,
-                    policy_uniforms,
-                    budget,
-                    cost_escalation,
-                    policy,
-                    emergency_multiplier,
-                    mobilization_per_segment,
-                    emergency_charged_to_budget,
-                    n_classes,
-                    n_years,
-                )
-            } else {
+            {
                 simulate::run_chunk(
                     length_ft,
                     customers,
@@ -482,8 +418,9 @@ fn run_chunk<'py>(
                     replacement_shape,
                     replacement_scale,
                     cost_per_ft,
-                    lifetime_uniforms,
-                    policy_uniforms,
+                    [draw_key.0, draw_key.1],
+                    first_replication,
+                    n_reps,
                     budget,
                     cost_escalation,
                     policy,
@@ -501,8 +438,6 @@ fn run_chunk<'py>(
             // The operating system refusing to start threads, rather than
             // anything wrong with the arguments, so not a `ValueError`.
             simulate::ChunkError::ThreadPool(_) => PyRuntimeError::new_err(failure.to_string()),
-            // The frame engine refusing a step it was asked to plan or run.
-            simulate::ChunkError::Polars(_) => PyRuntimeError::new_err(failure.to_string()),
         })?;
 
     let dimensions = (n_reps, n_years, n_classes);
@@ -733,8 +668,32 @@ fn _cablesim(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(uniforms_at, m)?)?;
     // The engine names are authored in this crate and read on the Python side,
     // so the two cannot drift into disagreeing about what a name means.
-    m.add("SCALAR_ENGINE", SCALAR_ENGINE)?;
-    m.add("FRAME_ENGINE", FRAME_ENGINE)?;
+    // The draw index's field widths, so the Python side packs a position the
+    // same way this crate does rather than repeating the numbers. A packing
+    // written twice would diverge silently: two positions would share a draw,
+    // and nothing downstream could tell.
+    m.add(
+        "DRAW_INDEX_LIMITS",
+        (draws::MAX_REPLICATION, draws::MAX_SEGMENT, draws::MAX_YEAR),
+    )?;
+    m.add(
+        "DRAW_INDEX_SHIFTS",
+        (
+            draws::PURPOSE_SHIFT,
+            draws::REPLICATION_SHIFT,
+            draws::YEAR_SHIFT,
+            draws::SEGMENT_SHIFT,
+        ),
+    )?;
+    m.add(
+        "DRAW_PURPOSES",
+        (
+            ("lifetimes", draws::purpose::LIFETIMES),
+            ("policies", draws::purpose::POLICIES),
+            ("population", draws::purpose::POPULATION),
+            ("records", draws::purpose::RECORDS),
+        ),
+    )?;
     // Which profile this was compiled with, so a run records what actually ran
     // rather than what the person starting it believed. `debug_assertions` is
     // on in a debug build and off in a release one, and it is resolved at

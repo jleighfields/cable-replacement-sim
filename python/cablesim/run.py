@@ -100,9 +100,7 @@ the kernel's binding has to mirror, since every call here is by keyword.
 RUNNABLE: dict[str, Implementation] = {
     "reference": simulate.run_chunk,
     "batched_numpy": batched.run_chunk_numpy,
-    "batched_polars": batched.run_chunk_polars,
     "kernel": kernel.run_chunk,
-    "kernel_polars": kernel.run_chunk_polars,
 }
 """The annual loops that exist, by the name a manifest records them under.
 
@@ -276,8 +274,11 @@ def simulate_policy(
         materialized either.
     """
     simulation = settings.simulation
-    n_segments = segments["age0"].size
-    sources = random_draws.spawn_sources(simulation.seed)
+    # One key for the whole run, from which every draw is computed by position.
+    # A chunk needs no state of its own, which is what makes the chunking
+    # provenance rather than a parameter: replication 7 meets the same draws
+    # whichever chunk it landed in.
+    key = random_draws.draw_key(simulation.seed)
     resolved = policies.resolve(spec)
     budget = settings.budget.annual * escalation_series(
         settings.budget.escalation, simulation.n_years
@@ -292,12 +293,9 @@ def simulate_policy(
     ):
         block = implementation(
             **segments,
-            lifetime_uniforms=random_draws.replication_uniforms(
-                sources.lifetimes, replications, (n_segments, simulation.n_years + 1)
-            ),
-            policy_uniforms=random_draws.replication_uniforms(
-                sources.policies, replications, (n_segments,)
-            ),
+            draw_key=key,
+            first_replication=replications.start,
+            n_reps=len(replications),
             budget=budget,
             cost_escalation=cost_escalation,
             policy=resolved,
