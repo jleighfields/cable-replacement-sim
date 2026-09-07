@@ -232,3 +232,10 @@ believed: re-adding `dtolnay/rust-toolchain@stable` reddens the first, replacing
 the install step reddens the second, and pointing the directory constant at a
 directory holding no workflows reddens both rather than passing over an empty
 list. Suite: 73 passed.
+
+The guard had a hole of its own on first writing: it globbed `*.yml`, and
+GitHub runs `.yaml` workflows identically. A `.yaml` file re-adding the
+toolchain action passed both tests silently — a scan that succeeds by reading
+nothing, which is the failure the guard exists to prevent. Found by probing the
+new tests rather than by reading them, and fixed by matching both suffixes,
+with the same probe watched reddening both tests afterwards.
