@@ -44,6 +44,7 @@ below.
 """
 
 import numpy as np
+import polars as pl
 
 from cablesim import policies, simulate, weibull
 
@@ -380,3 +381,432 @@ def run_chunk_numpy(
         age = np.where(replaced, 0.0, age + 1.0)
 
     return results
+
+
+QUANTITIES: tuple[str, ...] = simulate.Results._fields
+"""The seven reported quantities, in the order a result holds them."""
+
+FAILURE_QUANTITIES: tuple[str, ...] = (
+    "failures",
+    "customers_interrupted",
+    "customer_minutes",
+    "emergency_spend",
+)
+"""What a year's failures contribute, totalled over segments in segment order."""
+
+PLANNED_QUANTITIES: tuple[str, ...] = (
+    "planned_replacements",
+    "planned_customer_minutes",
+    "planned_spend",
+)
+"""What a year's funded work contributes, totalled in rank order.
+
+Split from the failure quantities because the two are accumulated over
+differently ordered rows, which is what keeps both equal to the reference in
+their last bits rather than only close to it.
+"""
+
+
+def state_frame(
+    n_reps: int,
+    segments: dict[str, np.ndarray],
+    policy_uniforms: np.ndarray,
+    first_uniforms: np.ndarray,
+) -> pl.DataFrame:
+    """Builds the long frame the polars loop carries, one row per replication
+    and segment.
+
+    Rows are ordered by replication and then by segment, which is the order the
+    draw arrays are laid out in and the order the reference visits segments in.
+    Every later step either preserves that order or sorts back to it, because
+    the uniforms for each year are attached positionally.
+
+    Args:
+        n_reps: Replications in this chunk.
+        segments: The per-segment arrays, keyed by column name.
+        policy_uniforms: ``(replications, segments)`` fixed priorities.
+        first_uniforms: ``(replications, segments)`` uniforms for the
+            left-truncated draw.
+
+    Returns:
+        The starting state, with the first failure time already drawn.
+    """
+    n_segments = segments["age0"].size
+    repeated = {
+        name: np.tile(column, n_reps)
+        for name, column in segments.items()
+        if name != "age0"
+    }
+    frame = pl.DataFrame(
+        {
+            "rep": np.repeat(np.arange(n_reps, dtype=np.int32), n_segments),
+            "segment_id": np.tile(np.arange(n_segments, dtype=np.int32), n_reps),
+            **repeated,
+            "age": np.tile(segments["age0"].astype(float), n_reps),
+            "current_shape": np.tile(segments["shape"], n_reps),
+            "current_scale": np.tile(segments["scale"], n_reps),
+            "priority": policy_uniforms.ravel(),
+            "first_uniform": first_uniforms.ravel(),
+        }
+    )
+    # Conditional on survival to the starting age, exactly as the reference
+    # draws it: the same function, on a column rather than on an array.
+    return frame.with_columns(
+        failure_time=weibull.draw_remaining_life(
+            frame["first_uniform"],
+            frame["age"],
+            frame["current_shape"],
+            frame["current_scale"],
+        )
+    ).drop("first_uniform")
+
+
+def totals_per_class(
+    frame: pl.DataFrame, quantities: dict[str, pl.Expr]
+) -> pl.DataFrame:
+    """Totals each quantity per replication and per segment class.
+
+    The rows are consumed in the order the frame holds them, which is the whole
+    reason ordering is managed by the caller: the failure quantities are
+    totalled over a frame in segment order and the funded ones over a frame in
+    rank order, matching what the reference adds and in what sequence.
+
+    **A cumulative sum's last element rather than a grouped sum**, because a
+    grouped sum is free to add in whatever order suits the engine and does:
+    with `sum`, the reported planned and emergency spend differ from the
+    reference in their last bits — around 1e-16 relative — on every policy,
+    while the counts stay exact because a sum of integers is exact in any
+    order.
+
+    Three things that look like they would fix it do not, and the measurements
+    are worth keeping because each is a plausible guess:
+
+    * **`maintain_order` is about the groups, not the sum.** It fixes the order
+      the groups come back in. What accumulates inside one is unaffected, and
+      the two are independent settings of the same call.
+    * **Sorting the rows first makes it worse.** A sum over a frame that has
+      been sorted differs from a running total over the same rows at *any*
+      thread count, and `rechunk` does not restore it. The rows are already in
+      the wanted order here, so this was never going to help; it is worth
+      recording that it actively hurts.
+    * **One thread is a fix that cannot be used.** Totalling a group in a
+      thread pool of one does match a running total exactly, and with polars
+      held to a single thread the `run_to_failure` results here come back
+      exact. Every other policy still differs, because their funded totals are
+      taken over the rank-sorted frame and hit the case above. Even where it
+      worked, a single-threaded polars is not the thing this implementation
+      exists to measure.
+
+    A cumulative sum is the operation that is *defined* by its order, so it is
+    the one that keeps it — exactly, at every thread count, sorted or not.
+
+    Forcing the order costs 1.7% of this implementation's runtime (2,000
+    segments, 20 replications, ranking by risk), which is small enough that
+    holding every implementation to exact agreement is cheaper than maintaining
+    a tolerance and arguing about what could hide beneath it.
+
+    Args:
+        frame: Rows in the order the totals should accumulate.
+        quantities: One expression per reported quantity, each already zero
+            where the row does not contribute.
+
+    Returns:
+        One row per replication and class, with a column per quantity.
+    """
+    return frame.group_by(["rep", "class_index"], maintain_order=True).agg(
+        [
+            expression.cum_sum().last().alias(name)
+            for name, expression in quantities.items()
+        ]
+    )
+
+
+def as_result_arrays(
+    yearly: list[pl.DataFrame], n_reps: int, n_years: int, n_classes: int
+) -> simulate.Results:
+    """Scatters the per-year totals into the seven reported arrays.
+
+    Done once at the end rather than per year, so the year loop holds only
+    frame operations. A replication and class that contributed nothing in a
+    year has no row, and reads back as the zero the reference reports.
+
+    Args:
+        yearly: One frame per year, each carrying `rep`, `class_index`, `year`
+            and a column per quantity.
+        n_reps: Replications in this chunk.
+        n_years: Horizon, in years.
+        n_classes: Number of segment classes.
+
+    Returns:
+        The seven ``(replications, years, classes)`` arrays.
+    """
+    gathered = pl.concat(yearly)
+    results = simulate.Results(
+        *(np.zeros((n_reps, n_years, n_classes)) for _ in QUANTITIES)
+    )
+    index = (
+        gathered["rep"].to_numpy(),
+        gathered["year"].to_numpy(),
+        gathered["class_index"].to_numpy(),
+    )
+    for name, array in zip(QUANTITIES, results, strict=True):
+        array[index] = gathered[name].to_numpy()
+    return results
+
+
+def run_chunk_polars(
+    length_ft: np.ndarray,
+    customers: np.ndarray,
+    customer_minutes_per_failure: np.ndarray,
+    customer_minutes_per_planned: np.ndarray,
+    outage_cost_per_failure: np.ndarray,
+    class_index: np.ndarray,
+    age0: np.ndarray,
+    shape: np.ndarray,
+    scale: np.ndarray,
+    replacement_shape: np.ndarray,
+    replacement_scale: np.ndarray,
+    cost_per_ft: np.ndarray,
+    lifetime_uniforms: np.ndarray,
+    policy_uniforms: np.ndarray,
+    budget: np.ndarray,
+    cost_escalation: np.ndarray,
+    policy: policies.Resolved,
+    emergency_multiplier: float,
+    mobilization_per_segment: float,
+    emergency_charged_to_budget: bool,
+    n_classes: int,
+    n_years: int,
+    threads: int = 1,
+) -> simulate.Results:
+    """Runs one chunk of replications under one policy, over a polars frame.
+
+    State is one long frame of `replications * segments` rows rather than a
+    two-dimensional array, and the two steps that are per-replication become
+    frame operations: ranking is a sort, and the greedy fill is a cumulative
+    sum within a replication compared against that replication's budget.
+
+    **This is not purely polars, and that is not a shortcut.** The uniforms
+    arrive from NumPy because polars has no addressable per-element generator,
+    and every implementation here must read the identical draws for a
+    comparison between them to be paired. The Weibull transforms and the policy
+    scoring are the same functions the reference calls: they are elementwise,
+    and NumPy's ufunc protocol lets a polars column through them unchanged, so
+    the formulas are written once rather than once per implementation.
+
+    What is genuinely measured is therefore the frame work — the sort, the
+    windowed cumulative sum, and the grouped totals — against the same work
+    expressed as array indexing.
+
+    Args:
+        length_ft: Segment length, in feet.
+        customers: Customers served, counted equally for the frequency index.
+        customer_minutes_per_failure: Customer-minutes lost when this segment
+            fails, already carrying its class's restoration time.
+        customer_minutes_per_planned: The same for planned work, zero for a
+            class that is switched out without interrupting anyone.
+        outage_cost_per_failure: Value of lost load if this segment fails, in
+            dollars at year-0 prices.
+        class_index: Which segment class each segment belongs to.
+        age0: Age at the start of the run, in years.
+        shape: Weibull shape for the cable in the ground, effective.
+        scale: Weibull scale for the cable in the ground, effective.
+        replacement_shape: Weibull shape a replacement would take.
+        replacement_scale: The same for scale.
+        cost_per_ft: Installed cost per foot.
+        lifetime_uniforms: ``(replications, segments, n_years + 1)`` uniforms.
+        policy_uniforms: ``(replications, segments)`` fixed priorities.
+        budget: Planned capital per year, already escalated.
+        cost_escalation: Per-year multiplier applied to every dollar quantity.
+        policy: The resolved replacement policy.
+        emergency_multiplier: What replacing a failure costs relative to the
+            same work planned.
+        mobilization_per_segment: Fixed cost of turning up at all.
+        emergency_charged_to_budget: Charge the year's emergency spend against
+            the planned budget before scoring planned work.
+        n_classes: Number of segment classes.
+        n_years: Horizon, in years.
+        threads: Workers to spread the replications over. This implementation
+            has one and refuses any other value; polars parallelizes inside an
+            operation rather than over replications, and that parallelism is
+            its own and not something a caller sizes here.
+
+    Returns:
+        The seven per-year, per-class arrays for this chunk.
+
+    Raises:
+        ValueError: Everything `simulate.check_arguments` refuses, which is
+            what makes this interchangeable with the other implementations.
+        TypeError: If ``policy.kind`` is not an integer.
+    """
+    n_reps, n_segments = simulate.check_arguments(locals())
+
+    state = state_frame(
+        n_reps,
+        {
+            "class_index": class_index.astype(np.int32),
+            "customers": customers,
+            "customer_minutes_per_failure": customer_minutes_per_failure,
+            "customer_minutes_per_planned": customer_minutes_per_planned,
+            "outage_cost_per_failure": outage_cost_per_failure,
+            "planned_at_par": policies.planned_cost(
+                length_ft, cost_per_ft, mobilization_per_segment
+            ),
+            "replacement_shape": replacement_shape,
+            "replacement_scale": replacement_scale,
+            "age0": age0,
+            "shape": shape,
+            "scale": scale,
+        },
+        policy_uniforms,
+        lifetime_uniforms[:, :, 0],
+    )
+
+    yearly: list[pl.DataFrame] = []
+    for year in range(n_years):
+        escalation = cost_escalation[year]
+
+        # 1. Failures, resolved before planned work so that a segment failing
+        #    this year is not also a candidate this year.
+        state = state.with_columns(
+            planned_now=pl.col("planned_at_par") * escalation,
+        ).with_columns(
+            failed=(pl.col("failure_time") >= year)
+            & (pl.col("failure_time") < year + 1),
+        )
+        contribution = pl.when("failed")
+        failures = totals_per_class(
+            state,
+            {
+                "failures": contribution.then(1.0).otherwise(0.0),
+                "customers_interrupted": contribution.then("customers").otherwise(0.0),
+                "customer_minutes": contribution.then(
+                    "customer_minutes_per_failure"
+                ).otherwise(0.0),
+                "emergency_spend": contribution.then(
+                    pl.col("planned_now") * emergency_multiplier
+                ).otherwise(0.0),
+            },
+        )
+
+        # 2. Planned replacement, funded greedily down the ranked order.
+        available = pl.DataFrame(
+            {"rep": np.arange(n_reps, dtype=np.int32), "available": budget[year]}
+        )
+        if emergency_charged_to_budget:
+            # Accumulated one row at a time within a replication, in segment
+            # order, which is the order the reference adds it in. A grouped sum
+            # is free to add in whatever order suits the engine, and this total
+            # is subtracted from the budget the greedy fill then compares a
+            # cumulative cost against — so a last-bit difference here decides
+            # which segment is funded last, a discrete outcome rather than a
+            # rounding difference.
+            charged = (
+                state.with_columns(
+                    running_emergency=pl.when("failed")
+                    .then(pl.col("planned_now") * emergency_multiplier)
+                    .otherwise(0.0)
+                    .cum_sum()
+                    .over("rep")
+                )
+                .group_by("rep", maintain_order=True)
+                .agg(charge=pl.col("running_emergency").last())
+            )
+            available = available.join(charged, on="rep").select(
+                "rep",
+                # Left negative where a year's failures cost more than the
+                # budget, for the reason the reference leaves it negative:
+                # every planned cost is positive, so nothing is funded at or
+                # below zero and nothing carries into the next year.
+                available=pl.col("available") - pl.col("charge"),
+            )
+
+        eligible = policies.eligible(policy, state["age"], state["failed"])
+        planned = totals_per_class(
+            state.clear(), dict.fromkeys(PLANNED_QUANTITIES, pl.lit(0.0))
+        )
+        if eligible.any():
+            rank = policies.rank_key(
+                policy,
+                age=state["age"],
+                failure_probability=weibull.conditional_failure_probability(
+                    state["age"], state["current_shape"], state["current_scale"]
+                ),
+                outage_cost_per_failure=state["outage_cost_per_failure"] * escalation,
+                planned=state["planned_now"],
+                emergency_multiplier=emergency_multiplier,
+                priority=state["priority"],
+            )
+            # Ineligible segments are demoted below every real rank key and
+            # given an infinite cost, so the sort puts them behind the
+            # candidates and the cumulative cost cannot run past the last real
+            # one however much budget is left.
+            ranked = (
+                state.with_columns(
+                    eligible=pl.Series(eligible),
+                    rank=pl.Series(rank),
+                )
+                .with_columns(
+                    demoted=pl.when("eligible").then(pl.col("rank")).otherwise(-np.inf),
+                    step=pl.when("eligible")
+                    .then(pl.col("planned_now"))
+                    .otherwise(np.inf),
+                )
+                .sort(["rep", "demoted", "segment_id"], descending=[False, True, False])
+                .with_columns(running=pl.col("step").cum_sum().over("rep"))
+                .join(available, on="rep")
+                .with_columns(funded=pl.col("running") <= pl.col("available"))
+            )
+            # Totalled here, while the rows are still in rank order, because
+            # that is the order the reference adds the funded segments in.
+            contribution = pl.when("funded")
+            planned = totals_per_class(
+                ranked,
+                {
+                    "planned_replacements": contribution.then(1.0).otherwise(0.0),
+                    "planned_customer_minutes": contribution.then(
+                        "customer_minutes_per_planned"
+                    ).otherwise(0.0),
+                    "planned_spend": contribution.then("planned_now").otherwise(0.0),
+                },
+            )
+            # Back to the canonical order, which every later year's uniforms
+            # are attached by position.
+            state = ranked.sort(["rep", "segment_id"]).drop(
+                "eligible", "rank", "demoted", "step", "running", "available"
+            )
+        else:
+            state = state.with_columns(funded=pl.lit(False))
+
+        yearly.append(
+            failures.join(planned, on=["rep", "class_index"], how="left")
+            # Only the funded columns: a class that funded nothing this year
+            # has no row on that side, and reads back as the zero the
+            # reference reports. Filling the whole frame would widen the two
+            # integer key columns to floats along with it.
+            .with_columns(pl.col(PLANNED_QUANTITIES).fill_null(0.0))
+            .with_columns(year=pl.lit(year, dtype=pl.Int32))
+        )
+
+        # 3. Everything replaced this year enters service next year, as new
+        #    cable of the replacement technology.
+        state = state.with_columns(replaced=pl.col("failed") | pl.col("funded"))
+        renewed = (year + 1) + weibull.draw_lifetime(
+            pl.Series(lifetime_uniforms[:, :, year + 1].ravel()),
+            state["replacement_shape"],
+            state["replacement_scale"],
+        )
+        state = state.with_columns(
+            current_shape=pl.when("replaced")
+            .then("replacement_shape")
+            .otherwise(pl.col("current_shape")),
+            current_scale=pl.when("replaced")
+            .then("replacement_scale")
+            .otherwise(pl.col("current_scale")),
+            failure_time=pl.when("replaced")
+            .then(pl.lit(renewed))
+            .otherwise(pl.col("failure_time")),
+            age=pl.when("replaced").then(0.0).otherwise(pl.col("age") + 1.0),
+        ).drop("failed", "funded", "replaced", "planned_now")
+
+    return as_result_arrays(yearly, n_reps, n_years, n_classes)

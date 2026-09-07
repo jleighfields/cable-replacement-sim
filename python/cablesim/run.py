@@ -99,6 +99,7 @@ the kernel's binding has to mirror, since every call here is by keyword.
 RUNNABLE: dict[str, Implementation] = {
     "reference": simulate.run_chunk,
     "batched_numpy": batched.run_chunk_numpy,
+    "batched_polars": batched.run_chunk_polars,
     "kernel": kernel.run_chunk,
 }
 """The annual loops that exist, by the name a manifest records them under.
