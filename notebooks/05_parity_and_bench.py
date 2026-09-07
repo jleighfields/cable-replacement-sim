@@ -15,12 +15,11 @@ def _():
 def _(mo):
     mo.md(
         r"""
-    # 05 — Five programs, one model
+    # 05 — Three programs, one model
 
-    The same simulation is implemented five times: a scalar Python reference, a
-    batched NumPy loop, a batched polars loop, a Rust kernel over slices, and a
-    Rust loop over a polars frame. That is not redundancy — it is what
-    validates the fast ones. When any two disagree, the scalar reference
+    The same simulation is implemented three times: a scalar Python reference,
+    a batched NumPy loop, and the Rust kernel. That is not redundancy — it is
+    what validates the fast ones. When any two disagree, the scalar reference
     arbitrates, because it is the one written to be checkable by reading.
 
     This notebook asks the two questions that duplication exists to answer:
@@ -32,12 +31,13 @@ def _(mo):
        anything.
 
     The pairing matters as much as the list. `batched_numpy` and `kernel` are
-    the array form of the loop in Python and in Rust; `batched_polars` and
-    `kernel_polars` are the frame form in each. The Python polars package is an
-    expression layer over the same compiled Rust engine the crate calls
-    directly, so the second pair separates what it costs to *drive* that engine
-    from Python from what the engine itself costs — which neither one alone can
-    say.
+    the same algorithm in the two languages, which is the comparison this
+    project exists to make. The reference is shown for scale and is explicitly
+    **not** the baseline a speedup is claimed against.
+
+    Two further implementations over a polars frame, one in each language, were
+    here and are now in `deprecated/`, with the measurements that retired them
+    and the reason a column store is the wrong shape for a simulation.
 
     **Everything is synthetic.** The population is generated in-process from a
     seed.
@@ -228,10 +228,8 @@ def _(benchmarks, kernel, settings):
     configurations = [
         benchmarks.Configuration("reference", 1, reps),
         benchmarks.Configuration("batched_numpy", 1, reps),
-        benchmarks.Configuration("batched_polars", 1, reps),
         benchmarks.Configuration("kernel", 1, reps),
         benchmarks.Configuration("kernel", kernel.AVAILABLE_THREADS, reps),
-        benchmarks.Configuration("kernel_polars", 1, reps),
     ]
     timings = benchmarks.compare(settings, "risk_ranked", configurations)
     # Timing an implementation that has drifted measures something else being
@@ -273,44 +271,19 @@ def _(pl, timings):
         return row["seconds_per_replication"][0]
 
     array_form = per_replication("batched_numpy") / per_replication("kernel")
-    frame_form = per_replication("batched_polars") / per_replication("kernel_polars")
     parallel = per_replication("kernel") / per_replication(
         "kernel", threads=timings["threads"].max()
     )
-    frame_against_array = per_replication("batched_polars") / per_replication(
-        "batched_numpy"
-    )
 
-    print(f"array form, Rust against Python:  {array_form:.2f}x")
-    print(f"frame form, Rust against Python:  {frame_form:.2f}x")
+    print(f"one thread, Rust against Python:  {array_form:.2f}x")
     print(f"threads, within the Rust kernel:  {parallel:.2f}x")
-    print(f"frame against array, in Python:   {frame_against_array:.2f}x")
-    return (
-        array_form,
-        frame_against_array,
-        frame_form,
-        parallel,
-        per_replication,
-    )
+    return array_form, parallel, per_replication
 
 
 @app.cell
 def _(mo):
     mo.md(
         r"""
-    **The frame-form ratio is the one worth dwelling on.** If driving the
-    engine from Python were expensive, the Rust frame implementation would be
-    far ahead of the Python one; they run the same query engine, so anything
-    between them is the cost of getting there. A ratio near one says that cost
-    is small and that whatever the frame form loses, it loses inside the
-    engine rather than on the way in.
-
-    That is a question the Python implementation could not answer on its own,
-    and it is the reason the sixth implementation was written. A cheap answer
-    was available — time the same expressions from both languages — and it
-    would have told us about those expressions rather than about this
-    workload.
-
     **The threading ratio is where the kernel's win actually is.** Single
     threaded, the kernel and the scalar reference are close for a policy that
     scores every segment, because the reference's NumPy expressions are already

@@ -293,11 +293,15 @@ fn run_chunk<'py>(
     // correlation nothing downstream could detect. The year passed is `n_years`
     // rather than `n_years - 1`: a segment replaced in the final year draws its
     // next lifetime from the year it would have entered service on.
-    within_the_index(
-        first_replication + n_reps as u64 - 1,
-        n_segments as u64 - 1,
-        n_years as u64,
-    )?;
+    // **Saturating, so the guard cannot be stepped over on the way to it.**
+    // `first_replication + n_reps` wraps on an unsigned word in a release
+    // build, and a chunk offset near the top of the range would then arrive
+    // back inside the limit and be accepted — a run whose replications alias
+    // onto a real one's draws, which is the correlation this guard exists to
+    // refuse, reached through the guard. An addition that would overflow names
+    // a replication past every limit, so saturating reports it as exactly that.
+    let last_replication = first_replication.saturating_add(n_reps as u64 - 1);
+    within_the_index(last_replication, n_segments as u64 - 1, n_years as u64)?;
 
     // A fixed-size array of name-and-length pairs, checked in one loop so that
     // adding a per-segment argument without checking it is a visible omission
@@ -546,7 +550,24 @@ fn uniforms_dense<'py>(
     n_segments: usize,
     year: u64,
 ) -> PyResult<Bound<'py, PyArray1<f64>>> {
-    within_the_index(first_replication + n_reps as u64, n_segments as u64, year)?;
+    // The largest position this call reaches, not one past it, which is what
+    // `run_chunk` and the Python mirror both check — and computed with the same
+    // care, because adding before comparing lets a large offset wrap back
+    // inside the limit.
+    if n_reps == 0 {
+        return Err(PyValueError::new_err(
+            "n_reps is 0, so there are no positions to draw at",
+        ));
+    }
+    // The largest position this call reaches, not one past it, which is what
+    // `run_chunk` and the Python mirror both check — and saturating for the
+    // same reason they are.
+    let last_replication = first_replication.saturating_add(n_reps as u64 - 1);
+    within_the_index(
+        last_replication,
+        (n_segments as u64).saturating_sub(1),
+        year,
+    )?;
     let key = [key_low, key_high];
     let values: Vec<f64> = py.detach(|| {
         (0..n_reps as u64)

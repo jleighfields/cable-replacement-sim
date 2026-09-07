@@ -100,62 +100,6 @@ def uniforms(source: SeedSequence, size: int) -> np.ndarray:
     return (raw >> np.uint64(11)) * 2.0**-53
 
 
-def child_of(source: SeedSequence, index: int) -> SeedSequence:
-    """Derives one numbered child of a stream, without consuming the stream.
-
-    ``SeedSequence.spawn`` is **stateful**: it counts how many children it has
-    handed out, so calling it twice on the same sequence returns two different
-    sets. A chunked run calling it once per chunk would therefore give
-    replication ``r`` different draws depending on how the run was batched,
-    which is exactly the property the per-replication children exist to
-    provide. This builds the child by index instead, which is what ``spawn``
-    does internally and is reproducible from the index alone.
-
-    Args:
-        source: The purpose-level stream.
-        index: Which child to derive, counting from zero.
-
-    Returns:
-        The numbered child, identical to the one ``spawn`` would return at that
-        position on an unused sequence.
-    """
-    return SeedSequence(
-        source.entropy,
-        spawn_key=(*source.spawn_key, index),
-        pool_size=source.pool_size,
-    )
-
-
-def replication_uniforms(
-    source: SeedSequence, replications: range, per_replication: tuple[int, ...]
-) -> np.ndarray:
-    """Builds one chunk's draws, one replication's block at a time.
-
-    Each replication takes its **own child** of the stream rather than reading
-    further along a shared one. That is what makes a chunk addressable: a chunk
-    builds its replications from their own children without consuming the ones
-    before, so replication ``r`` holds the same draws whatever size the chunks
-    were. Advancing a single stream by a computed offset would work too, and it
-    would put the arithmetic in the caller, where an error is silent.
-
-    Args:
-        source: The purpose-level stream to spawn replication children from.
-        replications: Which replications this chunk covers, as indices into the
-            run.
-        per_replication: Shape of one replication's block.
-
-    Returns:
-        An array of shape ``(len(replications), *per_replication)``.
-    """
-    size = int(np.prod(per_replication))
-    return np.stack(
-        [
-            uniforms(child_of(source, index), size).reshape(per_replication)
-            for index in replications
-        ]
-    )
-
-
 PURPOSE: dict[str, int] = dict(_cablesim.DRAW_PURPOSES)
 """Integer tag per purpose, which the draw index carries as a field.
 
@@ -322,17 +266,11 @@ def draw_index(
         ValueError: If a position is past what its field can carry, where two
             positions would otherwise share one draw.
     """
-    for name, values, limit in (
-        ("replication", replications, MAX_REPLICATION),
-        ("segment", segments, MAX_SEGMENT),
-        ("year", np.asarray(year), MAX_YEAR),
-    ):
-        largest = int(values.max()) if values.size else 0
-        if largest > limit:
-            raise ValueError(
-                f"{name} {largest} is past the {limit} a draw index can carry; "
-                f"beyond it two positions would share one draw"
-            )
+    check_positions(
+        int(replications.max()) if replications.size else 0,
+        int(segments.max()) if segments.size else 0,
+        year,
+    )
     return (
         (np.uint64(purpose) << np.uint64(PURPOSE_SHIFT))
         | (replications.astype(np.uint64) << np.uint64(REPLICATION_SHIFT))

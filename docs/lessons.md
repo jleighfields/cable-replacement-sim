@@ -20,6 +20,17 @@ waiter — `pgrep -f "[r]emeasure.py"`, or the interpreter rather than the scrip
 And note the harness kills a foreground command at ten minutes, so a loop
 longer than that is doubly wrong.
 
+## Never `git add -A` while a review agent is editing
+
+A `code-reviewer` pass edits docstrings in place. Committing everything the
+working tree holds sweeps those edits into whatever commit is being made, under
+a message that does not describe them — and the reviewer then reports its own
+work as having appeared from outside the session. This has now happened twice.
+
+**Stage by path when an agent is running**: `git add src/ python/` and so on, or
+wait for it to finish. `git status` before committing shows what is about to be
+taken.
+
 ## A wasted pass in the baseline is a correctness problem for the claim
 
 The batched NumPy loop is the baseline every speedup is measured against. It

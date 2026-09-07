@@ -262,9 +262,13 @@ const _: () = assert!(YEAR_BITS + SEGMENT_BITS + REPLICATION_BITS < 64);
 ///
 /// The position in the stream, which is unique for each distinct argument set.
 pub fn index(purpose: u64, replication: u64, segment: u64, year: u64) -> u64 {
-    debug_assert!(replication <= MAX_REPLICATION, "replication out of range");
-    debug_assert!(segment <= MAX_SEGMENT, "segment out of range");
-    debug_assert!(year <= MAX_YEAR, "year out of range");
+    // `assert!`, not `debug_assert!`. The shipped build is a release build, so
+    // a debug assertion here would be compiled out of everything that runs and
+    // the injective packing would rest entirely on the boundary guards. Three
+    // comparisons against the cost of an encryption is not measurable.
+    assert!(replication <= MAX_REPLICATION, "replication out of range");
+    assert!(segment <= MAX_SEGMENT, "segment out of range");
+    assert!(year <= MAX_YEAR, "year out of range");
     (purpose << PURPOSE_SHIFT)
         | (replication << REPLICATION_SHIFT)
         | (year << YEAR_SHIFT)

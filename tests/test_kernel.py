@@ -353,6 +353,14 @@ MISMATCHED_ARGUMENTS: dict[str, dict[str, object]] = {
         **minimal_arguments(4),
         "first_replication": 2**40,
     },
+    # A chunk that starts inside the limit and ends outside it, which is the
+    # case a real run reaches: replications are split into chunks, so it is the
+    # tail of the last one that crosses. A guard checking only where a chunk
+    # starts accepts this and draws at aliased positions.
+    "a_chunk_whose_tail_leaves_the_index": {
+        **minimal_arguments(4, n_reps=4),
+        "first_replication": random_draws.MAX_REPLICATION - 1,
+    },
     "per_segment_array_too_short": {
         **minimal_arguments(4),
         "cost_per_ft": np.full(3, 10.0),
@@ -449,6 +457,30 @@ def test_both_implementations_refuse_a_tag_that_is_not_an_integer() -> None:
         kernel.run_chunk(**arguments, policy=policy)
     with pytest.raises(TypeError):
         simulate.run_chunk(**arguments, policy=policy)
+
+
+def test_the_kernel_refuses_an_array_it_cannot_read_as_a_flat_slice() -> None:
+    """A strided view arrives non-contiguous and would take the wrong elements.
+
+    Every array crosses the boundary as the bytes NumPy already holds rather
+    than as a copy, which is what removes cross-language divergence in the
+    inputs instead of testing for it. What can still go wrong is layout: read
+    as a flat slice, a strided view takes the wrong elements in the wrong
+    order, and the symptom is a plausible wrong number rather than an error.
+
+    The draw array used to be what this was tested through. It is no longer
+    passed, so the check is made on a per-segment array instead — a caller
+    reaching here is one that sliced a population column.
+    """
+    arguments = minimal_arguments(4)
+    strided = np.full(8, 10.0)[::2]
+    assert not strided.flags["C_CONTIGUOUS"]
+
+    with pytest.raises(ValueError, match="age0 is not C-contiguous"):
+        kernel.run_chunk(
+            **{**arguments, "age0": strided},
+            policy=helpers.resolved("run_to_failure"),
+        )
 
 
 def test_the_kernel_refuses_no_threads_at_all() -> None:

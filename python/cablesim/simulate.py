@@ -176,12 +176,6 @@ def check_arguments(arguments: dict[str, object]) -> tuple[int, int]:
     n_reps = arguments["n_reps"]
     n_segments = arguments["age0"].size
 
-    if n_reps < 1:
-        raise ValueError(
-            f"n_reps is {n_reps}, so no replication would run; a chunk covering "
-            f"none of them is a caller's arithmetic gone wrong rather than an "
-            f"empty result"
-        )
     # Every check below is in the order `src/lib.rs` makes it and carries the
     # same message, so a caller gets the same answer whichever side of the
     # boundary it asked.
@@ -200,6 +194,12 @@ def check_arguments(arguments: dict[str, object]) -> tuple[int, int]:
             f"policy.kind is {policy.kind}, which no ranking branch covers; "
             f"the tags are authored in cablesim.policies.KIND and the ones "
             f"that can be scored are {sorted(policies.RANKABLE)}"
+        )
+    if n_reps < 1:
+        raise ValueError(
+            f"n_reps is {n_reps}, so no replication would run; a chunk covering "
+            f"none of them is a caller's arithmetic gone wrong rather than an "
+            f"empty result"
         )
     if n_segments == 0:
         raise ValueError("the population is empty; there is nothing to simulate")

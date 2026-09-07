@@ -22,6 +22,7 @@ KEYS: tuple[tuple[int, int], ...] = (
     (0, 1),
     (0xDEADBEEF, 0x0BADC0DE),
     (2**64 - 1, 2**64 - 1),
+    random_draws.draw_key(20260907),
 )
 """Keys to check across.
 
@@ -29,6 +30,12 @@ Zero and all-ones are included because they are where an implementation that
 mishandles the key schedule is most likely to coincide with a correct one, and
 the two single-bit keys distinguish the low word from the high one — swapping
 them is a mistake that leaves the output looking perfectly random.
+
+The last is a key the project actually produces. It is here because the helper
+below reaches NumPy through an array, and a key whose two words straddle two to
+the sixty-third would be rounded on the way if that array were not typed — a
+defect in the check rather than in what it checks, and invisible against the
+hand-picked keys above.
 """
 
 
@@ -49,7 +56,13 @@ def numpy_uniforms(key: tuple[int, int], start: int, count: int) -> np.ndarray:
     # method, for the reason `random_draws` gives: NumPy guarantees stream
     # compatibility for bit generators and explicitly does not for `Generator`
     # methods, so a routine upgrade could otherwise move every archived result.
-    raw = np.random.Philox(key=list(key), counter=block).random_raw(lane + count)
+    # `np.uint64` explicitly. `np.array([a, b])` where one word is at or above
+    # two to the sixty-third and the other is not yields **float64**, which
+    # rounds the key before the generator sees it — silently, and only for keys
+    # of that shape. `draw_key` produces one about half the time.
+    raw = np.random.Philox(
+        key=np.array(key, dtype=np.uint64), counter=block
+    ).random_raw(lane + count)
     return (raw[lane:] >> 11) * (1.0 / 9007199254740992.0)
 
 
@@ -134,7 +147,9 @@ def test_the_python_generator_matches_numpys(key: tuple[int, int]) -> None:
     blocks = 64
     counters = np.arange(1, blocks + 1, dtype=np.uint64)
     produced = random_draws.philox(counters, key).ravel()
-    expected = np.random.Philox(key=list(key), counter=0).random_raw(blocks * 4)
+    expected = np.random.Philox(
+        key=np.array(key, dtype=np.uint64), counter=0
+    ).random_raw(blocks * 4)
 
     assert np.array_equal(produced, expected)
 

@@ -44,8 +44,8 @@ def configurations(threads: int) -> list[benchmarks.Configuration]:
 
     The Rust kernel appears twice, at one thread and at the machine's full
     count, so the language and the parallelism are not conflated into one
-    number. The two frame implementations appear once each: neither spreads
-    replications over workers, because polars sizes its own pool.
+    number — which matters here, because single-threaded it is level with
+    Python on the policy that scores every segment.
 
     Args:
         threads: The full thread count to run the kernel at.
@@ -56,10 +56,8 @@ def configurations(threads: int) -> list[benchmarks.Configuration]:
     return [
         benchmarks.Configuration("reference", 1, REFERENCE_REPS),
         benchmarks.Configuration("batched_numpy", 1, BENCHMARK_REPS),
-        benchmarks.Configuration("batched_polars", 1, BENCHMARK_REPS),
         benchmarks.Configuration("kernel", 1, BENCHMARK_REPS),
         benchmarks.Configuration("kernel", threads, BENCHMARK_REPS),
-        benchmarks.Configuration("kernel_polars", 1, BENCHMARK_REPS),
     ]
 
 

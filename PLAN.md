@@ -13,10 +13,19 @@ annual loop: policy scoring, the greedy budget fill, the run directory, the
 reliability metrics, the shared figures and the budget sweep, with notebooks 01
 to 05. The reliability-against-budget curve is drawable.
 
-The annual loop now exists five times — a scalar Python reference, a batched
-NumPy loop, a batched polars loop, a Rust kernel over slices and a Rust loop
-over a polars frame — and **every one of them reproduces the reference in every
-cell of every array**, with no tolerance anywhere. That duplication is the
+The annual loop now exists three times — a scalar Python reference, a batched
+NumPy loop and the Rust kernel — and **every one of them reproduces the
+reference in every cell of every array**, with no tolerance anywhere. Two
+further implementations over a polars frame were built, measured and retired to
+`deprecated/`, which carries the numbers and the reason a column store is the
+wrong shape for a simulation.
+
+**Random draws are computed from their position rather than handed over as an
+array.** A uniform is a function of `(purpose, replication, segment, year)`
+under a key derived from the run's seed, using Philox-4x64-10, which both
+languages implement and both are checked against NumPy's. That removes the
+149 MB draw array from a chunk, produces only the draws that are read — 1.5% of
+the year draws ever were — and is what lets a worker generate without a lock. That duplication is the
 validation strategy rather than an accident. The kernel runs replications over
 worker threads with the interpreter lock released, and the benchmark table
 exists. Phase 6, the Shiny application and the wheel it needs, is next.
@@ -1336,7 +1345,7 @@ cable-replacement-sim/
 │   ├── weibull.rs              # conditional p(t), left-truncated lifetime draw
 │   ├── policies.rs             # scoring + greedy budget allocation
 │   ├── simulate.rs             # replication loop, rayon over replications
-│   └── batched.rs              # the same loop over a polars frame; benchmark only
+│   └── draws.rs                # Philox-4x64-10, addressed by position
 ├── python/cablesim/
 │   ├── __init__.py
 │   ├── config.py               # pydantic schema + loader
@@ -1427,7 +1436,8 @@ question with a different answer.
 | **Greedy budget allocation** | `policies.py` | `policies.rs` | **Mirrored** |
 | **Annual replication loop** | `simulate.py` | `simulate.rs` | **Mirrored** |
 | Parallelism over replications | — | `simulate.rs` (rayon) | The reference stays single-threaded and readable; it is the reference, not the fast path |
-| Batched annual loop | `batched.py` | `src/batched.rs` | **Mirrored**, and for the benchmark only (6.5). The Python module carries a NumPy form and a polars form; the Rust file carries the polars form, so the frame implementations can be compared across the boundary |
+| Batched annual loop | `batched.py` | — | The benchmark baseline only (6.5), and array-shaped, so there is nothing for the kernel to mirror |
+| **Random draws** | `random_draws.py` | `draws.rs` | **Mirrored.** Both compute Philox-4x64-10 at a position, and both are checked against NumPy's implementation rather than against each other |
 | Reliability metrics and discounting | `metrics.py` | — | Ratios derived once from returned counts, so both implementations are compared on what they compute (7.4) |
 | Kernel wrapper | `kernel.py` | — | Rebuilds the reference's `Results` from the seven arrays the binding returns, so both implementations hand back one type (5.2) |
 | Run orchestration and writing | `run.py` | — | Owns the chunk and policy loops, the concatenation, and every write (7.1) |
@@ -1459,26 +1469,21 @@ Three rules decide that table, and each is a rule rather than a preference:
   both sides, which is a decision about where it goes, not about what it is
   called.
 
-Three further implementations of the annual loop exist **for the benchmark
-only** (Section 6.5, Benchmarks): a batched NumPy baseline and a batched polars
-implementation in `batched.py`, and a polars implementation in `src/batched.rs`.
-None is the correctness reference, nothing imports them outside the benchmark
-and their parity tests, and they arrive in Phase 5 once the model has stopped
-moving.
+One further implementation of the annual loop exists **for the benchmark only**
+(Section 6.5, Benchmarks): the batched NumPy baseline in `batched.py`. It is not
+the correctness reference, nothing imports it outside the benchmark and its
+parity tests, and it arrives in Phase 5 once the model has stopped moving.
 
-The Rust frame implementation **passes no DataFrame across the boundary**. It
-takes the same arrays every implementation takes, builds its frames inside the
-extension, and returns the same seven arrays, so the comparison is about the
-engine rather than about interop and no additional binding crate is needed.
-Which form runs is selected by a name at the one existing entry point, and the
-names are authored in the crate and read from it in Python.
+Two polars implementations of the same loop were built in Phase 5 and retired.
+`deprecated/README.md` carries their measurements and the reason: a column store
+cannot evolve state in place, so a simulation rewrites whole columns each year
+to change a few percent of them.
 
-**The cost of that implementation is build time**, which is worth stating where
-someone deciding to keep it will read it: adding the polars crate takes a cold
-release build of this crate from about 9 seconds to 297 on a 48-core machine,
-and the final link-time optimisation pass is single-threaded, so slower
-hardware will not recover it. Continuous integration caches it; a cache miss, a
-dependency bump or a fresh clone pays it.
+**What ended the Rust one was build time**, and it is recorded because the
+lesson outlives the implementation: the polars crate took a cold release build
+from 9 seconds to 297, and — the figure that mattered — a rebuild after any Rust
+edit from 10 seconds to 142. That is paid on every iteration rather than on a
+cache miss. Continuous integration went from 1m06s to 17m28s.
 
 ### 5.2 The call
 
@@ -1494,7 +1499,7 @@ that matters, and a handful of crossings per policy does not touch it.
     length_ft, customers, customer_minutes_per_failure,
     customer_minutes_per_planned, outage_cost_per_failure, class_index,
     age0, shape, scale, replacement_shape, replacement_scale, cost_per_ft,
-    lifetime_uniforms, policy_uniforms, budget, cost_escalation, policy,
+    draw_key, first_replication, n_reps, budget, cost_escalation, policy,
     emergency_multiplier, mobilization_per_segment,
     emergency_charged_to_budget, n_classes, n_years,
 ))]
@@ -1514,8 +1519,9 @@ fn run_chunk<'py>(
     replacement_scale:            PyReadonlyArray1<f64>,  // effective, for new cable
     cost_per_ft:                  PyReadonlyArray1<f64>,
     // draws, generated once in NumPy and shared by every implementation (2.11)
-    lifetime_uniforms:            PyReadonlyArray3<f64>,  // (chunk, segments, n_years + 1)
-    policy_uniforms:              PyReadonlyArray2<f64>,  // (chunk, segments)
+    draw_key:                     (u64, u64),             // every uniform is computed under this
+    first_replication:            u64,                    // where this chunk sits in the run
+    n_reps:                       usize,                  // replications it covers
     // per-year series, both resolved in Python
     budget:                       PyReadonlyArray1<f64>,  // length n_years, escalated
     cost_escalation:              PyReadonlyArray1<f64>,  // length n_years, multiplier
@@ -1816,7 +1822,7 @@ Which comparisons share random draws, and which do not:
 |---|---|---|
 | One policy against another, same implementation | Yes, by construction (2.11) | Paired difference — this is what common random numbers buy |
 | Rust single-threaded against rayon | Yes | Exact equality of every returned array |
-| Scalar reference against batched NumPy against batched polars | Yes; all three read the same array | Exact on discrete outcomes, `1e-12` relative on money and minutes — see below for why the two differ |
+| Scalar reference against batched NumPy | Yes; both compute the same uniform at the same position | Exact, every cell — see below |
 | Any Python implementation against the Rust kernel | Uniforms match; the arithmetic does not | Statistical, plus the exact tests below |
 
 - **The draws are identical by construction, not by test.** Every
@@ -1942,7 +1948,9 @@ it is the only implementation there is.
 | Batched NumPy | `batched.py` | The honest baseline. State is a `(n_reps_chunk, n_segments)` array, so the year loop runs 30 times rather than 30,000 |
 | Batched polars | `batched.py` | Whether a frame-based implementation is competitive. Ranking and the greedy fill are `sort` plus `cum_sum().over("rep")`; metrics are a `group_by` |
 | Rust kernel | `src/simulate.rs` | Reported single-threaded and rayon-parallel separately, so the language win and the parallelism win are not conflated |
-| Rust polars | `src/batched.rs` | Whether the frame form's cost is the engine or the trip into it. The Python polars package is an expression layer over the same compiled engine this calls directly, so the pair separates the two |
+
+Two polars implementations were built here and retired; `deprecated/README.md`
+carries their measurements and the reason.
 
 - **Every implementation passes the same parity tests.** A baseline that has
   not been checked against the reference benchmarks something that may be wrong,
@@ -1991,11 +1999,16 @@ a candidate.
 |---|---|---|---|
 | Scalar reference | 0.00393 | **0.01700** | **0.04101** |
 | Batched NumPy | **0.00376** | 0.02304 | 0.04387 |
-| Batched polars | 0.01238 | 0.03149 | 0.05226 |
 | Rust kernel, 1 thread | 0.00258 | 0.00340 | 0.04134 |
 | **Rust kernel, 48 threads** | **0.00027** | **0.00029** | **0.00201** |
-| Rust polars, 1 thread | 0.01145 | 0.03210 | 0.05961 |
 | **Fastest Python, beaten by** | **14.1x** | **58.5x** | **20.4x** |
+
+**These predate the move to computed draws** and are the last figures measured
+with generation outside the timed region. They are kept because the conclusions
+below rest on the *ratios*, which the change moves in the kernel's favour
+rather than against it — at 48 threads it improved 58% to 93% once generation
+stopped being a serial cost feeding a parallel one. Re-measure before quoting an
+absolute number.
 
 Bold marks the fastest Python implementation in each column, which is the
 denominator of the last row. It is not always the same one, which is the reason
@@ -2689,9 +2702,9 @@ run without it — so this phase consumes it rather than deciding it.
 
 **Phase 5 — parallel, batched baselines, and benchmarks**
 Rayon over replications with the interpreter lock released. `batched.py`: the
-batched NumPy baseline and the batched polars implementation. `src/batched.rs`:
-the same frame loop in Rust, added so the frame form's cost can be split
-between the engine and the trip into it. All of them pass the same parity tests
+batched NumPy baseline. Two polars implementations of the same loop were built
+here, measured and retired to `deprecated/`. What remains passes the same parity
+tests
 as the kernel — exactly, every cell. The benchmark harness is
 `cablesim/benchmarks.py`, driven by `scripts/run_benchmarks.py`, and notebook
 05 renders the same table.
@@ -2901,81 +2914,44 @@ the argument belongs beside the model it constrains.
    does not yet make it for the segments a policy *chooses*.
 4. **Discount rate.** A number is in the config; it needs a stated basis, since
    the present-value comparison is sensitive to it over a 30-year horizon.
-5. **Settled: NumPy keeps generating every uniform, and the draw array stays.**
-   The array is `(replications, segments, n_years + 1)` — 149 MB for a
-   fifty-replication chunk, 2.98 GB unchunked at the shipped replication count,
-   which is what the chunking exists to bound. Measured, only 1.45% to 1.74% of
-   the year draws are ever read: a year's draw is consumed only by a segment
-   replaced that year, and about three percent of segments are replaced in a
-   year. Generating a chunk's draws costs 0.173 s against roughly 2.1 s of
-   compute.
+5. **Settled, and then reversed: the draw array is gone and the kernel computes
+   its own uniforms.** This entry recorded the opposite, and the reasoning that
+   overturned it is worth keeping.
 
-   A counter-based generator — Philox or Threefry, keyed on the replication,
-   segment and year — would compute any draw in constant time and materialize
-   nothing, and would still give every policy the identical uniform at the
-   identical cell. It was considered and is not being done. The reason to keep
-   the array is not its size: it is that generation living entirely in NumPy is
-   what makes cross-language parity of the draws impossible to get wrong rather
-   than something a test has to catch. A counter-based generator implemented on
-   both sides of the boundary trades that guarantee for a test, and the memory
-   it would save is already bounded by a chunk size that changes no number.
+   The array was `(replications, segments, n_years + 1)` — 149 MB for a
+   fifty-replication chunk, 2.98 GB unchunked, which is what the chunking
+   existed to bound. Measured, only 1.45% to 1.74% of the year draws were ever
+   read: a year's draw is consumed only by a segment replaced that year.
 
-   **Making the draws lazy does not help, and the reason is worth keeping.**
-   Deferring generation already happens at chunk granularity, which is why the
-   peak is 149 MB rather than 3 GB. Going finer changes nothing, because within
-   a chunk every replication needs its draws at once: the workers are each
-   partway through their own thirty-year loop, so one is reading year 22 while
-   another reads year 3. The peak is `threads x segments x years x 8` whenever
-   it is generated.
+   It was kept because generation living entirely in NumPy made cross-language
+   parity of the draws impossible to get wrong rather than something a test had
+   to catch. **What changed that was noticing the Python reference never runs at
+   production size** — the parity tests run at 400 and 2,000 segments — so a
+   counter-based generator could be checked at test scale and used at run scale.
 
-   Nor does a generator avoid producing the 98% nobody reads. Skipping ahead in
-   a sequential stream costs what generating it costs, and the positions have to
-   stay aligned or common random numbers break. What would avoid it is random
-   access — `PCG64.advance` jumps ahead cheaply — but which draws are needed is
-   decided inside the loop, with the interpreter lock released, so producing
-   only those means generating inside the kernel. Which is the design above,
-   declined.
+   Philox-4x64-10 gives a uniform as a pure function of `(purpose, replication,
+   segment, year)`. It is stateless, so a worker computes what it needs without
+   a lock and the answer cannot depend on scheduling; and it is randomly
+   accessible, so only the draws that are read get produced. **A sequential
+   generator cannot do either**: two policies consume different numbers of
+   draws, so a stream would put them on different numbers, and skipping ahead
+   costs what generating costs.
 
-   So the waste is real, measured, and accepted. The remaining lever within
-   this design is the chunk size, which trades memory against thread count and
-   is already an argument rather than a constant. Anything reconsidering the
-   generator has to start by saying what it does about draw parity.
+   The guarantee traded away is real and is now a test: `tests/test_draws.py`
+   checks Rust against NumPy, Python against NumPy, and Python against Rust.
+   Agreeing with a published algorithm each implements separately is a stronger
+   position than agreeing with each other.
 
-   **The design that does address the population axis is Python driving the
-   years**, and it is costed here so that it is a decision waiting rather than
-   a rediscovery. Today the kernel owns both loops and is entered once per
-   policy per chunk, so all thirty-one years of draws are resident. If Python
-   drove the year loop instead, each call would carry one year of draws — but
-   the per-replication state would stop being Rust-local scratch and become
-   resident data crossing the boundary, so the saving is a factor of about
-   **6.3**, not of thirty-one:
+   Two details that were nearly got wrong. **NumPy increments its counter before
+   producing**, so its first block for a counter is Philox's at that counter
+   plus one — the first implementation was one block out everywhere, which looks
+   like perfectly good randomness. And **the segment field must sit in the low
+   bits**: the generator makes four words at a time, so four adjacent segments
+   share one call only if their indices are adjacent. With the segment anywhere
+   else, three quarters of the generator's work is discarded, which was the
+   difference between the Python implementations losing 11% to 63% and gaining
+   1% to 24%.
 
-   | Segments | Chunk | Today | Year-driven |
-   |---|---|---|---|
-   | 12,000 | 48 | 0.18 GB | 0.03 GB |
-   | 100,000 | 48 | 1.46 GB | 0.23 GB |
-   | 1,000,000 | 48 | 14.59 GB | 2.30 GB |
-   | 1,000,000 | 200 | 60.80 GB | 9.60 GB |
-
-   It does not change the shape of the scaling — both designs are linear in the
-   chunk size — so what it buys is 6.3 times more memory per thread, which is
-   what would let a million-segment population keep forty-eight workers instead
-   of dropping to eight.
-
-   What it costs is the reason not to do it yet. The kernel's loop inverts,
-   years outside and replications inside, so it stops mirroring the reference
-   structurally and starts mirroring the batched form. The boundary becomes
-   stateful — state arrays in and out each year, or an object holding them —
-   so "arrays in, arrays out, crossed once per policy per chunk" has to be
-   rewritten rather than bent. And there are thirty parallel dispatches per
-   chunk instead of one, which costs microseconds against seventy milliseconds
-   of work per year and is therefore free, but the rule against per-year
-   crossings is what stops that pattern creeping toward per-replication.
-
-   Results would be unchanged: each replication's arithmetic is independent and
-   only the nesting moves. **Build it when a population exceeds roughly a
-   quarter of a million segments**; the shipped size is twelve thousand, and a
-   hundred thousand runs comfortably today.
 6. **Settled: a run streams its rows to disk rather than accumulating them.**
    Each chunk's rows are written to a file of their own and the files are
    concatenated lazily at the end, so what a run holds at once is one chunk
@@ -3062,14 +3038,12 @@ the argument belongs beside the model it constrains.
    the thread count rather than the language. The application should pass one,
    and its manifest already has the field to record what it used.
 
-2. **Decide whether to keep the Rust polars implementation.** It answered the
-   question it was written to ask — 13.2, Still open — and the answer was that
-   driving the engine from Python costs almost nothing. Carrying a mirror of
-   the annual loop to answer a question already answered is what 6.5,
-   Benchmarks, says not to do, and this one costs about five minutes of cold
-   build. Against that: it is the evidence for the claim, and deleting it
-   leaves the claim resting on a measurement nobody can reproduce. Decide it
-   deliberately rather than by default.
+2. **Settled: both polars implementations are retired** to `deprecated/`, which
+   carries their measurements and the reason a column store is the wrong shape
+   for a simulation. What decided it was not the runtime — the Python one is
+   competitive, and faster than the array form where few segments are eligible
+   — but that the Rust one put 142 seconds on every Rust edit and answered a
+   question that came back empty.
 3. Confirm branch protection refuses what it claims to. Both rulesets in
    Section 10.4, Branch protection on `main`, are applied and match their
    checked-in files, and every change since continuous integration existed has

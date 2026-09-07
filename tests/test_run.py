@@ -107,54 +107,6 @@ def test_swept_values_are_written_into_the_rows(tmp_path: pathlib.Path) -> None:
     assert frame["annual_budget"].unique().to_list() == [1_000.0]
 
 
-def test_the_lifetime_and_policy_streams_stay_independent() -> None:
-    """A control correlated with what it controls for has stopped being one.
-
-    The random policy's priorities must not be a function of the same segments'
-    lifetime draws: a larger uniform gives a shorter lifetime, so reusing the
-    stream would have it ranking segments by imminence of failure, which is the
-    thing it exists to be a control against. No parity test would notice, since
-    every implementation reads the same arrays.
-    """
-    sources = random_draws.spawn_sources(20260902)
-    replications = range(0, 3)
-
-    lifetimes = random_draws.replication_uniforms(sources.lifetimes, replications, (5,))
-    priorities = random_draws.replication_uniforms(sources.policies, replications, (5,))
-
-    assert not np.array_equal(lifetimes, priorities)
-
-
-def test_a_replication_reads_the_same_draws_at_any_chunk_size() -> None:
-    """Directly, rather than only through the results a run happens to produce.
-
-    ``SeedSequence.spawn`` counts the children it has handed out, so a run
-    calling it once per chunk gives replication 7 different draws depending on
-    how the run was batched. Deriving the child by index is what avoids that.
-    """
-    sources = random_draws.spawn_sources(20260902)
-    shape = (4, 3)
-
-    whole = random_draws.replication_uniforms(sources.lifetimes, range(0, 6), shape)
-    later = random_draws.replication_uniforms(sources.lifetimes, range(4, 6), shape)
-    again = random_draws.replication_uniforms(sources.lifetimes, range(0, 6), shape)
-
-    assert np.array_equal(whole[4:], later)
-    assert np.array_equal(whole, again), "asking twice must give the same answer"
-
-
-def test_a_derived_child_matches_what_spawn_would_have_given() -> None:
-    """The stateless derivation is the same stream, not merely a valid one."""
-    source = random_draws.spawn_sources(20260902).lifetimes
-    spawned = source.spawn(4)
-
-    for index in range(4):
-        assert np.array_equal(
-            random_draws.uniforms(spawned[index], 8),
-            random_draws.uniforms(random_draws.child_of(source, index), 8),
-        ), index
-
-
 def test_chunks_cover_every_replication_exactly_once() -> None:
     """Including when the batch size does not divide the replication count."""
     for n_reps, batch_size in ((6, 2), (6, 4), (6, 6), (6, 10), (1, 50)):
