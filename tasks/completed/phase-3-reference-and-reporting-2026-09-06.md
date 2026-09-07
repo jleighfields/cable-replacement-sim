@@ -324,3 +324,51 @@ that printing an exit code is not the same as acting on one.
   full size affordable, rather than inherited silently.
 - The manifest's implementation field already names all four implementations,
   so the batched ones need no schema change when they arrive.
+
+### What the branch review and the simplification audit found
+
+Two defects that the 51 mutations had not reached, because both live in how
+modules *compose* rather than inside any one of them:
+
+- **The sweep reader and the metrics layer produced a wrong answer together.**
+  The reductions grouped on policy, replication and year, so a frame holding
+  several runs summed the swept levels into one row apiece. Nothing raised, the
+  result kept the shape of a legitimate frame, and the swept column vanished.
+  Nothing had exercised it because the notebook read each run separately —
+  which was itself the evidence that the documented composition had never been
+  tried.
+- **A reduced population left the customer denominator at the system total**,
+  understating every reliability index by the population ratio. Measured at
+  5.73x; after scaling the denominator with the population, 0.96x, which is
+  replication noise. `PLAN.md` §9, Shiny application, already states this rule
+  for the application layer, and both the notebook and the driver script broke
+  it the same way.
+
+Eight tests could not fail. Two pinned rules the Rust kernel will be written
+against — the draw index a replacement reads, and a replaced segment being
+scored at age zero — and six were fixtures whose extents coincided or
+assertions that compared a thing against itself. The age-zero test needed
+writing twice: with a budget for one segment, a just-replaced segment is the
+youngest either way and ranks last either way, so being wrongly eligible costs
+it nothing. Funding every eligible segment makes the count differ instead.
+
+One prose figure did not reproduce. The funded-per-year range is 68 to 172 with
+a mean of 114, not the 68 to 120 recorded here — and the mid-horizon peak is
+the replacement wave this plan already argues for, seen from the spending side
+rather than the failure side.
+
+### A result worth keeping
+
+Writing an assertion about the cost comparison turned up something the figure
+does not show: **the first tranche of preventive replacement pays for itself.**
+Below a budget somewhere under the configured one, the emergency premium a
+policy avoids is larger than the planned work it buys, so it is both cheaper
+and more reliable than run-to-failure and the cost per customer-minute avoided
+is negative. It turns positive once the cheap opportunities are used up. That
+is the point where the question stops being whether to do this at all and
+starts being what a customer-minute is worth — and it only appears because
+costs and reliability are reported against the same baseline.
+
+At placeholder parameters this is a property of the machinery rather than a
+claim about any fleet, which is exactly why the value-of-lost-load figures in
+13.2, Still open, are worth sourcing.
