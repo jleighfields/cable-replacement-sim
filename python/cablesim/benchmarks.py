@@ -25,9 +25,15 @@ be free to break:
   slower by a wide margin, and an unlabelled number cannot be checked against
   anything.
 
-The measurement is the minimum of several runs rather than the mean. What is
-wanted is how long the work takes, and the noise on a shared machine is all in
-one direction — the fastest run is the one least interrupted.
+**The measurement is the mean of several runs, and the count is in the table.**
+The minimum is the other defensible choice and answers a different question:
+noise on a shared machine is all in one direction, so the fastest run is the one
+least interrupted, and a minimum therefore estimates the work rather than the
+conditions. The mean is what someone actually waits for, and it is the more
+conservative choice for a speedup claim, because interruption inflates the
+numerator and the denominator alike rather than only the row one is pleased
+with. Both are reported; neither means anything without the repeat count beside
+it.
 """
 
 import logging
@@ -43,7 +49,7 @@ from cablesim import kernel, policies, population, random_draws, run, simulate
 log = logging.getLogger(__name__)
 
 DEFAULT_REPEATS = 3
-"""Runs per configuration, of which the fastest is reported."""
+"""Runs per configuration, averaged into the reported time."""
 
 PYTHON_IMPLEMENTATIONS: frozenset[str] = frozenset(
     {"reference", "batched_numpy", "batched_polars"}
@@ -160,8 +166,8 @@ def time_once(
     arguments: dict[str, object],
     policy: policies.Resolved,
     repeats: int,
-) -> tuple[simulate.Results, float]:
-    """Runs one configuration, returning its result and its fastest time.
+) -> tuple[simulate.Results, float, float]:
+    """Runs one configuration, returning its result and how long it took.
 
     Args:
         configuration: What to run and how.
@@ -170,17 +176,26 @@ def time_once(
         repeats: How many times to run it.
 
     Returns:
-        The result of the last run, and the shortest wall time of any.
+        The result of the last run, the mean wall time, and the shortest. Both
+        times are returned because the gap between them is worth seeing: a row
+        whose mean sits well above its minimum was interrupted, and its mean is
+        then measuring the machine rather than the implementation.
+
+    Raises:
+        ValueError: If asked for no runs at all, which would otherwise report a
+            time for work that never happened.
     """
+    if repeats < 1:
+        raise ValueError(f"repeats must be at least 1, got {repeats}")
     annual_loop = run.RUNNABLE[configuration.implementation]
     call = {**arguments, "policy": policy, "threads": configuration.threads}
-    fastest = float("inf")
+    elapsed = []
     produced = None
     for _ in range(repeats):
         started = time.perf_counter()
         produced = annual_loop(**call)
-        fastest = min(fastest, time.perf_counter() - started)
-    return produced, fastest
+        elapsed.append(time.perf_counter() - started)
+    return produced, sum(elapsed) / len(elapsed), min(elapsed)
 
 
 def compare(
@@ -203,13 +218,14 @@ def compare(
             and therefore how much work there is — a table averaged over
             policies would hide the thing it is measuring.
         configurations: The rows to produce, in the order they should appear.
-        repeats: Runs per configuration, of which the fastest is reported.
+        repeats: Runs per configuration, averaged into the reported time.
 
     Returns:
-        One row per configuration: what ran, how long it took, how long that is
-        per replication, whether it reproduced the reference exactly, and two
-        speedup columns — against the batched NumPy baseline the design names,
-        and against whichever Python implementation was actually fastest.
+        One row per configuration: what ran, the mean of its runs and the
+        fastest of them, how many runs that was over, the mean per replication,
+        whether it reproduced the reference exactly, and two speedup columns —
+        against the batched NumPy baseline the design names, and against
+        whichever Python implementation was actually fastest.
 
     Raises:
         KeyError: If a configuration names no implementation that exists.
@@ -238,9 +254,15 @@ def compare(
         if n_reps not in arguments:
             arguments[n_reps] = chunk_arguments(settings, n_reps)
             reference[n_reps] = simulate.run_chunk(**arguments[n_reps], policy=policy)
-        produced, seconds = time_once(configuration, arguments[n_reps], policy, repeats)
+        produced, seconds, fastest = time_once(
+            configuration, arguments[n_reps], policy, repeats
+        )
         log.info(
-            "%s: %.3f s over %d replications", label(configuration), seconds, n_reps
+            "%s: %.3f s, mean of %d, over %d replications",
+            label(configuration),
+            seconds,
+            repeats,
+            n_reps,
         )
         rows.append(
             {
@@ -248,7 +270,9 @@ def compare(
                 "implementation": configuration.implementation,
                 "threads": configuration.threads,
                 "replications": n_reps,
+                "repeats": repeats,
                 "seconds": seconds,
+                "fastest_seconds": fastest,
                 "seconds_per_replication": seconds / n_reps,
                 "matches_reference": agrees(reference[n_reps], produced),
             }
@@ -285,12 +309,21 @@ def provenance() -> dict[str, object]:
     """What a timing table cannot be read without.
 
     Returns:
-        The Rust build profile, the machine's thread count, and the polars
-        version, since two of the five implementations are that engine and its
-        version is not otherwise recorded anywhere in a result.
+        The Rust build profile, the machine's thread count, the polars version
+        and the size of polars' own thread pool.
+
+        The last two are here because two of the five implementations are that
+        engine, and neither is recorded anywhere else in a result. **The pool
+        size matters as much as the kernel's thread count and is not chosen
+        here**: polars sizes it from available parallelism, and on a frame this
+        small that is not its best setting — measured on this workload, sixteen
+        threads beat the machine's forty-eight. A row timed against a pool
+        nobody chose has to at least say what the pool was, the same way a Rust
+        timing has to say how many workers it had.
     """
     return {
         "build_profile": kernel.BUILD_PROFILE,
         "available_threads": kernel.AVAILABLE_THREADS,
         "polars_version": pl.__version__,
+        "polars_threads": pl.thread_pool_size(),
     }
