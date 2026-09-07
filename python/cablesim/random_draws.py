@@ -81,3 +81,59 @@ def uniforms(source: SeedSequence, size: int) -> np.ndarray:
     """
     raw = PCG64(source).random_raw(size)
     return (raw >> np.uint64(11)) * 2.0**-53
+
+
+def child_of(source: SeedSequence, index: int) -> SeedSequence:
+    """Derives one numbered child of a stream, without consuming the stream.
+
+    ``SeedSequence.spawn`` is **stateful**: it counts how many children it has
+    handed out, so calling it twice on the same sequence returns two different
+    sets. A chunked run calling it once per chunk would therefore give
+    replication ``r`` different draws depending on how the run was batched,
+    which is exactly the property the per-replication children exist to
+    provide. This builds the child by index instead, which is what ``spawn``
+    does internally and is reproducible from the index alone.
+
+    Args:
+        source: The purpose-level stream.
+        index: Which child to derive, counting from zero.
+
+    Returns:
+        The numbered child, identical to the one ``spawn`` would return at that
+        position on an unused sequence.
+    """
+    return SeedSequence(
+        source.entropy,
+        spawn_key=(*source.spawn_key, index),
+        pool_size=source.pool_size,
+    )
+
+
+def replication_uniforms(
+    source: SeedSequence, replications: range, per_replication: tuple[int, ...]
+) -> np.ndarray:
+    """Builds one chunk's draws, one replication's block at a time.
+
+    Each replication takes its **own child** of the stream rather than reading
+    further along a shared one. That is what makes a chunk addressable: a chunk
+    builds its replications from their own children without consuming the ones
+    before, so replication ``r`` holds the same draws whatever size the chunks
+    were. Advancing a single stream by a computed offset would work too, and it
+    would put the arithmetic in the caller, where an error is silent.
+
+    Args:
+        source: The purpose-level stream to spawn replication children from.
+        replications: Which replications this chunk covers, as indices into the
+            run.
+        per_replication: Shape of one replication's block.
+
+    Returns:
+        An array of shape ``(len(replications), *per_replication)``.
+    """
+    size = int(np.prod(per_replication))
+    return np.stack(
+        [
+            uniforms(child_of(source, index), size).reshape(per_replication)
+            for index in replications
+        ]
+    )

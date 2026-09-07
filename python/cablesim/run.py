@@ -1,0 +1,259 @@
+"""Turning a configuration into a saved run.
+
+This is the only module that writes anything. Everything else in the reporting
+layer is a pure function of a frame; the loop that produces the frame is not,
+because it owns the chunking, the ordering and the concatenation.
+
+A **run** is one configuration evaluated for every policy in it, producing one
+directory. The implementation is an argument, so the reference and the compute
+kernel are interchangeable here — which is what lets a parity test drive both
+through one path rather than through two that could differ in how they are
+driven.
+
+Replications are processed in chunks because the draw array is the largest
+thing in a run: at a thousand replications, twelve thousand segments and a
+thirty-year horizon it is three gigabytes, and fifty replications at a time
+makes it a hundred and fifty megabytes. The chunk size changes no number, since
+every replication reads its own children of the stream whatever the chunking,
+so it is an argument here and provenance in the manifest rather than a
+configured parameter.
+"""
+
+import datetime
+import logging
+import pathlib
+import time
+from typing import Protocol
+
+import numpy as np
+import polars as pl
+
+from cablesim import config as config_module
+from cablesim import constants, policies, population, random_draws, results, simulate
+
+log = logging.getLogger(__name__)
+
+DEFAULT_BATCH_SIZE = 50
+"""Replications per call, which trades memory against time and nothing else."""
+
+SEGMENT_COLUMNS: tuple[str, ...] = (
+    "length_ft",
+    "customers",
+    "customer_minutes_per_failure",
+    "customer_minutes_per_planned",
+    "outage_cost_per_failure",
+    "class_index",
+    "age",
+    "shape",
+    "scale",
+    "replacement_shape",
+    "replacement_scale",
+    "cost_per_ft",
+)
+"""Population columns the annual loop reads, in the order it names them.
+
+Everything that reduces to a per-segment number is reduced before this point —
+conductor count and length into the effective scale, customer types into the
+four derived columns — so what crosses into an implementation is arrays it
+reads without interpreting.
+"""
+
+
+class Implementation(Protocol):
+    """What ``run`` needs of an implementation of the annual loop."""
+
+    def __call__(self, **arguments: object) -> simulate.Results:
+        """Runs one chunk of replications under one policy.
+
+        Args:
+            **arguments: The per-segment arrays, draws, series and scalars.
+
+        Returns:
+            The seven per-year, per-class arrays.
+        """
+        ...
+
+
+def escalation_series(rate: float, n_years: int) -> np.ndarray:
+    """Compounds an annual rate into a per-year multiplier.
+
+    Args:
+        rate: Annual growth, as a fraction.
+        n_years: Horizon.
+
+    Returns:
+        One multiplier per year, starting at 1.0 in year 0.
+    """
+    return (1.0 + rate) ** np.arange(n_years, dtype=float)
+
+
+def segment_arrays(frame: pl.DataFrame) -> dict[str, np.ndarray]:
+    """Extracts the per-segment arrays an implementation reads.
+
+    A segment's position in these arrays is its identifier, and the tie-break
+    that decides which of two equally ranked candidates is funded reads that
+    position, so the frame is sorted before anything is taken from it.
+
+    Args:
+        frame: The population, one row per segment.
+
+    Returns:
+        The arrays, keyed by the argument name each is passed as.
+
+    Raises:
+        KeyError: If the population is missing a column the loop reads.
+    """
+    ordered = frame.sort("segment_id")
+    missing = [name for name in SEGMENT_COLUMNS if name not in ordered.columns]
+    if missing:
+        raise KeyError(f"the population has no {missing}; it cannot be simulated")
+    arrays = {name: ordered[name].to_numpy() for name in SEGMENT_COLUMNS}
+    # The loop names the starting age `age0`, because it holds a current age
+    # that moves; the population column is the age at year 0.
+    arrays["age0"] = arrays.pop("age").astype(float)
+    arrays["class_index"] = arrays["class_index"].astype(np.uint8)
+    return arrays
+
+
+def chunks(n_reps: int, batch_size: int) -> list[range]:
+    """Splits the replication axis into chunks.
+
+    Args:
+        n_reps: Replications in the run.
+        batch_size: Replications per chunk.
+
+    Returns:
+        One range per chunk, covering every replication exactly once.
+
+    Raises:
+        ValueError: If the batch size is not positive, which would otherwise
+            produce no chunks and a run with no results.
+    """
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be at least 1, got {batch_size}")
+    return [
+        range(start, min(start + batch_size, n_reps))
+        for start in range(0, n_reps, batch_size)
+    ]
+
+
+def simulate_policy(
+    spec: config_module.PolicySpec,
+    settings: config_module.Config,
+    segments: dict[str, np.ndarray],
+    class_names: list[str],
+    implementation: Implementation,
+    batch_size: int,
+) -> pl.DataFrame:
+    """Runs every replication under one policy, chunk by chunk.
+
+    Args:
+        spec: The policy to run.
+        settings: The effective configuration.
+        segments: The per-segment arrays.
+        class_names: Segment class names in class-index order.
+        implementation: The annual loop to call.
+        batch_size: Replications per call.
+
+    Returns:
+        Every replication's rows for this policy.
+    """
+    simulation = settings.simulation
+    n_segments = segments["age0"].size
+    sources = random_draws.spawn_sources(simulation.seed)
+    resolved = policies.resolve(spec)
+    budget = settings.budget.annual * escalation_series(
+        settings.budget.escalation, simulation.n_years
+    )
+    cost_escalation = escalation_series(
+        settings.costs.escalation_rate, simulation.n_years
+    )
+
+    blocks = []
+    for replications in chunks(simulation.n_reps, batch_size):
+        block = implementation(
+            **segments,
+            lifetime_uniforms=random_draws.replication_uniforms(
+                sources.lifetimes, replications, (n_segments, simulation.n_years + 1)
+            ),
+            policy_uniforms=random_draws.replication_uniforms(
+                sources.policies, replications, (n_segments,)
+            ),
+            budget=budget,
+            cost_escalation=cost_escalation,
+            policy=resolved,
+            emergency_multiplier=settings.costs.emergency_multiplier,
+            mobilization_per_segment=settings.costs.mobilization_per_segment,
+            emergency_charged_to_budget=settings.budget.emergency_charged_to_budget,
+            n_classes=len(class_names),
+            n_years=simulation.n_years,
+        )
+        blocks.append(
+            results.to_frame(block, spec.name, class_names, replications.start)
+        )
+    return pl.concat(blocks)
+
+
+def run(
+    settings: config_module.Config,
+    root: pathlib.Path,
+    implementation: Implementation = simulate.simulate,
+    implementation_name: str = "reference",
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    swept: dict[str, float] | None = None,
+) -> pathlib.Path:
+    """Runs one configuration for every policy and writes the result.
+
+    Args:
+        settings: The effective configuration, already validated.
+        root: Where run directories are written.
+        implementation: The annual loop to call.
+        implementation_name: Which implementation that is, for the manifest.
+        batch_size: Replications per call.
+        swept: Values that vary between the runs of a sweep, written into the
+            saved rows as columns. A frame carrying its own parameters is
+            readable without the directory layout that produced it.
+
+    Returns:
+        The directory written.
+    """
+    started = time.perf_counter()
+    run_id = results.new_run_id()
+    segments_frame = population.generate(settings)
+    class_names = [segment_class.name for segment_class in settings.population.classes]
+    segments = segment_arrays(segments_frame)
+    log.info(
+        "run %s: %d segments, %d policies, %d replications",
+        run_id,
+        segments["age0"].size,
+        len(settings.policies),
+        settings.simulation.n_reps,
+    )
+
+    frame = pl.concat(
+        simulate_policy(
+            spec, settings, segments, class_names, implementation, batch_size
+        )
+        for spec in settings.policies
+    )
+    for name, value in (swept or {}).items():
+        frame = frame.with_columns(pl.lit(value).alias(name))
+
+    commit, dirty = results.git_provenance(constants.PROJECT_ROOT)
+    return results.write_run(
+        root,
+        frame,
+        settings,
+        results.Manifest(
+            run_id=run_id,
+            written_at=datetime.datetime.now(datetime.UTC),
+            package_version=results.package_version(),
+            git_commit=commit,
+            git_dirty=dirty,
+            implementation=implementation_name,
+            build_profile=None,
+            threads=1,
+            batch_size=batch_size,
+            wall_seconds=time.perf_counter() - started,
+        ),
+    )
