@@ -82,8 +82,8 @@ jobs:
 
       # --release because the parity tests run many replications, and a debug
       # build is slow enough that they dominate the job. Any timing measured
-      # off a debug build is meaningless besides. PLAN.md section 6 is where a
-      # measured ratio belongs, once Phase 5 produces one.
+      # off a debug build is meaningless besides. A measured speedup belongs in
+      # PLAN.md's validation strategy, once the benchmark phase produces one.
       - name: Build the extension module
         run: uv run maturin develop --release
 

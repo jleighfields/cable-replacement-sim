@@ -9,14 +9,13 @@ about what a run is.
 The grid is zero plus levels spaced geometrically from a fraction of the
 configured budget to a multiple of it, so the region near a binding constraint
 is sampled more densely than the flat region beyond it. **Zero is in the grid
-deliberately**: every policy at zero budget must equal run-to-failure at any
-budget, because none of them funds anything there, so the left-hand end of the
-figure is a free end-to-end check on the whole stack.
+deliberately**: no policy funds anything there, so every one of them must land
+on the same point as run-to-failure, which makes the left-hand end of the
+figure an end-to-end check on the whole stack.
 
-The default size is reduced rather than the shipped one. In the pure-Python
-reference a full-size sweep is tens of minutes, and a default that does not
-finish while someone watches it is a default nobody runs. Pass ``--full`` for
-the configured replication count and population.
+The default size is reduced, because a full-size sweep through the pure-Python
+reference takes tens of minutes. Pass ``--full`` for the configured replication
+count and population.
 """
 
 import argparse
@@ -32,8 +31,8 @@ REDUCED_SEGMENTS = 2_000
 """The default size: the eight-level sweep takes about 15 seconds at it.
 
 Reducing the population also scales the customer denominator, which is what
-``config.resized`` is for: leaving it at the system total would understate
-every reliability index by the population ratio.
+``config.resize_population`` is for: leaving it at the system total would
+understate every reliability index by the population ratio.
 """
 
 
@@ -79,7 +78,9 @@ def main(argv: list[str] | None = None) -> None:
     shipped = config.load_config(constants.DEFAULT_CONFIG_PATH)
     settings = shipped
     if not arguments.full:
-        settings = config.resized(shipped, REDUCED_SEGMENTS, n_reps=REDUCED_REPS)
+        settings = config.resize_population(
+            shipped, REDUCED_SEGMENTS, n_reps=REDUCED_REPS
+        )
         log.info(
             "reduced size: %d replications, %d segments, %d customers. Pass "
             "--full for the configured %d, %d and %d.",
@@ -94,7 +95,7 @@ def main(argv: list[str] | None = None) -> None:
     grid = run.budget_grid(settings.budget.annual)
     log.info("sweeping %d budget levels into %s", len(grid), arguments.out)
     for index, level in enumerate(grid, start=1):
-        point = config.overridden(settings, {"budget.annual": level})
+        point = config.with_overrides(settings, {"budget.annual": level})
         directory = run.run(
             point,
             arguments.out,

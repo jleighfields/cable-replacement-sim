@@ -24,21 +24,21 @@ from cablesim import (
 )
 
 
-def small() -> config.Config:
+def small_config() -> config.Config:
     """A configuration small enough to run in a test, in seconds.
 
     Takes no overrides: the one case that needs one wraps this in
-    ``config.overridden``, which keeps the dotted-path spelling readable — a
+    ``config.with_overrides``, which keeps the dotted-path spelling readable — a
     dotted name is not a valid keyword argument, so an override parameter here
     could only be reached by unpacking a dictionary.
 
     Returns:
         The validated configuration.
     """
-    settings = config.resized(
+    settings = config.resize_population(
         config.load_config(constants.DEFAULT_CONFIG_PATH), 200, n_reps=6
     )
-    return config.overridden(
+    return config.with_overrides(
         settings,
         {
             "simulation.n_years": 4,
@@ -56,7 +56,7 @@ def test_a_run_reassembled_from_chunks_equals_one_computed_whole(
     produced it happened to be batched, and the batch size would have to become
     a modelled parameter rather than provenance.
     """
-    settings = small()
+    settings = small_config()
 
     whole = run.run(settings, tmp_path / "whole", batch_size=settings.simulation.n_reps)
     chunked = run.run(settings, tmp_path / "chunked", batch_size=2)
@@ -75,7 +75,7 @@ def test_the_replication_axis_is_continuous_across_chunks(
     tmp_path: pathlib.Path,
 ) -> None:
     """Chunks are labelled with where they sat in the run, not from zero."""
-    settings = small()
+    settings = small_config()
 
     directory = run.run(settings, tmp_path, batch_size=2)
 
@@ -85,7 +85,7 @@ def test_the_replication_axis_is_continuous_across_chunks(
 
 def test_every_configured_policy_lands_in_one_file(tmp_path: pathlib.Path) -> None:
     """A run is one configuration across every policy, not one policy."""
-    settings = small()
+    settings = small_config()
 
     directory = run.run(settings, tmp_path)
 
@@ -101,7 +101,7 @@ def test_swept_values_are_written_into_the_rows(tmp_path: pathlib.Path) -> None:
 
     A renamed directory, or a run copied elsewhere, still answers questions.
     """
-    directory = run.run(small(), tmp_path, swept={"annual_budget": 1_000.0})
+    directory = run.run(small_config(), tmp_path, swept={"annual_budget": 1_000.0})
 
     frame = pl.read_parquet(directory / results.RESULTS_NAME)
     assert frame["annual_budget"].unique().to_list() == [1_000.0]
@@ -130,8 +130,7 @@ def test_a_replication_reads_the_same_draws_at_any_chunk_size() -> None:
 
     ``SeedSequence.spawn`` counts the children it has handed out, so a run
     calling it once per chunk gives replication 7 different draws depending on
-    how the run was batched. Deriving the child by index is what avoids that,
-    and it is worth pinning at the source.
+    how the run was batched. Deriving the child by index is what avoids that.
     """
     sources = random_draws.spawn_sources(20260902)
     shape = (4, 3)
@@ -159,14 +158,15 @@ def test_a_derived_child_matches_what_spawn_would_have_given() -> None:
 def test_chunks_cover_every_replication_exactly_once() -> None:
     """Including when the batch size does not divide the replication count."""
     for n_reps, batch_size in ((6, 2), (6, 4), (6, 6), (6, 10), (1, 50)):
-        covered = [index for span in run.chunks(n_reps, batch_size) for index in span]
+        spans = run.replication_chunks(n_reps, batch_size)
+        covered = [index for span in spans for index in span]
         assert covered == list(range(n_reps)), (n_reps, batch_size)
 
 
 def test_a_batch_size_of_zero_is_refused() -> None:
     """It produces no chunks, and so a run with no results and no error."""
     with pytest.raises(ValueError, match="at least 1"):
-        run.chunks(10, 0)
+        run.replication_chunks(10, 0)
 
 
 def test_the_segment_arrays_are_ordered_by_identifier() -> None:
@@ -175,7 +175,7 @@ def test_the_segment_arrays_are_ordered_by_identifier() -> None:
     Both implementations must mean the same thing by it, and passing it
     implicitly as position is what stops them tie-breaking on different keys.
     """
-    settings = small()
+    settings = small_config()
     frame = run.population.generate(settings).sample(fraction=1.0, shuffle=True, seed=1)
 
     arrays = run.segment_arrays(frame)
@@ -187,7 +187,7 @@ def test_the_segment_arrays_are_ordered_by_identifier() -> None:
 
 def test_a_population_missing_a_column_is_refused() -> None:
     """Rather than failing later inside the loop, or not at all."""
-    settings = small()
+    settings = small_config()
     frame = run.population.generate(settings).drop("customers")
 
     with pytest.raises(KeyError, match="customers"):
@@ -206,7 +206,7 @@ def test_the_run_directory_records_how_it_was_produced(
     tmp_path: pathlib.Path,
 ) -> None:
     """Including the batch size, which is provenance rather than a parameter."""
-    directory = run.run(small(), tmp_path, batch_size=3)
+    directory = run.run(small_config(), tmp_path, batch_size=3)
 
     manifest = results.Manifest.model_validate_json(
         (directory / results.MANIFEST_NAME).read_text()
@@ -224,10 +224,10 @@ def test_the_reference_is_swappable_for_another_implementation(
 
     def counting(**arguments: object) -> simulate.Results:
         calls.append(arguments["policy"])
-        return simulate.simulate(**arguments)
+        return simulate.run_chunk(**arguments)
 
     directory = run.run(
-        small(), tmp_path, implementation=counting, implementation_name="kernel"
+        small_config(), tmp_path, implementation=counting, implementation_name="kernel"
     )
 
     assert len(calls) == 2, "one call per policy, at one chunk"
@@ -244,13 +244,12 @@ def test_the_run_takes_policy_priorities_from_the_policy_stream(
 
     Both arrays are uniforms of the same shape, so passing the wrong stream
     produces a run that completes with plausible numbers. What it costs is the
-    random policy: its priorities would be a function of the same segments'
-    lifetime draws, and since a larger uniform gives a shorter lifetime it
-    would rank by imminence of failure — the very thing it exists to be a
-    control against. No parity test would see it, because every implementation
-    would read the same wrong array.
+    random policy: a larger uniform gives a shorter lifetime, so priorities
+    taken from the lifetime stream would rank by imminence of failure — the
+    thing the policy exists to be a control against. No parity test would see
+    it, because every implementation would read the same wrong array.
     """
-    settings = small()
+    settings = small_config()
     captured: dict[str, np.ndarray] = {}
 
     def capturing(**arguments: object) -> simulate.Results:
@@ -258,7 +257,7 @@ def test_the_run_takes_policy_priorities_from_the_policy_stream(
             lifetime_uniforms=arguments["lifetime_uniforms"],
             policy_uniforms=arguments["policy_uniforms"],
         )
-        return simulate.simulate(**arguments)
+        return simulate.run_chunk(**arguments)
 
     run.run(settings, tmp_path, implementation=capturing, batch_size=6)
 
@@ -286,8 +285,8 @@ def test_the_budget_series_uses_the_budget_rate_and_not_the_cost_rate(
     growth, and the axis of the deliverable figure would not be the axis it
     claims.
     """
-    settings = config.overridden(
-        small(), {"budget.escalation": 0.0, "costs.escalation_rate": 0.10}
+    settings = config.with_overrides(
+        small_config(), {"budget.escalation": 0.0, "costs.escalation_rate": 0.10}
     )
     captured: dict[str, np.ndarray] = {}
 
@@ -295,7 +294,7 @@ def test_the_budget_series_uses_the_budget_rate_and_not_the_cost_rate(
         captured.update(
             budget=arguments["budget"], cost_escalation=arguments["cost_escalation"]
         )
-        return simulate.simulate(**arguments)
+        return simulate.run_chunk(**arguments)
 
     run.run(settings, tmp_path, implementation=capturing)
 
@@ -328,7 +327,7 @@ def test_a_reliability_index_at_reduced_size_matches_one_at_full_size() -> None:
     proof — the bias it exists to catch was a factor of five, not a few
     percent.
     """
-    full = config.overridden(
+    full = config.with_overrides(
         config.load_config(constants.DEFAULT_CONFIG_PATH),
         {
             "simulation.n_reps": 8,
@@ -338,7 +337,7 @@ def test_a_reliability_index_at_reduced_size_matches_one_at_full_size() -> None:
             "reporting": {"baseline_policy": "risk_ranked"},
         },
     )
-    reduced = config.resized(full, 1_000)
+    reduced = config.resize_population(full, 1_000)
 
     def mean_saidi(settings: config.Config) -> float:
         """Mean duration index across replications and years.
@@ -352,7 +351,7 @@ def test_a_reliability_index_at_reduced_size_matches_one_at_full_size() -> None:
         with tempfile.TemporaryDirectory() as root:
             directory = run.run(settings, pathlib.Path(root), batch_size=8)
             frame = pl.read_parquet(directory / results.RESULTS_NAME)
-        per = metrics.per_replication(
+        per = metrics.indices_per_replication(
             frame.lazy(), settings.population.total_customers
         ).collect()
         return per["saidi"].mean()

@@ -208,7 +208,7 @@ def git_provenance(root: pathlib.Path) -> tuple[str | None, bool | None]:
     return commit, bool(changes.strip())
 
 
-def to_frame(
+def rows_from_chunk(
     results: simulate.Results,
     policy: str,
     class_names: list[str],

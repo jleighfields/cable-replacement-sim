@@ -25,8 +25,8 @@ def _(mo):
     This notebook builds that answer from the bottom: score the candidates for
     one year, spend one year's budget, run a whole horizon, then sweep the
     budget and draw the curve. Each step calls the package rather than
-    reimplementing it, so anything that looks awkward here is an awkward
-    interface rather than an awkward notebook.
+    reimplementing it, so a step that reads badly here is a package interface
+    to change rather than a notebook to rewrite.
 
     **Everything is synthetic.** The population is generated in-process from a
     seed. No observed utility data is used anywhere in this project.
@@ -65,11 +65,11 @@ def _():
     N_REPS = 40
     N_SEGMENTS = 2_000
 
-    # `resized` scales the customer denominator with the population. Left at
+    # `resize_population` scales the customer denominator with the population. Left at
     # the system total, every reliability index below would be understated by
     # the population ratio -- a systematic bias rather than sampling noise, and
     # one that leaves the curves looking entirely plausible.
-    settings = config.resized(config.load_config(), N_SEGMENTS, n_reps=N_REPS)
+    settings = config.resize_population(config.load_config(), N_SEGMENTS, n_reps=N_REPS)
     segments = population.generate(settings)
     segments.select(
         "segment_id", "class", "technology", "age", "length_ft", "customers", "scale"
@@ -199,7 +199,7 @@ def _(np, planned_cost, policies, risk, score, segments, settings):
         segments["age"].to_numpy().astype(float),
         np.zeros(len(segments), dtype=bool),
     )
-    ranked = policies.order(score, np.flatnonzero(eligible))
+    ranked = policies.order_by_rank(score, np.flatnonzero(eligible))
     funded = policies.fund(ranked, planned_cost, settings.budget.annual)
 
     assert planned_cost[funded].sum() <= settings.budget.annual, "overspent"
@@ -245,10 +245,10 @@ def _(pl, results, run, settings):
 
 @app.cell
 def _(metrics, saved, settings):
-    per_replication = metrics.per_replication(
+    per_replication = metrics.indices_per_replication(
         saved.lazy(), settings.population.total_customers
     )
-    banded = metrics.bands(
+    banded = metrics.summarize_replications(
         per_replication, ["saidi", "saifi", "planned_spend", "emergency_spend"]
     ).collect()
     banded.head()
@@ -335,13 +335,13 @@ def _(config, metrics, pathlib, results, run, settings, tempfile):
     # package reads it back. Reading each run by hand instead would skip the
     # check that refuses a sweep missing a level, and a curve short one point
     # still draws.
-    # Kept for the life of the cell only. This notebook runs headless in a test
-    # as well as by hand, so a directory left behind is one per run forever.
+    # Kept for the life of the cell only, so a headless run leaves nothing
+    # behind.
     _sweep_dir = tempfile.TemporaryDirectory(prefix="cablesim_04_sweep_")
     _root = pathlib.Path(_sweep_dir.name)
     for _level in run.budget_grid(settings.budget.annual):
         run.run(
-            config.overridden(settings, {"budget.annual": _level}),
+            config.with_overrides(settings, {"budget.annual": _level}),
             _root,
             swept={"annual_budget": _level},
         )
@@ -352,7 +352,7 @@ def _(config, metrics, pathlib, results, run, settings, tempfile):
     _keys = ("annual_budget",)
     sweep = metrics.horizon_totals(
         metrics.discount(
-            metrics.per_replication(
+            metrics.indices_per_replication(
                 results.read_sweep(_root),
                 settings.population.total_customers,
                 by=_keys,

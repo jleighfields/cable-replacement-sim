@@ -36,20 +36,19 @@ log = logging.getLogger(__name__)
 DEFAULT_BATCH_SIZE = 50
 """Replications per call, which trades memory against time and nothing else."""
 
-GRID_LOW = 0.125
+BUDGET_GRID_LOW = 0.125
 """The lowest swept budget, as a fraction of the configured one."""
 
-GRID_HIGH = 2.0
+BUDGET_GRID_HIGH = 2.0
 """The highest swept budget, as a multiple of the configured one."""
 
-GRID_LEVELS = 7
+BUDGET_GRID_LEVELS = 7
 """How many non-zero levels the sweep places between those two bounds.
 
 Spaced geometrically rather than linearly, so the region near a binding
 constraint is sampled more densely than the flat region beyond it. All three
-live in the package rather than in a driver script because they are the sweep's
-design, and a notebook and a script that each spell it out are two designs that
-drift apart.
+live in the package rather than in a driver script: a notebook and a script
+that each spell the grid out are two designs that drift apart.
 """
 
 SEGMENT_COLUMNS: tuple[str, ...] = (
@@ -82,11 +81,12 @@ Deliberately not a Protocol spelling out the call. One that wrote
 ``__call__(**arguments: object)`` would accept any callable at all, which is
 what a bare alias already says with less ceremony; one that pinned all
 twenty-odd argument names would be the contract worth having, and that contract
-lives in ``PLAN.md`` section 5.2, The call, where both languages read it.
+is already written as ``simulate.run_chunk``'s signature — the argument names
+the kernel's binding has to mirror, since every call here is by keyword.
 """
 
 
-def budget_grid(annual: float, levels: int = GRID_LEVELS) -> list[float]:
+def budget_grid(annual: float, levels: int = BUDGET_GRID_LEVELS) -> list[float]:
     """Builds the swept budget levels for the deliverable figure.
 
     **Zero is in the grid deliberately.** No policy funds anything there, so
@@ -102,7 +102,7 @@ def budget_grid(annual: float, levels: int = GRID_LEVELS) -> list[float]:
     Returns:
         Zero followed by geometrically spaced levels.
     """
-    spaced = np.geomspace(annual * GRID_LOW, annual * GRID_HIGH, levels)
+    spaced = np.geomspace(annual * BUDGET_GRID_LOW, annual * BUDGET_GRID_HIGH, levels)
     return [0.0, *spaced.tolist()]
 
 
@@ -147,7 +147,7 @@ def segment_arrays(frame: pl.DataFrame) -> dict[str, np.ndarray]:
     return arrays
 
 
-def chunks(n_reps: int, batch_size: int) -> list[range]:
+def replication_chunks(n_reps: int, batch_size: int) -> list[range]:
     """Splits the replication axis into chunks.
 
     Args:
@@ -202,7 +202,7 @@ def simulate_policy(
     )
 
     blocks = []
-    for replications in chunks(simulation.n_reps, batch_size):
+    for replications in replication_chunks(simulation.n_reps, batch_size):
         block = implementation(
             **segments,
             lifetime_uniforms=random_draws.replication_uniforms(
@@ -221,7 +221,7 @@ def simulate_policy(
             n_years=simulation.n_years,
         )
         blocks.append(
-            results.to_frame(block, spec.name, class_names, replications.start)
+            results.rows_from_chunk(block, spec.name, class_names, replications.start)
         )
     return pl.concat(blocks)
 
@@ -229,7 +229,7 @@ def simulate_policy(
 def run(
     settings: config_module.Config,
     root: pathlib.Path,
-    implementation: Implementation = simulate.simulate,
+    implementation: Implementation = simulate.run_chunk,
     implementation_name: str = "reference",
     build_profile: str | None = None,
     batch_size: int = DEFAULT_BATCH_SIZE,

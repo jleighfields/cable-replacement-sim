@@ -1,19 +1,18 @@
 """The annual simulation loop, one replication at a time.
 
-This is the correctness reference. Its job is to be plainly right, so that when
-it and another implementation disagree, this one arbitrates. It takes the same
-arguments as the Rust kernel and returns the same seven arrays, so whatever
-runs a simulation can call either without knowing which it has.
+This is the correctness reference: it is written to be checkable by reading, so
+that when it and another implementation disagree, this one arbitrates. It takes
+the same arguments as the Rust kernel and returns the same seven arrays, so
+whatever runs a simulation can call either without knowing which it has.
 
-The shape of the loop follows ``PLAN.md`` section 2.9, Annual simulation loop.
 Failure times are continuous and drawn once per installation; the budget cycle
 is annual, because utilities budget annually, and the loop resolves the two
 against each other. There is no event queue: one failure time per segment plus
-a scan per year is enough, and a priority queue would be machinery for an
-ordering nothing consumes.
+a scan per year is enough, and a priority queue would maintain an ordering
+nothing consumes.
 
-Two conventions here are load-bearing and easy to get wrong in ways that leave
-a run completing and its curves looking plausible:
+Two conventions are load-bearing, and getting either wrong leaves a run that
+completes with plausible-looking curves:
 
 **Failure times are simulation time measured from year 0, never ages.** A
 segment starting at ``age0`` with a drawn age-at-failure ``T`` fails at
@@ -68,7 +67,7 @@ class Results(NamedTuple):
     emergency_spend: np.ndarray
 
 
-def simulate(
+def run_chunk(
     length_ft: np.ndarray,
     customers: np.ndarray,
     customer_minutes_per_failure: np.ndarray,
@@ -207,11 +206,10 @@ def simulate(
             if emergency_charged_to_budget:
                 # Charged before this year's planned pass is scored, which is
                 # what produces the loop where failures crowd out prevention.
-                # The floor keeps a failure year dearer than the budget from
-                # handing that pass a negative number rather than zero; it
-                # changes nothing, since every planned cost is positive and the
-                # greedy fill funds nothing at either value, and it stops a
-                # negative from reading as a debt the year carries.
+                # The floor changes no funding decision — every planned cost is
+                # positive, so the greedy fill funds nothing at zero or below —
+                # and it stops a year whose failures cost more than the budget
+                # from carrying a negative that reads as a debt.
                 available = max(0.0, available - float(emergency_now.sum()))
 
             candidates = np.flatnonzero(policies.eligible(policy, age, replaced))
@@ -228,7 +226,7 @@ def simulate(
                     priority=priority,
                 )
                 funded = policies.fund(
-                    policies.order(rank, candidates), planned_now, available
+                    policies.order_by_rank(rank, candidates), planned_now, available
                 )
                 results.planned_replacements[replication, year] += by_class(funded)
                 results.planned_customer_minutes[replication, year] += by_class(

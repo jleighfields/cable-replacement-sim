@@ -268,7 +268,7 @@ def test_an_override_reaches_the_value_it_names() -> None:
     """Sweeps override the configuration rather than editing the base file."""
     settings = config.load_config(constants.DEFAULT_CONFIG_PATH)
 
-    changed = config.overridden(settings, {"budget.annual": 1_234.0})
+    changed = config.with_overrides(settings, {"budget.annual": 1_234.0})
 
     assert changed.budget.annual == 1_234.0
     assert changed.simulation.seed == settings.simulation.seed
@@ -279,7 +279,7 @@ def test_an_override_naming_a_section_replaces_the_whole_section() -> None:
     """A one-segment path is a section, which is how the policy list is set."""
     settings = config.load_config(constants.DEFAULT_CONFIG_PATH)
 
-    changed = config.overridden(
+    changed = config.with_overrides(
         settings,
         {
             "policies": [{"name": "run_to_failure"}],
@@ -295,7 +295,7 @@ def test_an_override_still_goes_through_validation() -> None:
     settings = config.load_config(constants.DEFAULT_CONFIG_PATH)
 
     with pytest.raises(pydantic.ValidationError):
-        config.overridden(settings, {"budget.annual": -1.0})
+        config.with_overrides(settings, {"budget.annual": -1.0})
 
 
 def test_a_misspelled_override_path_is_refused() -> None:
@@ -310,11 +310,11 @@ def test_a_misspelled_override_path_is_refused() -> None:
     # access raises `KeyError` too — the same failure with none of the help, so
     # matching on the type alone cannot tell a guard from its absence.
     with pytest.raises(KeyError, match="no configuration section 'budgets'"):
-        config.overridden(settings, {"budgets.annual": 1.0})
+        config.with_overrides(settings, {"budgets.annual": 1.0})
     with pytest.raises(KeyError, match="population"):
-        config.overridden(settings, {"budgets.annual": 1.0})
+        config.with_overrides(settings, {"budgets.annual": 1.0})
     with pytest.raises(KeyError, match="anual"):
-        config.overridden(settings, {"budget.anual": 1.0})
+        config.with_overrides(settings, {"budget.anual": 1.0})
 
 
 def test_resizing_scales_the_customer_denominator_with_the_population() -> None:
@@ -328,7 +328,7 @@ def test_resizing_scales_the_customer_denominator_with_the_population() -> None:
     settings = config.load_config(constants.DEFAULT_CONFIG_PATH)
     before = settings.population.total_customers / settings.population.n_segments
 
-    smaller = config.resized(settings, settings.population.n_segments // 6)
+    smaller = config.resize_population(settings, settings.population.n_segments // 6)
 
     after = smaller.population.total_customers / smaller.population.n_segments
     assert smaller.population.n_segments == settings.population.n_segments // 6
@@ -340,10 +340,10 @@ def test_resizing_leaves_the_replication_count_alone_unless_asked() -> None:
     """The two are independent knobs; only one of them is being reduced here."""
     settings = config.load_config(constants.DEFAULT_CONFIG_PATH)
 
-    assert config.resized(settings, 100).simulation.n_reps == (
+    assert config.resize_population(settings, 100).simulation.n_reps == (
         settings.simulation.n_reps
     )
-    assert config.resized(settings, 100, n_reps=7).simulation.n_reps == 7
+    assert config.resize_population(settings, 100, n_reps=7).simulation.n_reps == 7
 
 
 def test_resizing_to_nothing_is_refused() -> None:
@@ -351,7 +351,7 @@ def test_resizing_to_nothing_is_refused() -> None:
     settings = config.load_config(constants.DEFAULT_CONFIG_PATH)
 
     with pytest.raises(ValueError, match="at least 1"):
-        config.resized(settings, 0)
+        config.resize_population(settings, 0)
 
 
 def test_resizing_scales_the_annual_budget_with_the_population() -> None:
@@ -366,7 +366,7 @@ def test_resizing_scales_the_annual_budget_with_the_population() -> None:
     """
     settings = config.load_config(constants.DEFAULT_CONFIG_PATH)
 
-    smaller = config.resized(settings, settings.population.n_segments // 6)
+    smaller = config.resize_population(settings, settings.population.n_segments // 6)
 
     assert smaller.budget.annual == pytest.approx(settings.budget.annual / 6)
     per_segment = smaller.budget.annual / smaller.population.n_segments

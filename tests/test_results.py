@@ -88,7 +88,7 @@ def test_the_saved_schema_is_what_it_claims_to_be() -> None:
     means a change to the saved format has to be made twice, deliberately,
     which is the point of an on-disk contract.
     """
-    frame = results.to_frame(chunk(), "risk_ranked", CLASS_NAMES)
+    frame = results.rows_from_chunk(chunk(), "risk_ranked", CLASS_NAMES)
 
     assert dict(frame.schema) == {
         "policy": pl.String,
@@ -112,7 +112,7 @@ def test_every_returned_array_reaches_the_file() -> None:
     which looks redundant beside customer-minutes and is not: a count cannot be
     recovered from a duration-weighted sum once duration varies by class.
     """
-    frame = results.to_frame(chunk(), "risk_ranked", CLASS_NAMES)
+    frame = results.rows_from_chunk(chunk(), "risk_ranked", CLASS_NAMES)
 
     for field in simulate.Results._fields:
         assert field in frame.columns, field
@@ -128,7 +128,7 @@ def test_the_row_keys_line_up_with_the_values_they_label() -> None:
     """
     results_chunk = chunk()
     n_reps, n_years, _ = results_chunk.failures.shape
-    frame = results.to_frame(results_chunk, "worst_first", CLASS_NAMES)
+    frame = results.rows_from_chunk(results_chunk, "worst_first", CLASS_NAMES)
 
     for replication in range(n_reps):
         for year in range(n_years):
@@ -146,7 +146,7 @@ def test_the_row_keys_line_up_with_the_values_they_label() -> None:
 
 def test_a_chunk_knows_where_its_replications_sit_in_the_run() -> None:
     """Chunks concatenate into one continuous replication axis."""
-    frame = results.to_frame(chunk(n_reps=2), "random", CLASS_NAMES, 50)
+    frame = results.rows_from_chunk(chunk(n_reps=2), "random", CLASS_NAMES, 50)
 
     assert sorted(frame["replication"].unique().to_list()) == [50, 51]
 
@@ -154,13 +154,13 @@ def test_a_chunk_knows_where_its_replications_sit_in_the_run() -> None:
 def test_a_class_axis_that_does_not_match_its_names_is_refused() -> None:
     """Otherwise every row of at least one class is labelled wrongly."""
     with pytest.raises(ValueError, match="mislabelled"):
-        results.to_frame(chunk(n_classes=2), "random", ["only_one_name"])
+        results.rows_from_chunk(chunk(n_classes=2), "random", ["only_one_name"])
 
 
 def test_a_run_round_trips_through_its_directory(tmp_path: pathlib.Path) -> None:
     """The three files land, and the rows come back unchanged."""
     settings = config.load_config(constants.DEFAULT_CONFIG_PATH)
-    frame = results.to_frame(chunk(), "risk_ranked", CLASS_NAMES)
+    frame = results.rows_from_chunk(chunk(), "risk_ranked", CLASS_NAMES)
     run_id = results.new_run_id()
 
     directory = results.write_run(tmp_path, frame, settings, manifest(run_id))
@@ -180,8 +180,8 @@ def test_the_saved_config_is_the_one_that_ran(tmp_path: pathlib.Path) -> None:
     the convention.
     """
     settings = config.load_config(constants.DEFAULT_CONFIG_PATH)
-    overridden = config.overridden(settings, {"budget.annual": 1_234.0})
-    frame = results.to_frame(chunk(), "risk_ranked", CLASS_NAMES)
+    overridden = config.with_overrides(settings, {"budget.annual": 1_234.0})
+    frame = results.rows_from_chunk(chunk(), "risk_ranked", CLASS_NAMES)
 
     directory = results.write_run(
         tmp_path, frame, overridden, manifest(results.new_run_id())
@@ -200,7 +200,7 @@ def test_the_manifest_records_what_a_result_cannot_be_read_without(
 ) -> None:
     """A timing without its build profile and thread count means nothing."""
     settings = config.load_config(constants.DEFAULT_CONFIG_PATH)
-    frame = results.to_frame(chunk(), "risk_ranked", CLASS_NAMES)
+    frame = results.rows_from_chunk(chunk(), "risk_ranked", CLASS_NAMES)
     run_id = results.new_run_id()
 
     directory = results.write_run(tmp_path, frame, settings, manifest(run_id))
@@ -241,7 +241,7 @@ def test_a_sweep_reads_every_run_in_it(tmp_path: pathlib.Path) -> None:
     for index in range(3):
         results.write_run(
             tmp_path,
-            results.to_frame(chunk(), "risk_ranked", CLASS_NAMES),
+            results.rows_from_chunk(chunk(), "risk_ranked", CLASS_NAMES),
             settings,
             manifest(f"2026090{index}T120000000000"),
         )
@@ -264,7 +264,7 @@ def test_a_sweep_missing_a_run_raises_rather_than_returning_a_short_frame(
     for index in range(2):
         results.write_run(
             tmp_path,
-            results.to_frame(chunk(), "risk_ranked", CLASS_NAMES),
+            results.rows_from_chunk(chunk(), "risk_ranked", CLASS_NAMES),
             settings,
             manifest(f"2026090{index}T120000000000"),
         )

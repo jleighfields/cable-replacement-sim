@@ -610,7 +610,7 @@ def load_config(path: pathlib.Path | None = None) -> Config:
     return Config.model_validate(raw)
 
 
-def overridden(settings: Config, values: dict[str, object]) -> Config:
+def with_overrides(settings: Config, values: dict[str, object]) -> Config:
     """Rebuilds a configuration with some values replaced.
 
     Sweeps override configuration from a driver script or a notebook rather
@@ -647,7 +647,9 @@ def overridden(settings: Config, values: dict[str, object]) -> Config:
     return Config.model_validate(raw)
 
 
-def resized(settings: Config, n_segments: int, n_reps: int | None = None) -> Config:
+def resize_population(
+    settings: Config, n_segments: int, n_reps: int | None = None
+) -> Config:
     """Shrinks the population, keeping every reported quantity comparable.
 
     **Two system-level figures have to move with the population, and missing
@@ -689,4 +691,4 @@ def resized(settings: Config, n_segments: int, n_reps: int | None = None) -> Con
     }
     if n_reps is not None:
         values["simulation.n_reps"] = n_reps
-    return overridden(settings, values)
+    return with_overrides(settings, values)

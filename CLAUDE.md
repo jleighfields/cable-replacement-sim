@@ -11,8 +11,8 @@ wins on *how work is done here*.
 
 - **What this is:** a simulation of underground cable failure and replacement
   policy for an electric distribution utility, with a Rust compute kernel
-  exposed to Python via PyO3/maturin. `README.md` summarizes it; `PLAN.md` §1,
-  What this project is, has the goals.
+  exposed to Python via PyO3/maturin. `README.md` summarizes it, and `PLAN.md`
+  opens with the goals.
 - **The population is fully synthetic.** No original utility data is used, and
   none should enter this repo. A file that appears to hold observed failure
   records is a problem, not an input.
@@ -37,9 +37,8 @@ wins on *how work is done here*.
 - **Root causes, not workarounds.** A fix that leaves the cause in place has to
   be made again.
 - **Ask, don't assume.** When requirements are ambiguous or several approaches
-  exist, ask. `PLAN.md` §13, Decisions and what is still open, lists what is
-  settled and what is not; answer the open ones with the user rather than
-  picking a default.
+  exist, ask. `PLAN.md` ends with a list of decisions and what is still open;
+  answer the open ones with the user rather than picking a default.
 - **Verify by running, not by reading.** Any claim you can run is unverified
   until you have run it — yours and everyone else's. When a comment, docstring,
   README or gate asserts a behavior, run it before believing it.
@@ -50,8 +49,8 @@ wins on *how work is done here*.
   pass for the wrong reason.
 - **A statistical test is the easiest kind to fool yourself with.** A real
   divergence smaller than the tolerance passes. Every claim that two
-  implementations agree needs the deterministic test behind it — `PLAN.md`
-  §6.4, Implementation parity, has which comparisons are exact, which are
+  implementations agree needs the deterministic test behind it. `PLAN.md`, on
+  implementation parity, has which comparisons are exact, which are
   statistical, and why.
 - **Plan non-trivial work.** Plan mode for anything spanning 3+ steps or an
   architectural decision. If work goes sideways, stop and re-plan.
@@ -66,10 +65,12 @@ wins on *how work is done here*.
 ## The Python/Rust mirror
 
 The Python reference and the Rust kernel implement the same model twice, and
-that is the validation strategy rather than an accident. **`PLAN.md` §5.1, What
-is implemented where, has the table** — which modules mirror each other, what
+that is the validation strategy rather than an accident. **`PLAN.md` has the
+table of what is implemented where** — which modules mirror each other, what
 lives only in Python, and the rule that decides the split. It is not repeated
-here.
+here. A mirrored pair carries the same module name on both sides:
+`weibull.py`/`weibull.rs`, `policies.py`/`policies.rs`,
+`simulate.py`/`simulate.rs`.
 
 - **Never collapse the two sides.** Deleting the reference deletes the only thing
   that validates the kernel. `simplify-audit` is told this explicitly so it
@@ -85,8 +86,9 @@ here.
   generates.
 - **The reference implementation is not the benchmark baseline.** They are
   different programs with different jobs, and comparing the kernel against the
-  scalar reference overstates the speedup. `PLAN.md` §6.5, Benchmarks, has the
-  four implementations and which one the claim is made against.
+  scalar reference overstates the speedup. The baseline is the batched NumPy
+  implementation in `batched.py`; `PLAN.md`, on benchmarks, has all four
+  implementations and how each is reported.
 
 ## Code style
 
@@ -121,13 +123,15 @@ here.
   `Bound<'py, T>` smart-pointer API; older tutorials and answers found online
   will not compile against a current pin.
 - **The kernel neither seeds nor generates.** Every uniform arrives as an array
-  from NumPy (`PLAN.md` §2.11, Random numbers and why policies must share
-  them), so no random-number crate belongs in `Cargo.toml`, and results are
-  order-independent under rayon because each replication reads its own slice
-  rather than drawing from a shared stream.
+  from NumPy, and every policy reads the identical draws so that a comparison
+  between two of them is a paired difference. So no random-number crate belongs
+  in `Cargo.toml`, and results are order-independent under rayon because each
+  replication reads its own slice rather than drawing from a shared stream.
 - **`f64` has no `Ord`.** The candidate sort needs a hand-written total
-  comparator with a stated position for NaN, not `partial_cmp` and a hope —
-  `PLAN.md` §12, PyO3 / maturin practicalities, has why NaN is reachable.
+  comparator with a stated position for NaN, not `partial_cmp` and a hope:
+  sort NaN last **and assert none is produced**. Every input to the score is
+  finite by construction, so a NaN is a defect upstream, and unasserted it
+  surfaces as a segment that quietly never gets funded.
 - **`unsafe` belongs in PyO3 bindings and nowhere else.** One outside a
   binding needs a comment naming the invariant it upholds.
 - `cargo clippy` is the mechanical pass for Rust — ruff does not read `.rs`,
@@ -186,13 +190,12 @@ here.
   reproducible from a seed, so a committed data blob has no reason to exist
   here. The suite reaches no network.
 - **One fixture builds the inputs every parity test shares**, and no test
-  constructs a generator of its own (`PLAN.md` §6.3, Where a parity
-  test's inputs come from).
+  constructs a generator of its own — two fixtures that drift apart make a
+  parity failure a question about the fixtures first.
 - **An analytical check is worth more than a parity check**, because it can be
-  wrong in only one way. `PLAN.md` §6, Validation strategy, has the three
-  layers in order of
-  authority, with the assertions, tolerances and sample sizes; do not restate
-  them here.
+  wrong in only one way. `PLAN.md`, on the validation strategy, has the three
+  layers in order of authority, with the assertions, tolerances and sample
+  sizes; do not restate them here.
 - **A notebook may carry its own assertions.** Where a notebook has already
   computed something whose value is known, `assert` on it in the cell that
   computed it rather than rebuilding the setup under `tests/`. The boundary:
@@ -203,8 +206,8 @@ here.
   weekly and on pushes to `main`; **the notebook suite runs nowhere
   automatically**, so run `pytest -m notebooks` yourself after changing any
   package API a notebook imports, and before opening a pull request that
-  touches one. `README.md` has the commands and `PLAN.md` §10.3, Shiny app
-  integration tests, has what the app suite is for.
+  touches one. `README.md` has the commands, and `PLAN.md`, on the Shiny app
+  integration tests, has what that suite is for.
 
 ## Notebooks and the app
 
@@ -213,15 +216,17 @@ here.
   dependency group installed first; a plain `uv sync` leaves marimo out.
 - **Notebooks and `app/` import from `cablesim` and define no modeling logic.**
   If a notebook needs a function, it belongs in the package. They walk the API
-  layer by layer rather than making one top-level call — `PLAN.md` §8, Marimo
-  notebooks, has why that is a constraint on the package rather than a style.
+  layer by layer rather than making one top-level call: a notebook that cannot
+  show a step without reaching inside the package is a package that has no seam
+  there, so this is a constraint on the package rather than a notebook style.
 - **Number sparsely** so a step can be inserted without renumbering everything
   downstream.
 - Notebooks and the app are entry points, so they may configure logging and
   construct the config. Library modules may not.
-- **The app's design is `PLAN.md` §9, Shiny application** — the Run button and
-  `ExtendedTask`, the smaller interactive defaults, and the denominator that
-  must scale with them or every reliability index is wrong by the ratio.
+- **The app's design is in `PLAN.md`, under the Shiny application** — the Run
+  button and `ExtendedTask`, the smaller interactive defaults, and the
+  denominator that must scale with them or every reliability index is wrong by
+  the ratio.
 
 ## Git and tooling
 
@@ -237,10 +242,10 @@ here.
   Features **squash-merge** into `main` with a message summarizing the whole
   feature, not just the last commit on the branch.
 - **`main` is protected and takes no direct pushes.** Every change arrives
-  through a squash-merged pull request. `PLAN.md` §10.4, Branch protection on
-  `main`, has the rulesets, the setup, and the ways branch protection goes
-  wrong — including why the `test` check is not required yet and why a red
-  check should be treated as blocking anyway.
+  through a squash-merged pull request. `PLAN.md`, on branch protection, has
+  the rulesets, the setup, and the ways branch protection goes wrong —
+  including why the `test` check is not required yet and why a red check should
+  be treated as blocking anyway.
 - **A red check is a finding, not a flake.** Read the failure before re-running
   it. `uv sync --locked` failing means the lockfile does not match
   `pyproject.toml`, and no number of re-runs fixes that.
@@ -250,9 +255,9 @@ here.
   is a human action.
 - Review all commits for quality and style before pushing.
 - **Check for README updates** after changes affecting usage or the public API.
-- **A phase ends in a working, committed state** (`PLAN.md` §11, Phased
-  roadmap). A phase that does not build and does not pass its own tests is not
-  finished.
+- **A phase ends in a working, committed state** — the phases are the roadmap
+  in `PLAN.md`. A phase that does not build and does not pass its own tests is
+  not finished.
 
 Tooling configuration lives in the file that configures it, not here —
 restating it in prose creates drift: **`pyproject.toml`** (maturin build
@@ -327,11 +332,22 @@ message; would this sentence still teach a new reader anything?**
 `comment-docstring` owns the examples and greps.
 
 Point to durable references freely — a README section, another module, an
-external spec, and `PLAN.md`, which is where the modeling decisions are argued.
-**Cite the number and the title**, as in "`PLAN.md` §2.3, Effective scale":
-inserting a section renumbers every one after it, and a bare number then points
-confidently at the wrong place, while a number plus a title shows the mismatch
-on sight.
+external spec. Where one has numbered parts, **cite the number and the title**
+together: inserting a part renumbers every one after it, and a bare number then
+points confidently at the wrong place, while a number plus a title shows the
+mismatch on sight.
+
+**`PLAN.md` is not a durable reference, and nothing outside it cites a section
+of it.** It is a working document: sections are inserted, renumbered and
+rewritten as the project moves, and a citation into it rots without anything
+reporting that it has. Its own internal cross-references are a different case
+and stay — a test checks that every one of them resolves, which is exactly the
+check an outward citation cannot have. Where a comment, docstring or rule needs a fact the plan argues, **state
+the fact where it is needed** — that is what a reader with this file and
+nothing else can act on. Where the plan is genuinely the place to go and
+restating it would take a paragraph, name the topic rather than the number, so
+a stale pointer degrades into a search rather than into a confident pointer at
+the wrong section.
 
 - **Pull-request and issue bodies, at a stricter bar.** Their reader has the
   diff and little else, so even a pointer into this repo fails when the diff

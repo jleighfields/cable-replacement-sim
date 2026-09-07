@@ -31,19 +31,20 @@ Customer minutes interrupted (CMI) — the undivided total the duration index
 divides — is not a fourth column. It is the saved ``customer_minutes`` column
 unchanged, so it is read under that name rather than copied under another one.
 
-``PLAN.md`` section 2.6, Reliability metrics, argues the definitions and why
-the denominator is a configured system total rather than a sum over segments.
+Both indices divide by the configured system-wide customer count, **not** by a
+sum over segments: customers are counted downstream of each asset, so a
+feeder's count already contains the laterals' below it and summing would
+double-count along every radial path.
 """
 
 import polars as pl
 
-QUANTILES: tuple[float, float] = (0.1, 0.9)
+BAND_QUANTILES: tuple[float, float] = (0.1, 0.9)
 """The band's lower and upper quantiles.
 
-Not a parameter. ``plots.trajectory`` builds the column names it reads as
+Not a parameter: ``plots.trajectory`` builds the column names it reads as
 ``_p10`` and ``_p90`` literally, so any other pair produces columns it raises
-on — a knob with one usable value. Changing the band means changing both, which
-is why they sit together.
+on. Changing the band means changing both.
 """
 
 UNPLANNED_COLUMNS: tuple[str, ...] = (
@@ -54,7 +55,7 @@ UNPLANNED_COLUMNS: tuple[str, ...] = (
 """What the reliability indices are built from."""
 
 
-def per_replication(
+def indices_per_replication(
     frame: pl.LazyFrame, total_customers: float, by: tuple[str, ...] = ()
 ) -> pl.LazyFrame:
     """Totals over segment classes and forms the indices, per replication year.
@@ -63,15 +64,10 @@ def per_replication(
     because a system total cannot be decomposed afterwards and the per-class
     detail is what failure-by-class figures are drawn from.
 
-    The system customer count is a configured figure and **not** the sum over
-    segments: customers are counted downstream of each asset, so a feeder's
-    count already contains the laterals' below it and summing would
-    double-count along every radial path.
-
     Args:
         frame: Saved rows, as a run wrote them.
         total_customers: System-wide customers served, the denominator of both
-            indices.
+            indices; a configured figure rather than a sum over segments.
         by: Extra columns to keep as grouping keys, for a frame holding more
             than one run. A sweep's rows differ only in a swept column, so
             without naming it here two budget levels for one policy,
@@ -92,14 +88,12 @@ def per_replication(
             risk_ranked  0  0  main_feeder  100.0  6000.0
             risk_ranked  0  0  lateral_1ph  150.0  1500.0
 
-            >>> per_replication(saved.lazy(), 1000.0).collect().select(
+            >>> indices_per_replication(saved.lazy(), 1000.0).collect().select(
             ...     "customers_interrupted", "saifi", "saidi", "caidi")
             250.0  0.25  7.5  30.0
 
-        The class axis is gone and the keys that survive are exactly
-        ``policy``, ``replication`` and ``year`` — so a frame holding more
-        than one run, as ``results.read_sweep`` returns, has its runs summed
-        together rather than kept apart.
+        The class axis is gone and the surviving keys are exactly ``policy``,
+        ``replication`` and ``year``.
     """
     keys = ["policy", "replication", "year", *by]
     totals = frame.group_by(keys).agg(
@@ -133,10 +127,9 @@ def discount(frame: pl.LazyFrame, rate: float) -> pl.LazyFrame:
 
     Costs accumulate in nominal terms inside the annual loop and are discounted
     here, because discounting is a reduction over a saved stream and the loop
-    does not need to know about it. Over a thirty-year horizon an undiscounted
-    total overstates late spending badly enough that cost per customer-minute
-    avoided is hard to defend without it, since utility planning is done on a
-    present-value basis.
+    does not need to know about it. Utility planning is done on a present-value
+    basis, and over a thirty-year horizon an undiscounted total weights a
+    year-29 dollar the same as a year-0 one.
 
     Args:
         frame: Rows carrying a ``year`` column and the spend columns.
@@ -154,7 +147,7 @@ def discount(frame: pl.LazyFrame, rate: float) -> pl.LazyFrame:
     )
 
 
-def bands(
+def summarize_replications(
     frame: pl.LazyFrame, columns: list[str], by: tuple[str, ...] = ()
 ) -> pl.LazyFrame:
     """Summarizes across replications into a mean and an interval.
@@ -166,15 +159,15 @@ def bands(
     Args:
         frame: Per-replication rows.
         columns: Which quantities to summarize.
-        by: Extra columns to keep as grouping keys, as in ``per_replication``.
+        by: Extra columns to keep as grouping keys, as in ``indices_per_replication``.
 
     Returns:
         One row per policy and year, plus one per extra grouping key. Each
         name in ``columns`` becomes three: ``<name>_mean``, and a pair named
-        for ``QUANTILES`` as whole percents — ``<name>_p10`` and
+        for ``BAND_QUANTILES`` as whole percents — ``<name>_p10`` and
         ``<name>_p90``, which is what ``plots.trajectory`` looks for.
     """
-    lower, upper = QUANTILES
+    lower, upper = BAND_QUANTILES
     return (
         frame.group_by(["policy", "year", *by])
         .agg(
@@ -201,7 +194,7 @@ def horizon_totals(frame: pl.LazyFrame, by: tuple[str, ...] = ()) -> pl.LazyFram
 
     Args:
         frame: Per-replication rows, already discounted.
-        by: Extra columns to keep as grouping keys, as in ``per_replication``.
+        by: Extra columns to keep as grouping keys, as in ``indices_per_replication``.
 
     Returns:
         One row per policy, and per extra grouping key.

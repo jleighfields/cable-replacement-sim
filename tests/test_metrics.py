@@ -41,14 +41,14 @@ def rows(**overrides: object) -> pl.LazyFrame:
 
 def test_the_frequency_index_divides_customers_by_the_system_total() -> None:
     """One hundred customers out of a thousand is 0.1 interruptions each."""
-    result = metrics.per_replication(rows(), TOTAL_CUSTOMERS).collect()
+    result = metrics.indices_per_replication(rows(), TOTAL_CUSTOMERS).collect()
 
     assert result["saifi"].item() == pytest.approx(0.1)
 
 
 def test_the_duration_index_divides_customer_minutes_by_the_same_total() -> None:
     """Six thousand customer-minutes over a thousand customers is six each."""
-    result = metrics.per_replication(rows(), TOTAL_CUSTOMERS).collect()
+    result = metrics.indices_per_replication(rows(), TOTAL_CUSTOMERS).collect()
 
     assert result["saidi"].item() == pytest.approx(6.0)
 
@@ -60,8 +60,8 @@ def test_planned_work_enters_no_reliability_index() -> None:
     to the frequency index would make their ratio divide two different
     populations of outage.
     """
-    without = metrics.per_replication(rows(), TOTAL_CUSTOMERS).collect()
-    with_more = metrics.per_replication(
+    without = metrics.indices_per_replication(rows(), TOTAL_CUSTOMERS).collect()
+    with_more = metrics.indices_per_replication(
         rows(planned_customer_minutes=999_999.0), TOTAL_CUSTOMERS
     ).collect()
 
@@ -72,7 +72,7 @@ def test_planned_work_enters_no_reliability_index() -> None:
 
 def test_average_duration_is_the_ratio_of_the_two_indices() -> None:
     """Six minutes each over 0.1 interruptions each is sixty minutes apiece."""
-    result = metrics.per_replication(rows(), TOTAL_CUSTOMERS).collect()
+    result = metrics.indices_per_replication(rows(), TOTAL_CUSTOMERS).collect()
 
     assert result["caidi"].item() == pytest.approx(60.0)
 
@@ -85,7 +85,7 @@ def test_average_duration_is_undefined_in_a_year_with_no_failures() -> None:
     """
     quiet = rows(customers_interrupted=0.0, customer_minutes=0.0, failures=0.0)
 
-    result = metrics.per_replication(quiet, TOTAL_CUSTOMERS).collect()
+    result = metrics.indices_per_replication(quiet, TOTAL_CUSTOMERS).collect()
 
     assert result["caidi"].item() is None
 
@@ -99,7 +99,7 @@ def test_classes_are_summed_before_the_indices_are_formed() -> None:
         ]
     )
 
-    result = metrics.per_replication(two_classes, TOTAL_CUSTOMERS).collect()
+    result = metrics.indices_per_replication(two_classes, TOTAL_CUSTOMERS).collect()
 
     assert result.height == 1, "one row per policy, replication and year"
     assert result["saifi"].item() == pytest.approx(0.25)
@@ -111,7 +111,7 @@ def test_discounting_leaves_year_zero_alone_and_shrinks_later_years() -> None:
 
     result = (
         metrics.discount(
-            metrics.per_replication(frame, TOTAL_CUSTOMERS), rate=0.06
+            metrics.indices_per_replication(frame, TOTAL_CUSTOMERS), rate=0.06
         )
         .collect()
         .sort("year")
@@ -150,7 +150,9 @@ def test_a_horizon_total_sums_each_replication_before_averaging() -> None:
     )
 
     totals = metrics.horizon_totals(
-        metrics.discount(metrics.per_replication(frame, TOTAL_CUSTOMERS), rate=0.0)
+        metrics.discount(
+            metrics.indices_per_replication(frame, TOTAL_CUSTOMERS), rate=0.0
+        )
     ).collect()
 
     assert totals["planned_spend"].item() == pytest.approx(1_000.0)
@@ -175,9 +177,13 @@ def test_bands_summarize_across_replications_rather_than_collapsing_years() -> N
         ]
     )
 
-    banded = metrics.bands(
-        metrics.per_replication(frame, TOTAL_CUSTOMERS), ["saidi"]
-    ).collect().sort("year")
+    banded = (
+        metrics.summarize_replications(
+            metrics.indices_per_replication(frame, TOTAL_CUSTOMERS), ["saidi"]
+        )
+        .collect()
+        .sort("year")
+    )
 
     assert banded.height == 3, "one row per year, not one row overall"
     # Year means are 2, 12 and 22 customer-minutes per customer.
@@ -197,7 +203,7 @@ def test_avoided_minutes_are_measured_against_the_configured_baseline() -> None:
     compared = metrics.against_baseline(
         metrics.horizon_totals(
             metrics.discount(
-                metrics.per_replication(frame, TOTAL_CUSTOMERS), rate=0.06
+                metrics.indices_per_replication(frame, TOTAL_CUSTOMERS), rate=0.06
             )
         ),
         "run_to_failure",
@@ -226,7 +232,7 @@ def test_cost_per_minute_avoided_is_undefined_where_nothing_was_avoided() -> Non
     compared = metrics.against_baseline(
         metrics.horizon_totals(
             metrics.discount(
-                metrics.per_replication(frame, TOTAL_CUSTOMERS), rate=0.06
+                metrics.indices_per_replication(frame, TOTAL_CUSTOMERS), rate=0.06
             )
         ),
         "run_to_failure",
@@ -238,7 +244,9 @@ def test_cost_per_minute_avoided_is_undefined_where_nothing_was_avoided() -> Non
 def test_a_baseline_that_is_not_in_the_results_is_refused() -> None:
     """Otherwise every avoided column comes back null and looks computed."""
     totals = metrics.horizon_totals(
-        metrics.discount(metrics.per_replication(rows(), TOTAL_CUSTOMERS), rate=0.06)
+        metrics.discount(
+            metrics.indices_per_replication(rows(), TOTAL_CUSTOMERS), rate=0.06
+        )
     )
 
     with pytest.raises(ValueError, match="is not in these results"):
@@ -263,7 +271,7 @@ def test_a_sweep_of_two_budget_levels_is_not_reduced_into_one_row() -> None:
         ]
     )
 
-    reduced = metrics.per_replication(
+    reduced = metrics.indices_per_replication(
         sweep, TOTAL_CUSTOMERS, by=("annual_budget",)
     ).collect()
 
@@ -290,8 +298,8 @@ def test_every_reduction_keeps_the_swept_column_apart() -> None:
     )
     keys = ("annual_budget",)
 
-    per = metrics.per_replication(sweep, TOTAL_CUSTOMERS, by=keys)
-    banded = metrics.bands(per, ["saidi"], by=keys).collect()
+    per = metrics.indices_per_replication(sweep, TOTAL_CUSTOMERS, by=keys)
+    banded = metrics.summarize_replications(per, ["saidi"], by=keys).collect()
     totals = metrics.horizon_totals(metrics.discount(per, 0.0), by=keys).collect()
 
     assert banded.height == 4, "two levels times two years"
@@ -327,7 +335,9 @@ def test_each_budget_level_is_measured_against_its_own_baseline() -> None:
     compared = metrics.against_baseline(
         metrics.horizon_totals(
             metrics.discount(
-                metrics.per_replication(pl.concat(levels), TOTAL_CUSTOMERS, by=keys),
+                metrics.indices_per_replication(
+                    pl.concat(levels), TOTAL_CUSTOMERS, by=keys
+                ),
                 rate=0.0,
             ),
             by=keys,
@@ -378,7 +388,7 @@ def test_extra_spend_is_measured_in_the_direction_it_is_named() -> None:
     compared = metrics.against_baseline(
         metrics.horizon_totals(
             metrics.discount(
-                metrics.per_replication(frame, TOTAL_CUSTOMERS), rate=0.0
+                metrics.indices_per_replication(frame, TOTAL_CUSTOMERS), rate=0.0
             )
         ),
         "run_to_failure",
@@ -408,7 +418,7 @@ def test_a_baseline_missing_at_one_level_is_refused() -> None:
     keys = ("annual_budget",)
     totals = metrics.horizon_totals(
         metrics.discount(
-            metrics.per_replication(frame, TOTAL_CUSTOMERS, by=keys), rate=0.0
+            metrics.indices_per_replication(frame, TOTAL_CUSTOMERS, by=keys), rate=0.0
         ),
         by=keys,
     )
@@ -426,7 +436,9 @@ def test_an_empty_set_of_totals_is_refused_rather_than_returned_empty() -> None:
     )
     empty = metrics.horizon_totals(
         metrics.discount(
-            metrics.per_replication(no_rows, TOTAL_CUSTOMERS, by=("annual_budget",)),
+            metrics.indices_per_replication(
+                no_rows, TOTAL_CUSTOMERS, by=("annual_budget",)
+            ),
             rate=0.0,
         ),
         by=("annual_budget",),

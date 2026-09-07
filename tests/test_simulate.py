@@ -90,7 +90,7 @@ def test_forcing_the_scale_to_zero_fails_every_segment_every_year() -> None:
     can fail twice in one year and the year loop needs no inner iteration.
     Without that rule this case does not terminate.
     """
-    results = simulate.simulate(
+    results = simulate.run_chunk(
         **inputs(
             scale=np.full(N_SEGMENTS, FAILS_AT_ONCE),
             replacement_scale=np.full(N_SEGMENTS, FAILS_AT_ONCE),
@@ -107,7 +107,7 @@ def test_forcing_the_scale_to_zero_fails_every_segment_every_year() -> None:
 
 def test_forcing_the_scale_past_the_horizon_fails_nothing() -> None:
     """The other end of the deterministic case."""
-    results = simulate.simulate(
+    results = simulate.run_chunk(
         **inputs(
             scale=np.full(N_SEGMENTS, NEVER_FAILS),
             replacement_scale=np.full(N_SEGMENTS, NEVER_FAILS),
@@ -127,7 +127,7 @@ def test_the_initial_draw_is_conditional_on_the_age_already_survived() -> None:
     of new cable — about 47 years at this uniform — and fail nowhere inside the
     horizon, which is a run that completes with plausible-looking curves.
     """
-    results = simulate.simulate(
+    results = simulate.run_chunk(
         **inputs(
             age0=np.full(N_SEGMENTS, 80.0),
             lifetime_uniforms=np.full((1, N_SEGMENTS, N_YEARS + 1), 0.5),
@@ -146,7 +146,7 @@ def test_a_segment_that_failed_this_year_is_not_also_planned_work() -> None:
     population has an empty candidate set every year despite an unlimited
     budget.
     """
-    results = simulate.simulate(
+    results = simulate.run_chunk(
         **inputs(
             policy=resolved("risk_ranked"),
             scale=np.full(N_SEGMENTS, FAILS_AT_ONCE),
@@ -166,7 +166,7 @@ def test_unspent_budget_does_not_carry_into_the_next_year() -> None:
     would reach 2,800 by the second year and fund one, which is what this
     refuses.
     """
-    results = simulate.simulate(
+    results = simulate.run_chunk(
         **inputs(
             policy=resolved("risk_ranked"),
             budget=np.full(N_YEARS, 1_400.0),
@@ -180,7 +180,7 @@ def test_unspent_budget_does_not_carry_into_the_next_year() -> None:
 
 def test_the_budget_funds_candidates_down_the_ranked_order() -> None:
     """Three segments at 1,500 fit inside 5,000; the fourth does not."""
-    results = simulate.simulate(
+    results = simulate.run_chunk(
         **inputs(
             policy=resolved("risk_ranked"),
             budget=np.array([5_000.0, 0.0, 0.0]),
@@ -201,7 +201,7 @@ def test_planned_work_reports_its_customer_minutes_outside_the_indices() -> None
     but the indices are defined over unplanned interruptions, so the two totals
     stay apart.
     """
-    results = simulate.simulate(
+    results = simulate.run_chunk(
         **inputs(
             policy=resolved("risk_ranked"),
             budget=np.array([1e9, 0.0, 0.0]),
@@ -231,8 +231,8 @@ def test_charging_emergency_spend_to_the_budget_crowds_out_planned_work() -> Non
         replacement_scale=scale,
     )
 
-    separate = simulate.simulate(**{**arguments, "emergency_charged_to_budget": False})
-    charged = simulate.simulate(**{**arguments, "emergency_charged_to_budget": True})
+    separate = simulate.run_chunk(**{**arguments, "emergency_charged_to_budget": False})
+    charged = simulate.run_chunk(**{**arguments, "emergency_charged_to_budget": True})
 
     assert separate.planned_replacements[0, 0].sum() == 3.0
     assert charged.planned_replacements[0, 0].sum() == 0.0
@@ -242,7 +242,7 @@ def test_charging_emergency_spend_to_the_budget_crowds_out_planned_work() -> Non
 
 def test_a_tie_is_broken_on_segment_identifier_when_only_one_fits() -> None:
     """Equal ages, a budget for exactly one, and the lower identifier wins."""
-    results = simulate.simulate(
+    results = simulate.run_chunk(
         **inputs(
             policy=resolved("age_threshold", threshold_years=5),
             age0=np.full(N_SEGMENTS, 40.0),
@@ -270,7 +270,7 @@ def test_every_policy_at_zero_budget_matches_run_to_failure() -> None:
     # at the default ages nothing fails in three years and the comparison
     # below would hold for the wrong reason.
     aged = np.array([60.0, 70.0, 80.0, 85.0])
-    baseline = simulate.simulate(
+    baseline = simulate.run_chunk(
         **inputs(age0=aged, lifetime_uniforms=draws, budget=np.full(N_YEARS, 1e9))
     )
     assert baseline.failures.any(), "the comparison is vacuous without failures"
@@ -282,7 +282,7 @@ def test_every_policy_at_zero_budget_matches_run_to_failure() -> None:
         ("worst_first", {}),
         ("random", {}),
     ):
-        starved = simulate.simulate(
+        starved = simulate.run_chunk(
             **inputs(
                 policy=resolved(name, **params),
                 age0=aged,
@@ -299,7 +299,7 @@ def test_every_policy_at_zero_budget_matches_run_to_failure() -> None:
 def test_a_draw_array_with_the_wrong_year_axis_is_refused() -> None:
     """It would otherwise raise only if a replacement fell in the final year."""
     with pytest.raises(ValueError, match="lifetime_uniforms"):
-        simulate.simulate(
+        simulate.run_chunk(
             **inputs(lifetime_uniforms=np.full((1, N_SEGMENTS, N_YEARS), 0.5))
         )
 
@@ -311,7 +311,7 @@ def test_cost_escalation_lifts_every_dollar_in_the_year_together() -> None:
     cost term, so the multiplier applies to both or to neither.
     """
     escalation = np.array([1.0, 2.0, 4.0])
-    results = simulate.simulate(
+    results = simulate.run_chunk(
         **inputs(
             cost_escalation=escalation,
             scale=np.full(N_SEGMENTS, FAILS_AT_ONCE),
@@ -332,7 +332,7 @@ def test_a_replaced_segment_is_age_zero_when_the_next_year_is_scored() -> None:
     now between the other three and segment 1 wins it; in year 2, segment 2.
     Without the reset, segment 0 stays oldest-equal and is funded three times.
     """
-    results = simulate.simulate(
+    results = simulate.run_chunk(
         **inputs(
             policy=resolved("age_threshold", threshold_years=40),
             age0=np.full(N_SEGMENTS, 40.0),
@@ -357,7 +357,7 @@ def test_the_value_of_lost_load_escalates_with_construction_cost() -> None:
     only construction and the second overtakes the first, and it is dear enough
     that the budget then funds nothing at all.
     """
-    results = simulate.simulate(
+    results = simulate.run_chunk(
         **inputs(
             policy=resolved("risk_ranked"),
             # Planned cost is 1,000 and 6,000 at par, so 4,000 and 24,000 once
@@ -400,7 +400,7 @@ def test_a_replacement_reads_the_draw_for_the_year_it_enters_service() -> None:
     # past the horizon, so the two cells give opposite answers.
     draws[0, :, 1] = 1e-12
 
-    results = simulate.simulate(
+    results = simulate.run_chunk(
         **inputs(
             age0=np.full(N_SEGMENTS, 80.0),
             lifetime_uniforms=draws,
@@ -427,7 +427,7 @@ def test_a_replaced_segment_is_scored_at_age_zero_not_age_one() -> None:
     just-replaced segment is the youngest either way and ranks last either way,
     so being wrongly eligible costs it nothing and the error is invisible.
     """
-    results = simulate.simulate(
+    results = simulate.run_chunk(
         **inputs(
             policy=resolved("age_threshold", threshold_years=1),
             age0=np.full(N_SEGMENTS, 40.0),

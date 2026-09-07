@@ -107,7 +107,7 @@ def test_the_risk_score_needs_its_avoided_cost_term() -> None:
 
 
 def test_worst_first_ignores_consequence_and_risk_ranked_does_not() -> None:
-    """This is the whole point of carrying `worst_first` as a control.
+    """`worst_first` is the control that isolates weighting by consequence.
 
     The two policies must be able to disagree, or the gap between them measures
     nothing.
@@ -126,11 +126,11 @@ def test_worst_first_ignores_consequence_and_risk_ranked_does_not() -> None:
     }
     candidates = np.array([0, 1])
 
-    worst = policies.order(
+    worst = policies.order_by_rank(
         policies.rank_key(policies.resolve(spec("worst_first")), **arguments),
         candidates,
     )
-    risk = policies.order(
+    risk = policies.order_by_rank(
         policies.rank_key(policies.resolve(spec("risk_ranked")), **arguments),
         candidates,
     )
@@ -151,11 +151,11 @@ def test_ranking_per_dollar_reorders_against_the_raw_score() -> None:
     }
     candidates = np.array([0, 1])
 
-    raw = policies.order(
+    raw = policies.order_by_rank(
         policies.rank_key(policies.resolve(spec("risk_ranked")), **arguments),
         candidates,
     )
-    per_dollar = policies.order(
+    per_dollar = policies.order_by_rank(
         policies.rank_key(
             policies.resolve(spec("risk_ranked", rank_by="score_per_dollar")),
             **arguments,
@@ -217,14 +217,14 @@ def test_ties_are_broken_on_segment_identifier_ascending() -> None:
     """
     rank = np.array([7.0, 9.0, 7.0, 9.0])
 
-    assert policies.order(rank, np.array([0, 1, 2, 3])).tolist() == [1, 3, 0, 2]
+    assert policies.order_by_rank(rank, np.array([0, 1, 2, 3])).tolist() == [1, 3, 0, 2]
 
 
 def test_a_segment_left_out_of_the_candidates_is_not_ordered() -> None:
     """Ordering reads the mask, not just the scores."""
     rank = np.array([1.0, 99.0, 2.0])
 
-    assert policies.order(rank, np.array([0, 2])).tolist() == [2, 0]
+    assert policies.order_by_rank(rank, np.array([0, 2])).tolist() == [2, 0]
 
 
 def test_a_candidate_that_scores_nan_is_refused_rather_than_sorted_last() -> None:
@@ -236,14 +236,14 @@ def test_a_candidate_that_scores_nan_is_refused_rather_than_sorted_last() -> Non
     rank = np.array([1.0, np.nan, 3.0])
 
     with pytest.raises(ValueError, match="NaN"):
-        policies.order(rank, np.array([0, 1, 2]))
+        policies.order_by_rank(rank, np.array([0, 1, 2]))
 
 
 def test_a_nan_outside_the_candidate_set_is_not_an_error() -> None:
     """Only what is ranked has to be rankable."""
     rank = np.array([1.0, np.nan, 3.0])
 
-    assert policies.order(rank, np.array([0, 2])).tolist() == [2, 0]
+    assert policies.order_by_rank(rank, np.array([0, 2])).tolist() == [2, 0]
 
 
 def test_planned_cost_carries_mobilization_so_short_segments_cost_more() -> None:

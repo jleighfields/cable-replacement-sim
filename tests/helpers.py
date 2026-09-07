@@ -74,3 +74,19 @@ def section_citations(text: str) -> set[str]:
     # matches only the prefixed spellings leaves most references unchecked.
     bare = re.findall(r"(?<![\w.])(\d+\.\d+), [A-Z]", flat)
     return set(prefixed) | set(bare)
+
+
+def plan_citations(text: str) -> list[str]:
+    """Finds citations of a numbered section of the standing plan.
+
+    Matches the spellings the project has actually used — ``PLAN.md`` followed
+    by a section number, with or without a "section" or "§" between them.
+
+    Args:
+        text: The file contents to scan.
+
+    Returns:
+        Every citation found, in document order.
+    """
+    pattern = r"PLAN\.md`?[^.\n]{0,12}?(?:§|[Ss]ection\s*)\d+(?:\.\d+)*"
+    return re.findall(pattern, text)

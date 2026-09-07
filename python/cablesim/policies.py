@@ -3,8 +3,9 @@
 Each year the annual loop asks three questions of every segment: may it be
 replaced, if several may then which first, and how far down that order the
 budget reaches. This module answers all three, over whole arrays, for the five
-policies of ``PLAN.md`` section 2.8, Replacement policies. The year loop that
-calls it is ``simulate.py``.
+policies ``KIND`` names: ``run_to_failure``, ``age_threshold``,
+``risk_ranked``, ``worst_first`` and ``random``. The year loop that calls it is
+``simulate.py``.
 
 Two policies exist as controls rather than as proposals. ``worst_first`` ranks
 on failure probability alone, so the gap between it and ``risk_ranked`` is the
@@ -197,7 +198,7 @@ def eligible(
     return (age >= policy.threshold_years) & ~replaced_this_year
 
 
-def order(rank: np.ndarray, candidates: np.ndarray) -> np.ndarray:
+def order_by_rank(rank: np.ndarray, candidates: np.ndarray) -> np.ndarray:
     """Orders eligible segments by rank, breaking ties on segment identifier.
 
     The key is ``(rank descending, segment_id ascending)`` and is **total**, so
@@ -243,7 +244,7 @@ def fund(ranked: np.ndarray, planned: np.ndarray, budget: float) -> np.ndarray:
     cumulative cost in rank order and cut at the first candidate that exceeds
     what is available. The alternative — passing over an unaffordable candidate
     and continuing to fund cheaper ones below it — spends more of the budget,
-    but it is an unjustified knapsack heuristic and it is inherently
+    but it is a knapsack heuristic with nothing behind it and it is inherently
     sequential, so no vectorized implementation could reproduce it. Ranking per
     dollar is what compensates for a cheap candidate being passed over, and it
     does so in the ranking rather than in the fill.
@@ -252,8 +253,8 @@ def fund(ranked: np.ndarray, planned: np.ndarray, budget: float) -> np.ndarray:
     spending may not exceed the budget, not that it must fall short.
 
     Args:
-        ranked: Eligible segment indices, best first, as ``order`` returns
-            them.
+        ranked: Eligible segment indices, best first, as ``order_by_rank``
+            returns them.
         planned: Planned replacement cost per segment, in dollars, already
             carrying the year's cost escalation.
         budget: What this year has to spend, in dollars.
