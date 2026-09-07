@@ -22,6 +22,7 @@ extension-module = ["pyo3/extension-module"]
 [dependencies]
 numpy = "0.27"
 pyo3 = { version = "0.27", features = ["abi3-py311"] }
+rayon = "1.12.0"
 
 [profile.release]
 # The parity tests run many replications, so the kernel is only worth

@@ -44,15 +44,20 @@ MANIFEST_NAME = "manifest.json"
 IMPLEMENTATIONS: tuple[str, ...] = (
     "reference",
     "batched_numpy",
-    "batched_polars",
     "kernel",
 )
 """The implementations of the annual loop a result can come from.
 
 These name the *role* rather than the module: the reference is the one a parity
-failure is arbitrated against, whatever file it lives in. Two of the four do
-not exist yet, and the set is closed anyway, because a misspelled
-implementation in a manifest is provenance that reads as fact and is not.
+failure is arbitrated against, whatever file it lives in. The set is closed
+because a misspelled implementation in a manifest is provenance that reads as
+fact and is not.
+
+``batched_numpy`` and ``kernel`` are the same algorithm in the two languages,
+which is the comparison this project exists to make.
+
+Two frame implementations were here and are not: they are in ``deprecated/``,
+with the measurement that retired them.
 """
 
 SCHEMA: dict[str, pl.DataType] = {
@@ -262,7 +267,7 @@ def rows_from_chunk(
 
 def write_run(
     root: pathlib.Path,
-    frame: pl.DataFrame,
+    frame: pl.DataFrame | pl.LazyFrame,
     config: config_module.Config,
     manifest: Manifest,
 ) -> pathlib.Path:
@@ -275,7 +280,13 @@ def write_run(
 
     Args:
         root: Where run directories live.
-        frame: The rows to save.
+        frame: The rows to save, in either form. **A lazy frame is streamed to
+            disk rather than materialized**, which is what lets a run whose
+            rows would not fit in memory still be written: rows scale with
+            replications, so a hundred thousand of them is four gigabytes where
+            a thousand is forty megabytes. An eager frame is written directly,
+            because a caller that already holds one gains nothing by being made
+            to wrap it.
         config: The effective configuration, already validated.
         manifest: The run's provenance.
 
@@ -284,7 +295,10 @@ def write_run(
     """
     directory = root / manifest.run_id
     directory.mkdir(parents=True, exist_ok=True)
-    frame.write_parquet(directory / RESULTS_NAME)
+    if isinstance(frame, pl.LazyFrame):
+        frame.sink_parquet(directory / RESULTS_NAME)
+    else:
+        frame.write_parquet(directory / RESULTS_NAME)
     (directory / CONFIG_NAME).write_text(
         yaml.safe_dump(config.model_dump(mode="json"), sort_keys=False),
         encoding="utf-8",

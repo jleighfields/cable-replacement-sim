@@ -10,27 +10,28 @@ kernel are interchangeable here — which is what lets a parity test drive both
 through one path rather than through two that could differ in how they are
 driven.
 
-Replications are processed in chunks because the draw array is the largest
-thing in a run: at a thousand replications, twelve thousand segments and a
-thirty-year horizon it is three gigabytes, and fifty replications at a time
-makes it a hundred and fifty megabytes. The chunk size changes no number, since
-every replication reads its own children of the stream whatever the chunking,
-so it is an argument here and provenance in the manifest rather than a
-configured parameter.
+Replications are processed in chunks because the result arrays grow with the
+replication count: seven of them at `(replications, years, classes)`, plus
+whatever the implementation holds in flight, which for the batched loops is a
+`(replications, segments)` working set. The chunk size changes no number, since
+every draw is a function of the key and of a position that carries the
+replication's index in the whole run, so it is an argument here and provenance
+in the manifest rather than a configured parameter.
 """
 
 import datetime
 import logging
 import pathlib
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Iterable
 
 import numpy as np
 import polars as pl
 
-from cablesim import config as config_module
 from cablesim import (
+    batched,
     constants,
     kernel,
     policies,
@@ -39,6 +40,7 @@ from cablesim import (
     results,
     simulate,
 )
+from cablesim import config as config_module
 
 log = logging.getLogger(__name__)
 
@@ -97,15 +99,14 @@ the kernel's binding has to mirror, since every call here is by keyword.
 
 RUNNABLE: dict[str, Implementation] = {
     "reference": simulate.run_chunk,
+    "batched_numpy": batched.run_chunk_numpy,
     "kernel": kernel.run_chunk,
 }
 """The annual loops that exist, by the name a manifest records them under.
 
 Named for what it holds rather than for the set it draws from: ``results``
 carries the closed set of names a saved run may claim, and this is the subset
-with something behind it. Two of those four — the batched baselines — have no
-implementation yet and so are absent here rather than mapped to something that
-would run.
+with something behind it.
 
 The keys must all be names ``results`` accepts, which is checked below rather
 than left to the manifest validator. Left there, a misspelling would be taken
@@ -243,7 +244,9 @@ def simulate_policy(
     class_names: list[str],
     implementation: Implementation,
     batch_size: int,
-) -> pl.DataFrame:
+    threads: int,
+    parts: pathlib.Path,
+) -> list[pathlib.Path]:
     """Runs every replication under one policy, chunk by chunk.
 
     Args:
@@ -253,13 +256,29 @@ def simulate_policy(
         class_names: Segment class names in class-index order.
         implementation: The annual loop to call.
         batch_size: Replications per call.
+        threads: Workers to spread each chunk's replications over. Passed to
+            every implementation rather than only to the ones that can use it,
+            so an implementation that cannot refuses the request instead of
+            leaving the caller to believe it was honoured.
+        parts: Where to write each chunk's rows.
 
     Returns:
-        Every replication's rows for this policy.
+        One file per chunk, in the order the chunks were run.
+
+        **Written out rather than accumulated**, so that what a run holds at
+        once is one chunk's rows rather than every chunk of every policy. Rows
+        scale with the replication count — forty megabytes at a thousand
+        replications and four gigabytes at a hundred thousand — and that count
+        is exactly the knob someone turns to narrow a confidence interval. The
+        files are concatenated lazily at the end, so the whole is never
+        materialized either.
     """
     simulation = settings.simulation
-    n_segments = segments["age0"].size
-    sources = random_draws.spawn_sources(simulation.seed)
+    # One key for the whole run, from which every draw is computed by position.
+    # A chunk needs no state of its own, which is what makes the chunking
+    # provenance rather than a parameter: replication 7 meets the same draws
+    # whichever chunk it landed in.
+    key = random_draws.draw_key(simulation.seed)
     resolved = policies.resolve(spec)
     budget = settings.budget.annual * escalation_series(
         settings.budget.escalation, simulation.n_years
@@ -268,16 +287,15 @@ def simulate_policy(
         settings.costs.escalation_rate, simulation.n_years
     )
 
-    blocks = []
-    for replications in replication_chunks(simulation.n_reps, batch_size):
+    written = []
+    for index, replications in enumerate(
+        replication_chunks(simulation.n_reps, batch_size)
+    ):
         block = implementation(
             **segments,
-            lifetime_uniforms=random_draws.replication_uniforms(
-                sources.lifetimes, replications, (n_segments, simulation.n_years + 1)
-            ),
-            policy_uniforms=random_draws.replication_uniforms(
-                sources.policies, replications, (n_segments,)
-            ),
+            draw_key=key,
+            first_replication=replications.start,
+            n_reps=len(replications),
             budget=budget,
             cost_escalation=cost_escalation,
             policy=resolved,
@@ -286,11 +304,14 @@ def simulate_policy(
             emergency_charged_to_budget=settings.budget.emergency_charged_to_budget,
             n_classes=len(class_names),
             n_years=simulation.n_years,
+            threads=threads,
         )
-        blocks.append(
-            results.rows_from_chunk(block, spec.name, class_names, replications.start)
-        )
-    return pl.concat(blocks)
+        part = parts / f"{spec.name}-{index:04d}.parquet"
+        results.rows_from_chunk(
+            block, spec.name, class_names, replications.start
+        ).write_parquet(part)
+        written.append(part)
+    return written
 
 
 def run(
@@ -298,6 +319,7 @@ def run(
     root: pathlib.Path,
     implementation: str = "reference",
     batch_size: int = DEFAULT_BATCH_SIZE,
+    threads: int = 1,
     swept: dict[str, float] | None = None,
 ) -> pathlib.Path:
     """Runs one configuration for every policy and writes the result.
@@ -314,6 +336,12 @@ def run(
             kernel ran, and absent for pure Python rather than invented, since
             a timing from the kernel without one means nothing.
         batch_size: Replications per call.
+        threads: Workers to spread each chunk's replications over, recorded in
+            the manifest beside the implementation and the build profile. Only
+            the compute kernel can use more than one; every other
+            implementation refuses, so a manifest cannot claim a thread count
+            that nothing acted on. ``kernel.AVAILABLE_THREADS`` is this
+            machine's count.
         swept: Values that vary between the runs of a sweep, written into the
             saved rows as columns. A frame carrying its own parameters is
             readable without the directory layout that produced it.
@@ -335,46 +363,64 @@ def run(
     # extension. Asking the module rather than testing the name for "kernel"
     # keeps that name out of a second place, so a later Rust-backed
     # implementation records its profile instead of silently recording none.
-    build_profile = getattr(
-        sys.modules[annual_loop.__module__], "BUILD_PROFILE", None
-    )
+    build_profile = getattr(sys.modules[annual_loop.__module__], "BUILD_PROFILE", None)
     started = time.perf_counter()
     run_id = results.new_run_id()
     segments_frame = population.generate(settings)
     class_names = [segment_class.name for segment_class in settings.population.classes]
     segments = segment_arrays(segments_frame)
     log.info(
-        "run %s: %d segments, %d policies, %d replications",
+        "run %s: %d segments, %d policies, %d replications, %d thread(s)",
         run_id,
         segments["age0"].size,
         len(settings.policies),
         settings.simulation.n_reps,
+        threads,
     )
 
-    frame = pl.concat(
-        simulate_policy(
-            spec, settings, segments, class_names, annual_loop, batch_size
+    # Each chunk's rows go to a file of their own and are concatenated lazily at
+    # the end, so neither a policy's rows nor the whole run is ever held at
+    # once. The scratch directory is removed however this exits, including on a
+    # failure part-way through a sweep, so a crashed run leaves no half-written
+    # parts to be mistaken for a result.
+    with tempfile.TemporaryDirectory(prefix=f"cablesim-{run_id}-") as scratch:
+        parts = pathlib.Path(scratch)
+        written: list[pathlib.Path] = []
+        for spec in settings.policies:
+            written.extend(
+                simulate_policy(
+                    spec,
+                    settings,
+                    segments,
+                    class_names,
+                    annual_loop,
+                    batch_size,
+                    threads,
+                    parts,
+                )
+            )
+        # Named in order rather than scanned by pattern: the rows are written in
+        # policy order and then chunk order, and a directory listing would put
+        # them in whatever order the filesystem returns.
+        frame = pl.scan_parquet(written)
+        for name, value in (swept or {}).items():
+            frame = frame.with_columns(pl.lit(value).alias(name))
+
+        commit, dirty = results.git_provenance(constants.PROJECT_ROOT)
+        return results.write_run(
+            root,
+            frame,
+            settings,
+            results.Manifest(
+                run_id=run_id,
+                written_at=datetime.datetime.now(datetime.UTC),
+                package_version=results.package_version(),
+                git_commit=commit,
+                git_dirty=dirty,
+                implementation=implementation,
+                build_profile=build_profile,
+                threads=threads,
+                batch_size=batch_size,
+                wall_seconds=time.perf_counter() - started,
+            ),
         )
-        for spec in settings.policies
-    )
-    for name, value in (swept or {}).items():
-        frame = frame.with_columns(pl.lit(value).alias(name))
-
-    commit, dirty = results.git_provenance(constants.PROJECT_ROOT)
-    return results.write_run(
-        root,
-        frame,
-        settings,
-        results.Manifest(
-            run_id=run_id,
-            written_at=datetime.datetime.now(datetime.UTC),
-            package_version=results.package_version(),
-            git_commit=commit,
-            git_dirty=dirty,
-            implementation=implementation,
-            build_profile=build_profile,
-            threads=1,
-            batch_size=batch_size,
-            wall_seconds=time.perf_counter() - started,
-        ),
-    )

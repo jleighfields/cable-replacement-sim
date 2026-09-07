@@ -10,7 +10,7 @@ branch only tests reach.
 
 import numpy as np
 import pytest
-from cablesim import policies, run, simulate
+from cablesim import policies, random_draws, run, simulate, weibull
 
 from tests import helpers
 
@@ -45,8 +45,9 @@ def inputs(**overrides: object) -> dict[str, object]:
         "replacement_shape": np.full(N_SEGMENTS, 6.2),
         "replacement_scale": np.full(N_SEGMENTS, 65.0),
         "cost_per_ft": np.full(N_SEGMENTS, 10.0),
-        "lifetime_uniforms": np.full((1, N_SEGMENTS, N_YEARS + 1), 0.5),
-        "policy_uniforms": np.full((1, N_SEGMENTS), 0.5),
+        "draw_key": random_draws.draw_key(20260907),
+        "first_replication": 0,
+        "n_reps": 1,
         "budget": np.full(N_YEARS, 1e9),
         "cost_escalation": np.ones(N_YEARS),
         "policy": helpers.resolved("run_to_failure"),
@@ -104,16 +105,40 @@ def test_the_initial_draw_is_conditional_on_the_age_already_survived() -> None:
     of new cable — about 47 years at this uniform — and fail nowhere inside the
     horizon, which is a run that completes with plausible-looking curves.
     """
-    results = simulate.run_chunk(
-        **inputs(
-            age0=np.full(N_SEGMENTS, 80.0),
-            lifetime_uniforms=np.full((1, N_SEGMENTS, N_YEARS + 1), 0.5),
-            replacement_scale=np.full(N_SEGMENTS, helpers.NEVER_FAILS),
-        )
+    arguments = inputs(
+        age0=np.full(N_SEGMENTS, 80.0),
+        replacement_scale=np.full(N_SEGMENTS, helpers.NEVER_FAILS),
+    )
+    results = simulate.run_chunk(**arguments)
+
+    # The draws are no longer handed in, so the expectation is computed from
+    # the position they are read at. That makes this a stronger check than
+    # forcing a uniform would: it pins the address and the formula together.
+    starting = random_draws.uniforms_at(
+        arguments["draw_key"],
+        random_draws.PURPOSE["lifetimes"],
+        np.zeros(N_SEGMENTS, dtype=np.uint32),
+        np.arange(N_SEGMENTS, dtype=np.uint32),
+        0,
+    )
+    conditional = weibull.draw_remaining_life(
+        starting, np.full(N_SEGMENTS, 80.0), arguments["shape"], arguments["scale"]
+    )
+    unconditional = weibull.draw_lifetime(
+        starting, arguments["shape"], arguments["scale"]
+    )
+    assert (conditional < N_YEARS).all(), "every segment should fail in the horizon"
+    assert (unconditional > N_YEARS).all(), (
+        "drawn as new cable they would all outlive the horizon, which is what "
+        "makes the two draws tell apart here"
     )
 
-    assert results.failures[0, 0].tolist() == [2.0, 2.0], "all four fail in year 0"
-    assert not results.failures[0, 1:].any(), "their replacements outlive the horizon"
+    # The replacements never fail, so every reported failure is a starting one
+    # and lands in the year its remaining life implies.
+    for year in range(N_YEARS):
+        assert results.failures[0, year].sum() == float(
+            (np.floor(conditional) == year).sum()
+        ), f"year {year} does not match the conditional draw"
 
 
 def test_a_segment_that_failed_this_year_is_not_also_planned_work() -> None:
@@ -242,15 +267,12 @@ def test_every_policy_at_zero_budget_matches_run_to_failure() -> None:
     ranked, so any divergence here is the loop leaking policy state into
     something other than the funding decision.
     """
-    draws = np.linspace(0.01, 0.99, N_SEGMENTS * (N_YEARS + 1)).reshape(
-        1, N_SEGMENTS, N_YEARS + 1
-    )
     # Old enough at the shipped scale that failures land inside the horizon;
     # at the default ages nothing fails in three years and the comparison
     # below would hold for the wrong reason.
     aged = np.array([60.0, 70.0, 80.0, 85.0])
     baseline = simulate.run_chunk(
-        **inputs(age0=aged, lifetime_uniforms=draws, budget=np.full(N_YEARS, 1e9))
+        **inputs(age0=aged, budget=np.full(N_YEARS, 1e9))
     )
     assert baseline.failures.any(), "the comparison is vacuous without failures"
 
@@ -265,7 +287,6 @@ def test_every_policy_at_zero_budget_matches_run_to_failure() -> None:
             **inputs(
                 policy=helpers.resolved(name, **params),
                 age0=aged,
-                lifetime_uniforms=draws,
                 budget=np.zeros(N_YEARS),
             )
         )
@@ -273,14 +294,6 @@ def test_every_policy_at_zero_budget_matches_run_to_failure() -> None:
             simulate.Results._fields, baseline, starved, strict=True
         ):
             assert np.array_equal(left, right), f"{name} {params} differs on {field}"
-
-
-def test_a_draw_array_with_the_wrong_year_axis_is_refused() -> None:
-    """It would otherwise raise only if a replacement fell in the final year."""
-    with pytest.raises(ValueError, match="lifetime_uniforms"):
-        simulate.run_chunk(
-            **inputs(lifetime_uniforms=np.full((1, N_SEGMENTS, N_YEARS), 0.5))
-        )
 
 
 def test_cost_escalation_lifts_every_dollar_in_the_year_together() -> None:
@@ -362,37 +375,52 @@ def test_the_value_of_lost_load_escalates_with_construction_cost() -> None:
 def test_a_replacement_reads_the_draw_for_the_year_it_enters_service() -> None:
     """Index ``y + 1`` for a replacement made in year ``y``, not index ``y``.
 
-    That indexing is what makes the draw array bounded and addressable, and it
-    is what two implementations have to agree on. Nothing else pins it: the
-    deterministic cases use one uniform everywhere, and comparing two runs that
-    both read the wrong cell is comparing a thing against itself.
+    The year is a field of a draw's address, and it is what two
+    implementations have to agree on. Nothing else pins it: comparing two runs
+    that both read the wrong position is comparing a thing against itself.
 
-    Here every segment fails in year 0, and the cells differ sharply — the
-    year-0 cell would give a replacement lasting decades, the year-1 cell one
-    lasting months. Which cell is read decides whether anything fails again.
+    Here every segment fails in year 0 by construction, so every replacement
+    enters service in year 1 and there is exactly one position its lifetime
+    could have come from.
     """
-    draws = np.full((1, N_SEGMENTS, N_YEARS + 1), 0.5)
-    # A tiny uniform is a short lifetime under the inverse transform, so the
-    # cell for year 1 sends the replacement back into failure almost at once.
-    # The year-0 cell keeps its 0.5, which ends an 80-year-old segment inside
-    # year 0 and, read as a fresh lifetime instead, would last about 19 years —
-    # past the horizon, so the two cells give opposite answers.
-    draws[0, :, 1] = 1e-12
-
-    results = simulate.run_chunk(
-        **inputs(
-            age0=np.full(N_SEGMENTS, 80.0),
-            lifetime_uniforms=draws,
-            replacement_scale=np.full(N_SEGMENTS, 20.0),
-            replacement_shape=np.full(N_SEGMENTS, 6.2),
-        )
+    # Every segment fails in year 0 by construction rather than by a draw, so
+    # every replacement enters service in year 1 and there is one position its
+    # lifetime could have come from.
+    arguments = inputs(
+        scale=np.full(N_SEGMENTS, helpers.FAILS_AT_ONCE),
+        replacement_scale=np.full(N_SEGMENTS, 20.0),
+        replacement_shape=np.full(N_SEGMENTS, 6.2),
     )
-
+    results = simulate.run_chunk(**arguments)
     assert results.failures[0, 0].sum() == N_SEGMENTS, "everything fails in year 0"
-    assert results.failures[0, 1].sum() == N_SEGMENTS, (
-        "the replacement should read the year-1 cell, whose tiny uniform makes "
-        "it fail again immediately"
+
+    def failure_year_if_it_reads(year: int) -> np.ndarray:
+        """Which year each replacement fails in, had it read that year's draw."""
+        drawn = random_draws.uniforms_at(
+            arguments["draw_key"],
+            random_draws.PURPOSE["lifetimes"],
+            np.zeros(N_SEGMENTS, dtype=np.uint32),
+            np.arange(N_SEGMENTS, dtype=np.uint32),
+            year,
+        )
+        life = weibull.draw_lifetime(
+            drawn, arguments["replacement_shape"], arguments["replacement_scale"]
+        )
+        return np.floor(1.0 + life).astype(int)
+
+    correct, wrong = failure_year_if_it_reads(1), failure_year_if_it_reads(0)
+    assert (correct != wrong).any(), (
+        "the two positions imply the same failure years here, so this cannot "
+        "tell them apart and the fixture needs a different seed"
     )
+
+    # Count the second failures the year-1 position implies, and assert the run
+    # reported those rather than the ones the year-0 position would imply.
+    for year in range(1, N_YEARS):
+        assert results.failures[0, year].sum() == float((correct == year).sum()), (
+            f"year {year} does not match the draw at position year 1, which is "
+            f"the one a replacement made in year 0 enters service on"
+        )
 
 
 def test_a_replaced_segment_is_scored_at_age_zero_not_age_one() -> None:

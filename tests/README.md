@@ -22,7 +22,8 @@ covers how tests are laid out here and why.
 |---|---|
 | `test_smoke.py` | the extension module imports and the checked-in config loads |
 | `test_config.py` | each validator rejects what its message claims |
-| `test_random_draws.py` | the four sources are independent, and the stream is pinned |
+| `test_random_draws.py` | the spawned sources the population and failure history draw from: independent, and the stream pinned |
+| `test_draws.py` | the counter-based generator both languages compute the simulation's uniforms with, against NumPy's own Philox |
 | `test_weibull.py` | the closed forms, against the analytical results |
 | `test_population.py` | the generated table, and the columns derived from it |
 | `test_records.py` | the synthetic failure history, and the technology coding |
@@ -34,6 +35,7 @@ covers how tests are laid out here and why.
 | `test_results.py` | the run directory format, the saved schema, and the sweep reader |
 | `test_run.py` | the chunk and policy loops, and that chunk size changes no number |
 | `test_metrics.py` | the reliability indices, discounting, and the baseline comparison |
+| `test_benchmarks.py` | the timing harness: what it refuses, and what its table columns mean |
 | `test_plots.py` | the figures, asserted on their data rather than their pixels |
 | `test_plan_document.py` | `PLAN.md` structure: citations resolve, and it quotes the config verbatim |
 | `test_workflows.py` | the workflow files name no Rust toolchain of their own |

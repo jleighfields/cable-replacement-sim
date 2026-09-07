@@ -14,7 +14,7 @@ panic message goes to stderr rather than into the traceback.
 
 import numpy as np
 import pytest
-from cablesim import kernel, policies, simulate
+from cablesim import _cablesim, kernel, policies, random_draws, simulate
 
 from tests import helpers
 
@@ -56,8 +56,9 @@ def minimal_arguments(
         "replacement_shape": np.full(n_segments, 6.2),
         "replacement_scale": np.full(n_segments, helpers.FAILS_AT_ONCE),
         "cost_per_ft": np.full(n_segments, 10.0),
-        "lifetime_uniforms": np.full((n_reps, n_segments, n_years + 1), 0.5),
-        "policy_uniforms": np.full((n_reps, n_segments), 0.5),
+        "draw_key": random_draws.draw_key(1),
+        "first_replication": 0,
+        "n_reps": n_reps,
         "budget": np.zeros(n_years),
         "cost_escalation": np.ones(n_years),
         "emergency_multiplier": 2.5,
@@ -68,42 +69,13 @@ def minimal_arguments(
     }
 
 
-def test_the_kernel_refuses_a_column_ordered_draw_array(
-    deterministic_arguments: dict[str, object],
-) -> None:
-    """A Fortran-ordered array is not C-contiguous and must be rejected.
-
-    The boundary reads every array as a flat slice in C order, so an array
-    whose memory runs down the columns puts a different segment's draw at every
-    position. Nothing about the values or the shape distinguishes it: the run
-    completes and returns a plausible number that is not the one the caller's
-    array describes. Measured on a six-segment chunk, the kernel returned
-    failure counts of ``[0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1]`` against the
-    reference's ``[0, 0, 1, 2, 0, 0, 1, 0, 0, 0, 0, 1]`` from the same array.
-
-    A row-ordered array and a column-ordered one are the same values, which is
-    why this cannot be caught by comparing results: it has to be refused at the
-    boundary.
-    """
-    arguments = {
-        **deterministic_arguments,
-        "lifetime_uniforms": np.asfortranarray(
-            deterministic_arguments["lifetime_uniforms"]
-        ),
-    }
-    assert not arguments["lifetime_uniforms"].flags["C_CONTIGUOUS"]
-
-    with pytest.raises(ValueError, match="lifetime_uniforms"):
-        kernel.run_chunk(**arguments, policy=helpers.resolved("worst_first"))
-
-
 def test_the_kernel_raises_rather_than_panicking_on_an_empty_population() -> None:
     """A chunk with no segments must report, not divide by zero.
 
-    The replication count is recovered from the draw array's length divided by
-    the segment count, so a population of none is an integer division by zero.
-    That is a Rust panic rather than a raise, and a panic crosses into Python
-    as something ``except Exception`` does not catch.
+    Reaching the loop with no segments indexes past the end of a working
+    buffer, and the per-year totals divide by a segment count of zero. Both are
+    a Rust panic rather than a raise, and a panic crosses into Python as
+    ``PanicException``, which ``except Exception`` does not catch.
     """
     arguments = minimal_arguments(n_segments=0)
 
@@ -144,20 +116,6 @@ def test_the_kernel_refuses_a_per_segment_array_of_the_wrong_length() -> None:
     arguments = {**minimal_arguments(4), "cost_per_ft": np.full(3, 10.0)}
 
     with pytest.raises(ValueError, match="cost_per_ft has 3 entries"):
-        kernel.run_chunk(**arguments, policy=helpers.resolved("run_to_failure"))
-
-
-def test_the_kernel_refuses_a_draw_array_that_is_short_a_year() -> None:
-    """The draw array must carry one column per year plus the initial draw.
-
-    A column short raises on its own only when a replacement happens to fall in
-    the final year, so without this check a run completes against the wrong
-    array and is wrong nowhere visible.
-    """
-    arguments = minimal_arguments(4, n_years=3)
-    arguments["lifetime_uniforms"] = np.full((1, 4, 3), 0.5)
-
-    with pytest.raises(ValueError, match="lifetime_uniforms is"):
         kernel.run_chunk(**arguments, policy=helpers.resolved("run_to_failure"))
 
 
@@ -337,8 +295,9 @@ def test_both_implementations_refuse_a_per_year_series_longer_than_the_horizon(
         simulate.run_chunk(**arguments, policy=helpers.resolved("run_to_failure"))
 
 
-def test_a_per_segment_array_of_the_wrong_length_is_a_value_error_on_both_sides(
-) -> None:
+def test_a_per_segment_array_of_the_wrong_length_is_a_value_error_on_both_sides() -> (
+    None
+):
     """The same bad length must come back as the same kind of exception.
 
     ``simulate.run_chunk`` documents ``ValueError`` and nothing else, and the
@@ -390,9 +349,28 @@ def test_both_implementations_refuse_a_tag_no_ranking_branch_covers(
 
 
 MISMATCHED_ARGUMENTS: dict[str, dict[str, object]] = {
-    "draw_array_short_a_year": {
-        **minimal_arguments(4, n_years=3),
-        "lifetime_uniforms": np.full((1, 4, 3), 0.5),
+    "a_replication_past_what_an_index_can_carry": {
+        **minimal_arguments(4),
+        "first_replication": 2**40,
+    },
+    # A chunk that starts inside the limit and ends outside it, which is the
+    # case a real run reaches: replications are split into chunks, so it is the
+    # tail of the last one that crosses. A guard checking only where a chunk
+    # starts accepts this and draws at aliased positions.
+    # Three from one below the limit puts the last replication exactly one past
+    # it. Overshooting further would pass a guard that was off by one.
+    "a_chunk_whose_tail_leaves_the_index": {
+        **minimal_arguments(4, n_reps=3),
+        "first_replication": random_draws.MAX_REPLICATION - 1,
+    },
+    "a_year_past_what_an_index_can_carry": {
+        **minimal_arguments(4, n_years=int(random_draws.MAX_YEAR) + 1),
+    },
+    # A valid policy, so the refusal that speaks is the one about replications
+    # rather than the policy check standing in front of it.
+    "a_chunk_covering_no_replications": {
+        **minimal_arguments(4),
+        "n_reps": 0,
     },
     "per_segment_array_too_short": {
         **minimal_arguments(4),
@@ -403,7 +381,7 @@ MISMATCHED_ARGUMENTS: dict[str, dict[str, object]] = {
         "budget": np.ones(5),
     },
 }
-"""The three length and shape guards the degenerate cases above do not reach."""
+"""The six position, length and shape guards the degenerate cases do not reach."""
 
 
 @pytest.mark.parametrize("wrong", sorted(MISMATCHED_ARGUMENTS), ids=str)
@@ -414,12 +392,12 @@ def test_both_implementations_word_a_mismatch_refusal_the_same_way(
 
     ``test_both_implementations_refuse_the_same_degenerate_population``
     compares the messages for the empty population, the absent class axis and
-    the class index past its end. The remaining three are otherwise checked
-    only for raising *something* that names the argument, which cannot see two
-    sides describing the same mismatch differently. The draw-array guard is
-    where that mattered: the shapes reach the message through a Rust slice on
-    one side and a Python tuple on the other, and printing either as it comes
-    agrees on every word while differing on the brackets.
+    the class index past its end. The six above are otherwise checked only for
+    raising *something* that names the argument, which cannot see two sides
+    describing the same mismatch differently. Every one of these messages
+    is built from a format string written out in each language, so two sides
+    can agree on every word while differing on a bracket, a plural or the
+    rendering of a number — differences a match on a substring does not see.
     """
     arguments = MISMATCHED_ARGUMENTS[wrong]
     policy = helpers.resolved("run_to_failure")
@@ -471,23 +449,6 @@ def test_both_implementations_refuse_an_unrankable_tag_the_same_way(tag: str) ->
     assert str(from_reference.value) == str(from_kernel.value)
 
 
-def test_the_reference_names_the_draw_array_it_cannot_read() -> None:
-    """A ``policy_uniforms`` that is not two-dimensional must say so.
-
-    The twelve per-segment arrays are checked for shape by name, because a
-    two-dimensional one of the right element count would otherwise fail later
-    inside NumPy as a broadcast error naming neither the argument nor the
-    reason. ``policy_uniforms`` reaches no such check: the reference recovers
-    the replication and segment counts by unpacking its shape on the first
-    line, so a one-dimensional array raises an unpacking error that names
-    nothing the caller passed. The kernel refuses it at the binding.
-    """
-    arguments = {**minimal_arguments(4), "policy_uniforms": np.full(4, 0.5)}
-
-    with pytest.raises(ValueError, match="policy_uniforms"):
-        simulate.run_chunk(**arguments, policy=helpers.resolved("run_to_failure"))
-
-
 def test_both_implementations_refuse_a_tag_that_is_not_an_integer() -> None:
     """A float tag must be refused, not matched against a branch by value.
 
@@ -507,3 +468,148 @@ def test_both_implementations_refuse_a_tag_that_is_not_an_integer() -> None:
         kernel.run_chunk(**arguments, policy=policy)
     with pytest.raises(TypeError):
         simulate.run_chunk(**arguments, policy=policy)
+
+
+def test_the_kernel_refuses_an_array_it_cannot_read_as_a_flat_slice() -> None:
+    """A strided view arrives non-contiguous and would take the wrong elements.
+
+    Every array crosses the boundary as the bytes NumPy already holds rather
+    than as a copy, which is what removes cross-language divergence in the
+    inputs instead of testing for it. What can still go wrong is layout: read
+    as a flat slice, a strided view takes the wrong elements in the wrong
+    order, and the symptom is a plausible wrong number rather than an error.
+
+    The draw array used to be what this was tested through. It is no longer
+    passed, so the check is made on a per-segment array instead — a caller
+    reaching here is one that sliced a population column.
+    """
+    arguments = minimal_arguments(4)
+    strided = np.full(8, 10.0)[::2]
+    assert not strided.flags["C_CONTIGUOUS"]
+
+    with pytest.raises(ValueError, match="age0 is not C-contiguous"):
+        kernel.run_chunk(
+            **{**arguments, "age0": strided},
+            policy=helpers.resolved("run_to_failure"),
+        )
+
+
+def test_the_kernel_refuses_no_threads_at_all() -> None:
+    """Zero workers would run no replication and return zeros.
+
+    That is the shape the caller asked for, filled with the value a run of no
+    replications legitimately produces, so nothing downstream could tell it
+    from a real result. Rejecting it at the boundary is the only place the
+    distinction still exists.
+    """
+    arguments = minimal_arguments(4)
+
+    with pytest.raises(ValueError, match="threads is 0"):
+        kernel.run_chunk(
+            **arguments, policy=helpers.resolved("run_to_failure"), threads=0
+        )
+
+
+def test_the_reference_refuses_a_thread_count_it_cannot_honour() -> None:
+    """Asking the scalar reference for two workers is refused, not ignored.
+
+    Both implementations take a thread count so that a caller choosing between
+    them passes the same arguments to either. Only one can act on it. Silently
+    ignoring the request would let a benchmark row or a run manifest record a
+    thread count that nothing ran with, which is provenance that reads as fact
+    and is not.
+
+    The kernel accepts the same value, and that difference is the point rather
+    than a divergence: it is what the two implementations are for.
+    """
+    arguments = minimal_arguments(4)
+    policy = helpers.resolved("run_to_failure")
+
+    with pytest.raises(ValueError, match="threads is 2"):
+        simulate.run_chunk(**arguments, policy=policy, threads=2)
+    kernel.run_chunk(**arguments, policy=policy, threads=2)
+
+
+def test_both_sides_accept_the_largest_replication_an_index_carries() -> None:
+    """Both sides treat the limit as inclusive, and draw the same number there.
+
+    ``random_draws.MAX_REPLICATION`` is documented as the largest replication a
+    draw index can carry, so a chunk ending on it is representable and must
+    run. Each side has to compare the chunk's *last index* against the limit,
+    not its replication *count*: comparing the count is off by one and refuses
+    the final representable replication. Nothing downstream would ever reach
+    it — but the two sides disagreeing about where the boundary sits is how a
+    later widening of the field gets applied to one of them only.
+    """
+    last = random_draws.MAX_REPLICATION
+    key = random_draws.draw_key(1)
+
+    from_reference = random_draws.uniforms_dense(
+        key, random_draws.PURPOSE["lifetimes"], last, 1, 1, 0
+    )
+    from_kernel = _cablesim.uniforms_dense(
+        key[0], key[1], random_draws.PURPOSE["lifetimes"], last, 1, 1, 0
+    )
+
+    assert np.array_equal(from_reference.ravel(), from_kernel)
+
+
+def test_a_chunk_offset_that_overflows_a_word_is_refused_not_wrapped() -> None:
+    """The position guard must not be steppable over by its own arithmetic.
+
+    The binding combines the chunk's offset with its replication count before
+    comparing against the limit, and that addition is on a 64-bit unsigned
+    integer in a release build, where plain `+` wraps rather than panicking. An
+    offset near the top of the word would then produce a small total, the
+    comparison would pass, and the run would proceed at replication indices
+    that alias onto other positions' draws — the correlation the guard exists
+    to prevent, arrived at through the guard. Saturating instead makes an
+    addition that would overflow name a replication past every limit, which is
+    what it is.
+
+    The reference refuses both of these, because Python integers do not wrap.
+    """
+    key = random_draws.draw_key(1)
+    purpose = random_draws.PURPOSE["lifetimes"]
+
+    with pytest.raises(ValueError, match="past the"):
+        # Two replications, not one: at one the addition is `+ 0`, which cannot
+        # wrap, so saturating and wrapping are indistinguishable and the guard
+        # this pins would survive being written either way.
+        _cablesim.uniforms_dense(key[0], key[1], purpose, 2**64 - 1, 2, 1, 0)
+
+    arguments = {**minimal_arguments(4), "first_replication": 2**64 - 1, "n_reps": 2}
+    with pytest.raises(ValueError, match="past the"):
+        kernel.run_chunk(**arguments, policy=helpers.resolved("run_to_failure"))
+
+
+def test_both_implementations_report_the_same_first_complaint() -> None:
+    """Same argument set, same message — including which check speaks first.
+
+    ``check_arguments`` documents its checks as being in the order the binding
+    makes them and word for word, because the two are interchangeable behind
+    one call and a caller must not get a different answer from each. Matching
+    wording is not enough on its own: an argument set wrong in more than one
+    way is reported by whichever check speaks first, so the two sides have to
+    agree on the order as well. The arguments below are wrong in two ways at
+    once — an unrankable policy tag and a replication count of zero — which is
+    what makes the order observable.
+    """
+    arguments = {**minimal_arguments(4), "n_reps": 0}
+    unrankable = policies.Resolved(
+        *(
+            max(policies.KIND.values()) + 1 if field == "kind" else value
+            for field, value in zip(
+                policies.Resolved._fields,
+                helpers.resolved("run_to_failure"),
+                strict=True,
+            )
+        )
+    )
+
+    with pytest.raises(ValueError) as from_kernel:
+        kernel.run_chunk(**arguments, policy=unrankable)
+    with pytest.raises(ValueError) as from_reference:
+        simulate.run_chunk(**arguments, policy=unrankable)
+
+    assert str(from_reference.value) == str(from_kernel.value)

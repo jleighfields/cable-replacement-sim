@@ -7,6 +7,7 @@ which is what lets the benchmark sweep the chunk size and still say it changed
 no result.
 """
 
+import json
 import pathlib
 import tempfile
 
@@ -105,54 +106,6 @@ def test_swept_values_are_written_into_the_rows(tmp_path: pathlib.Path) -> None:
 
     frame = pl.read_parquet(directory / results.RESULTS_NAME)
     assert frame["annual_budget"].unique().to_list() == [1_000.0]
-
-
-def test_the_lifetime_and_policy_streams_stay_independent() -> None:
-    """A control correlated with what it controls for has stopped being one.
-
-    The random policy's priorities must not be a function of the same segments'
-    lifetime draws: a larger uniform gives a shorter lifetime, so reusing the
-    stream would have it ranking segments by imminence of failure, which is the
-    thing it exists to be a control against. No parity test would notice, since
-    every implementation reads the same arrays.
-    """
-    sources = random_draws.spawn_sources(20260902)
-    replications = range(0, 3)
-
-    lifetimes = random_draws.replication_uniforms(sources.lifetimes, replications, (5,))
-    priorities = random_draws.replication_uniforms(sources.policies, replications, (5,))
-
-    assert not np.array_equal(lifetimes, priorities)
-
-
-def test_a_replication_reads_the_same_draws_at_any_chunk_size() -> None:
-    """Directly, rather than only through the results a run happens to produce.
-
-    ``SeedSequence.spawn`` counts the children it has handed out, so a run
-    calling it once per chunk gives replication 7 different draws depending on
-    how the run was batched. Deriving the child by index is what avoids that.
-    """
-    sources = random_draws.spawn_sources(20260902)
-    shape = (4, 3)
-
-    whole = random_draws.replication_uniforms(sources.lifetimes, range(0, 6), shape)
-    later = random_draws.replication_uniforms(sources.lifetimes, range(4, 6), shape)
-    again = random_draws.replication_uniforms(sources.lifetimes, range(0, 6), shape)
-
-    assert np.array_equal(whole[4:], later)
-    assert np.array_equal(whole, again), "asking twice must give the same answer"
-
-
-def test_a_derived_child_matches_what_spawn_would_have_given() -> None:
-    """The stateless derivation is the same stream, not merely a valid one."""
-    source = random_draws.spawn_sources(20260902).lifetimes
-    spawned = source.spawn(4)
-
-    for index in range(4):
-        assert np.array_equal(
-            random_draws.uniforms(spawned[index], 8),
-            random_draws.uniforms(random_draws.child_of(source, index), 8),
-        ), index
 
 
 def test_chunks_cover_every_replication_exactly_once() -> None:
@@ -256,8 +209,12 @@ def test_an_implementation_that_does_not_exist_is_refused_before_any_work(
     # below raises `KeyError` carrying the same name, so a test matching only
     # that cannot tell the guard from its absence — and the guard exists for
     # the message, which names what would have worked.
+    #
+    # A misspelling rather than a name that exists but has nothing behind it:
+    # every implementation a saved result may claim is now runnable, so that
+    # second case has no example left to make.
     with pytest.raises(KeyError, match="are the ones that exist"):
-        run.run(small_config(), tmp_path, implementation="batched_numpy")
+        run.run(small_config(), tmp_path, implementation="kernal")
 
 
 def test_a_name_no_result_may_claim_is_reported_as_unknown() -> None:
@@ -275,43 +232,91 @@ def test_a_name_no_result_may_claim_is_reported_as_unknown() -> None:
     assert run.unknown_implementations([]) == set()
 
 
-def test_the_run_takes_policy_priorities_from_the_policy_stream(
+def test_the_run_derives_the_draw_key_from_the_configured_seed(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Checked at the wiring, not only at the helper that builds the draws.
+    """Checked at the wiring, not only at the helper that derives it.
 
-    Both arrays are uniforms of the same shape, so passing the wrong stream
-    produces a run that completes with plausible numbers. What it costs is the
-    random policy: a larger uniform gives a shorter lifetime, so priorities
-    taken from the lifetime stream would rank by imminence of failure — the
-    thing the policy exists to be a control against. No parity test would see
-    it, because every implementation would read the same wrong array.
+    The key is the whole of a run's randomness now: every uniform is a function
+    of it and of a position. A run that derived it from anything but the
+    configured seed — a constant, the clock, a chunk index — would still
+    complete with plausible numbers, and no parity test would see it, because
+    every implementation would compute from the same wrong key.
+
+    What the chunk offset does is checked with it. A run splits replications
+    into chunks to bound memory, and that split is provenance rather than part
+    of the model, so chunk two has to start at the replication it actually
+    covers or the same run at a different batch size would produce different
+    numbers.
     """
     settings = small_config()
-    captured: dict[str, np.ndarray] = {}
+    seen: list[dict[str, object]] = []
 
     def capturing(**arguments: object) -> simulate.Results:
-        captured.update(
-            lifetime_uniforms=arguments["lifetime_uniforms"],
-            policy_uniforms=arguments["policy_uniforms"],
+        seen.append(
+            {
+                "draw_key": arguments["draw_key"],
+                "first_replication": arguments["first_replication"],
+                "n_reps": arguments["n_reps"],
+            }
         )
         return simulate.run_chunk(**arguments)
 
     monkeypatch.setitem(run.RUNNABLE, "reference", capturing)
     run.run(settings, tmp_path, batch_size=6)
 
-    sources = random_draws.spawn_sources(settings.simulation.seed)
-    n_segments = settings.population.n_segments
-    assert np.array_equal(
-        captured["policy_uniforms"],
-        random_draws.replication_uniforms(
-            sources.policies, range(0, settings.simulation.n_reps), (n_segments,)
-        ),
-    )
-    assert not np.array_equal(
-        captured["policy_uniforms"], captured["lifetime_uniforms"][:, :, 0]
-    )
+    expected = random_draws.draw_key(settings.simulation.seed)
+    assert {call["draw_key"] for call in seen} == {expected}
+    # A different seed has to give a different key, or deriving it from the seed
+    # would be indistinguishable from ignoring the seed.
+    assert random_draws.draw_key(settings.simulation.seed + 1) != expected
 
+    # Every replication of the run is covered exactly once, in order.
+    covered: list[int] = []
+    for call in seen[: len(seen) // len(settings.policies) or 1]:
+        covered.extend(
+            range(call["first_replication"], call["first_replication"] + call["n_reps"])
+        )
+    assert covered == list(range(settings.simulation.n_reps))
+
+
+def test_a_thread_count_reaches_the_annual_loop_and_the_manifest(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Both, because recording one and running another is the failure to catch.
+
+    Only the compute kernel spreads replications over workers, so this runs
+    through it. What it pins is the wiring rather than the parallelism: a run
+    that passed the count to the manifest and a literal 1 to the loop would
+    report a number nothing acted on, and every result would still be correct,
+    because the thread count changes no value.
+    """
+    settings = small_config()
+    seen: list[int] = []
+    annual_loop = run.RUNNABLE["kernel"]
+
+    def capturing(**arguments: object) -> simulate.Results:
+        seen.append(arguments["threads"])
+        return annual_loop(**arguments)
+
+    directory = run.run(
+        settings,
+        tmp_path,
+        implementation="kernel",
+        threads=2,
+        batch_size=6,
+    )
+    manifest = json.loads((directory / results.MANIFEST_NAME).read_text())
+    assert manifest["threads"] == 2
+
+    # And again with the loop watched, so the manifest above is not the only
+    # thing the number reached.
+    run.RUNNABLE["kernel"] = capturing
+    try:
+        run.run(settings, tmp_path, implementation="kernel", threads=2, batch_size=6)
+    finally:
+        run.RUNNABLE["kernel"] = annual_loop
+    assert seen and set(seen) == {2}
 
 def test_the_budget_series_uses_the_budget_rate_and_not_the_cost_rate(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch

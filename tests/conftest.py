@@ -1,11 +1,14 @@
 """The fixtures every parity test reads.
 
-**One builder makes the population, the draw arrays and the configuration, and
-both implementations under test are handed that one set of objects.** That is
-what makes "the same draws" true by construction rather than by coincidence: a
-stored draw file would be bypassed by a test that built its own inputs, exactly
-as a fixture would, and two builders that drift apart turn a parity failure
-into a question about the fixtures first.
+**One builder makes the population, the draw key and the configuration, and
+every implementation under test is handed that one set of objects.** Two
+builders that drifted apart would turn a parity failure into a question about
+the fixtures first.
+
+The draws themselves are no longer among those objects: each implementation
+computes them from the key and the position it is at. That they come out
+identical is established by `test_draws.py` rather than by construction, which
+is the one guarantee this design traded away.
 
 Across test functions the draws need not match. A parity test asserts that two
 implementations agree with *each other* on whatever they were handed, not that
@@ -35,9 +38,10 @@ DETERMINISTIC_REPS = 3
 """Replications for those tests.
 
 Three rather than one, because the replication axis is where the two
-implementations index the draw arrays differently — the reference takes a
-NumPy row, the kernel offsets into a flat slice — so a run with a single
-replication would leave that arithmetic reading the same bytes either way.
+implementations address their draws differently — the reference builds a
+``(replications, segments)`` block and takes a row of it, the kernel computes
+each position on its own — so a run with a single replication would leave that
+arithmetic reading position zero either way.
 """
 
 STATISTICAL_SEGMENTS = 2_000
@@ -46,8 +50,11 @@ STATISTICAL_SEGMENTS = 2_000
 STATISTICAL_REPS = 50
 """Replications for that comparison.
 
-The scalar reference is what makes this the binding cost, which is why it is
-fifty rather than the thousand the batched baseline will carry once it exists.
+The scalar reference is run here alongside every other implementation and is
+the slowest of them by a wide margin, so it is what sets this number: fifty
+rather than the thousand a shipped run uses. The comparison is paired, so it
+does not need the replication count a confidence interval on a single run
+would.
 """
 
 
@@ -55,15 +62,14 @@ def simulation_arguments(settings: config_module.Config) -> dict[str, object]:
     """Builds one call's arguments from a configuration.
 
     Assembled through the same package functions a real run uses — the
-    population generator, the purpose-spawned draw sources and the escalation
-    series — so what the parity tests hand an implementation is what a run
-    hands it.
+    population generator, the key derivation and the escalation series — so
+    what the parity tests hand an implementation is what a run hands it.
 
     Args:
         settings: The configuration to build from, which carries the
-            replication count. Taken from there rather than passed alongside
-            it, so a fixture cannot resize the population to one count and
-            build draws for another.
+            replication count and the seed. Taken from there rather than passed
+            alongside them, so a fixture cannot resize the population to one
+            count and set ``n_reps`` to another.
 
     Returns:
         Every argument of ``simulate.run_chunk`` except ``policy``, keyed by
@@ -72,29 +78,23 @@ def simulation_arguments(settings: config_module.Config) -> dict[str, object]:
     simulation = settings.simulation
     if simulation.n_reps < 2:
         # One replication removes what this fixture exists for without failing
-        # anything: the reference takes a NumPy row per replication and the
-        # kernel offsets into a flat slice, so an offset defect is invisible
-        # until there is a second row to get wrong. Mutating either offset away
-        # reddens the parity tests at three replications and none at one.
+        # anything: the replication is a field of every draw's address, and at
+        # a single replication that field is 0 on both sides whatever the
+        # arithmetic around it does. Mutating either side's offset away reddens
+        # the parity tests at three replications and none at one.
         raise ValueError(
             f"the parity fixtures need at least 2 replications, got "
             f"{simulation.n_reps}: the replication axis is where the two "
-            f"implementations index the draw arrays differently"
+            f"implementations address their draws differently"
         )
 
     segments = run.segment_arrays(population.generate(settings))
-    n_segments = segments["age0"].size
-    sources = random_draws.spawn_sources(simulation.seed)
-    replications = range(simulation.n_reps)
 
     return {
         **segments,
-        "lifetime_uniforms": random_draws.replication_uniforms(
-            sources.lifetimes, replications, (n_segments, simulation.n_years + 1)
-        ),
-        "policy_uniforms": random_draws.replication_uniforms(
-            sources.policies, replications, (n_segments,)
-        ),
+        "draw_key": random_draws.draw_key(simulation.seed),
+        "first_replication": 0,
+        "n_reps": simulation.n_reps,
         "budget": settings.budget.annual
         * run.escalation_series(settings.budget.escalation, simulation.n_years),
         "cost_escalation": run.escalation_series(

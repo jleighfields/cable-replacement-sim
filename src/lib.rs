@@ -23,9 +23,9 @@
 //!   comes from that generated code, not from anything written here.
 //! * **`PyReadonlyArray1<'py, f64>` borrows NumPy's own buffer.** Nothing is
 //!   copied and nothing is converted: the `f64` values Rust reads are the
-//!   bytes NumPy already holds. That is what makes the draw array free to pass
-//!   — it is the largest object in a run — and it is why the dtype has to
-//!   match exactly rather than being coerced.
+//!   bytes NumPy already holds. That is why the dtype has to match exactly
+//!   rather than being coerced — a coercion would allocate a converted copy of
+//!   every per-segment array on every call.
 //! * **`Bound<'py, T>` is a reference to a Python object that holds the
 //!   interpreter lock.** It is PyO3's smart pointer, and the `'py` lifetime
 //!   is what stops a Python object being used after the lock is released.
@@ -39,37 +39,34 @@
 //!   supports and any number of axes, and the compiler generates a separate
 //!   specialised copy for each combination actually used.
 
+mod draws;
 mod policies;
 mod simulate;
 mod weibull;
 
 use numpy::ndarray::{Array3, Dimension};
 use numpy::PyUntypedArrayMethods;
-use numpy::{
-    Element, IntoPyArray, PyArray3, PyReadonlyArray, PyReadonlyArray1, PyReadonlyArray2,
-    PyReadonlyArray3,
-};
-use pyo3::exceptions::PyValueError;
+use numpy::{Element, IntoPyArray, PyArray1, PyArray3, PyReadonlyArray, PyReadonlyArray1};
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
 /// Borrows a NumPy array as a flat slice, rejecting a non-contiguous one.
 ///
 /// Every array crosses this boundary as the same bytes NumPy holds, rather
-/// than as a copy, which is what removes cross-language divergence in the
-/// draws entirely as opposed to testing for it. What can still go wrong is
-/// layout: a transposed view or a strided slice arrives non-contiguous, and
-/// reading it as a flat slice would take the wrong elements in the wrong
-/// order. The caller that gets this wrong is a notebook passing `arr.T`, and
-/// the symptom without this check is a plausible wrong number.
+/// than as a copy. What can still go wrong is layout: a strided slice arrives
+/// non-contiguous, and reading it as a flat slice would take the wrong
+/// elements in the wrong order. The caller that gets this wrong passes a step
+/// slice such as `age[::2]`, and the symptom without this check is a plausible
+/// wrong number rather than an error.
 ///
 /// **C order is checked explicitly rather than left to `as_slice`.** That call
 /// accepts a Fortran-ordered array too, since it is contiguous — just
-/// column-major. A one-dimensional array is both, so the twelve per-segment
-/// arrays cannot tell the difference; the draw arrays can, and a transposed
-/// three-dimensional view of the right shape would be read with its axes
-/// exchanged and return a run that completes. A strided slice is rejected
-/// either way, which is what makes the weaker check look like it works.
+/// column-major. Every array reaching this today is one-dimensional and so is
+/// both at once, which makes the two checks indistinguishable on current
+/// callers; the stricter one is kept because it is what an argument of two or
+/// more axes would need, and adding one must not silently relax the check.
+/// `contiguous` is generic over the number of axes for the same reason.
 ///
 /// # Arguments
 ///
@@ -161,10 +158,18 @@ fn as_result_array(
 /// # Arguments
 ///
 /// See `simulate::run_chunk`, which these are passed straight through to.
-/// `lifetime_uniforms` is `(replications, segments, n_years + 1)` and
-/// `policy_uniforms` is `(replications, segments)`; every other array is one
-/// entry per segment, ordered by `segment_id`, except `budget` and
-/// `cost_escalation`, which are one entry per year.
+/// Every array is one entry per segment, ordered by `segment_id`, except
+/// `budget` and `cost_escalation`, which are one entry per year.
+///
+/// **No draws are passed in.** `draw_key` is the two key words every uniform is
+/// computed under, and `first_replication` says where this chunk sits in the
+/// run, because a draw is addressed by its position rather than read from a
+/// stream. `n_reps` is explicit for the same reason: there is no longer an
+/// array whose shape it could be recovered from.
+///
+/// `threads` spreads the replications over that many workers and changes no
+/// number: each replication reads its own slice of the draws and writes its own
+/// block of the results. One thread runs them in sequence with no pool built.
 ///
 /// # Returns
 ///
@@ -178,16 +183,21 @@ fn as_result_array(
 /// `ValueError` if the policy tag names no policy, if the population is empty,
 /// if `n_classes` is 0, if a class index is past the end of the class axis, if
 /// an array is not C-contiguous, if a per-segment or per-year array is the
-/// wrong length, if the draw array is not the shape the horizon implies, or if
-/// a candidate scores a rank key that is not a number.
+/// wrong length, if a replication, segment or year this chunk would draw at is
+/// past what a draw index can carry, if `threads` is 0, or if a candidate
+/// scores a rank key that is not a number.
+///
+/// `RuntimeError` if a thread pool of the requested size could not be built,
+/// which is the operating system refusing to start the threads rather than
+/// anything about the arguments.
 #[pyfunction]
 #[pyo3(signature = (
     length_ft, customers, customer_minutes_per_failure,
     customer_minutes_per_planned, outage_cost_per_failure, class_index,
     age0, shape, scale, replacement_shape, replacement_scale, cost_per_ft,
-    lifetime_uniforms, policy_uniforms, budget, cost_escalation, policy,
+    draw_key, first_replication, n_reps, budget, cost_escalation, policy,
     emergency_multiplier, mobilization_per_segment,
-    emergency_charged_to_budget, n_classes, n_years,
+    emergency_charged_to_budget, n_classes, n_years, threads=1,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_chunk<'py>(
@@ -204,8 +214,9 @@ fn run_chunk<'py>(
     replacement_shape: PyReadonlyArray1<'py, f64>,
     replacement_scale: PyReadonlyArray1<'py, f64>,
     cost_per_ft: PyReadonlyArray1<'py, f64>,
-    lifetime_uniforms: PyReadonlyArray3<'py, f64>,
-    policy_uniforms: PyReadonlyArray2<'py, f64>,
+    draw_key: (u64, u64),
+    first_replication: u64,
+    n_reps: usize,
     budget: PyReadonlyArray1<'py, f64>,
     cost_escalation: PyReadonlyArray1<'py, f64>,
     policy: policies::Resolved,
@@ -214,6 +225,7 @@ fn run_chunk<'py>(
     emergency_charged_to_budget: bool,
     n_classes: usize,
     n_years: usize,
+    threads: usize,
 ) -> PyResult<Bound<'py, PyTuple>> {
     // An unrecognized tag would otherwise score every candidate zero and fund
     // them in segment_id order, which is a plausible-looking run rather than an
@@ -250,27 +262,21 @@ fn run_chunk<'py>(
         )));
     }
 
-    if policy_uniforms.shape().len() != 2 {
-        return Err(PyValueError::new_err(format!(
-            "policy_uniforms has shape {:?}, expected (replications, \
-             segments): one fixed priority per segment per replication",
-            policy_uniforms.shape()
-        )));
+    if n_reps == 0 {
+        return Err(PyValueError::new_err(
+            "n_reps is 0, so no replication would run; a chunk covering none of \
+             them is a caller's arithmetic gone wrong rather than an empty \
+             result",
+        ));
     }
 
-    // Destructuring a slice into named parts, with the `else` branch required
-    // because the compiler cannot know the length from the type alone. The
-    // two-dimensional array type guarantees it, so the branch is unreachable.
-    let [n_reps, n_segments] = *policy_uniforms.shape() else {
-        unreachable!("a PyReadonlyArray2 has exactly two axes")
-    };
+    let n_segments = age0.len();
 
-    // `simulate::run_chunk` receives flat slices, so it recovers the
-    // replication count by dividing the draw array's length by the segment
-    // count — and an empty population divides by zero there. Rust does not
-    // raise on that: it panics, and PyO3 surfaces a panic as
-    // `PanicException`, which does not inherit from `Exception` and so passes
-    // straight through a driver script's error handling.
+    // Reaching the loop with no segments divides by zero or indexes past the
+    // end of a buffer. Rust does not raise on that: it panics, and PyO3
+    // surfaces a panic as `PanicException`, which does not inherit from
+    // `Exception` and so passes straight through a driver script's error
+    // handling.
     if n_segments == 0 {
         return Err(PyValueError::new_err(
             "the population is empty; there is nothing to simulate",
@@ -282,18 +288,23 @@ fn run_chunk<'py>(
         ));
     }
 
-    // The year axis is why this check exists: a short draw array raises on its
-    // own only when a replacement happens to fall in the final year, so a run
-    // can complete against the wrong array and be wrong nowhere visible. The
-    // other two axes are checked with it because they cost nothing to compare.
-    if lifetime_uniforms.shape() != [n_reps, n_segments, n_years + 1] {
-        return Err(PyValueError::new_err(format!(
-            "lifetime_uniforms is {:?}, expected {:?}: one draw per segment \
-             per year, plus the left-truncated draw at index 0",
-            lifetime_uniforms.shape(),
-            [n_reps, n_segments, n_years + 1]
-        )));
-    }
+    // Every position this chunk will draw at has to be one the index can carry.
+    // Past a field's width two positions would share a draw, which is a
+    // correlation nothing downstream could detect. The year passed is `n_years`
+    // rather than `n_years - 1`: a segment replaced in the final year draws its
+    // next lifetime from the year it would have entered service on.
+    // **Saturating, so the guard cannot be stepped over on the way to it.**
+    // `first_replication + n_reps` wraps on an unsigned word in a release
+    // build, and a chunk offset near the top of the range would then arrive
+    // back inside the limit and be accepted — a run whose replications alias
+    // onto a real one's draws, which is the correlation this guard exists to
+    // refuse, reached through the guard. An addition that would overflow names
+    // a replication past every limit, so saturating reports it as exactly that.
+    let last_replication = first_replication.saturating_add(n_reps as u64 - 1);
+    // No purpose is checked here: the loop draws only at the purposes this crate
+    // names, and that each of them fits its field is settled when this
+    // compiles — see the assertions beside their definitions.
+    within_the_index(last_replication, n_segments as u64 - 1, n_years as u64)?;
 
     // A fixed-size array of name-and-length pairs, checked in one loop so that
     // adding a per-segment argument without checking it is a visible omission
@@ -353,37 +364,87 @@ fn run_chunk<'py>(
         )));
     }
 
-    let results = simulate::run_chunk(
-        contiguous("length_ft", &length_ft)?,
-        contiguous("customers", &customers)?,
-        contiguous(
-            "customer_minutes_per_failure",
-            &customer_minutes_per_failure,
-        )?,
-        contiguous(
-            "customer_minutes_per_planned",
-            &customer_minutes_per_planned,
-        )?,
-        contiguous("outage_cost_per_failure", &outage_cost_per_failure)?,
-        classes,
-        contiguous("age0", &age0)?,
-        contiguous("shape", &shape)?,
-        contiguous("scale", &scale)?,
-        contiguous("replacement_shape", &replacement_shape)?,
-        contiguous("replacement_scale", &replacement_scale)?,
-        contiguous("cost_per_ft", &cost_per_ft)?,
-        contiguous("lifetime_uniforms", &lifetime_uniforms)?,
-        contiguous("policy_uniforms", &policy_uniforms)?,
-        contiguous("budget", &budget)?,
-        contiguous("cost_escalation", &cost_escalation)?,
-        policy,
-        emergency_multiplier,
-        mobilization_per_segment,
-        emergency_charged_to_budget,
-        n_classes,
-        n_years,
-    )
-    .map_err(|unranked| PyValueError::new_err(unranked.to_string()))?;
+    if threads == 0 {
+        return Err(PyValueError::new_err(
+            "threads is 0, so no replication would run; 1 is the sequential \
+             path and the baseline a parallel run is measured against",
+        ));
+    }
+    // Every borrow is taken here, while the interpreter lock is still held,
+    // because each one reads the NumPy object's own metadata. What crosses into
+    // the released region below is plain slices of `f64` and `u8`.
+    let length_ft = contiguous("length_ft", &length_ft)?;
+    let customers = contiguous("customers", &customers)?;
+    let customer_minutes_per_failure = contiguous(
+        "customer_minutes_per_failure",
+        &customer_minutes_per_failure,
+    )?;
+    let customer_minutes_per_planned = contiguous(
+        "customer_minutes_per_planned",
+        &customer_minutes_per_planned,
+    )?;
+    let outage_cost_per_failure = contiguous("outage_cost_per_failure", &outage_cost_per_failure)?;
+    let age0 = contiguous("age0", &age0)?;
+    let shape = contiguous("shape", &shape)?;
+    let scale = contiguous("scale", &scale)?;
+    let replacement_shape = contiguous("replacement_shape", &replacement_shape)?;
+    let replacement_scale = contiguous("replacement_scale", &replacement_scale)?;
+    let cost_per_ft = contiguous("cost_per_ft", &cost_per_ft)?;
+    let budget = contiguous("budget", &budget)?;
+    let cost_escalation = contiguous("cost_escalation", &cost_escalation)?;
+
+    // `detach` releases the interpreter lock for the whole computation and
+    // takes it back when the closure returns. Two things make that safe, and
+    // both are checked when this compiles rather than trusted: nothing inside
+    // touches a Python object — the arrays became plain slices above — and
+    // `Python<'py>` is not available in there, so code that needed the lock
+    // could not be written without the compiler rejecting it.
+    //
+    // Without this, rayon's workers below would each wait for the lock and the
+    // extra threads would buy nothing. It also lets an unrelated Python thread
+    // run while a chunk is in flight, which is what keeps an application
+    // responsive while a run is going.
+    //
+    // This method was called `allow_threads` until PyO3 renamed it; examples
+    // found elsewhere still use that name, and it now compiles with a
+    // deprecation warning rather than failing outright.
+    let results = py
+        .detach(|| {
+            {
+                simulate::run_chunk(
+                    length_ft,
+                    customers,
+                    customer_minutes_per_failure,
+                    customer_minutes_per_planned,
+                    outage_cost_per_failure,
+                    classes,
+                    age0,
+                    shape,
+                    scale,
+                    replacement_shape,
+                    replacement_scale,
+                    cost_per_ft,
+                    [draw_key.0, draw_key.1],
+                    first_replication,
+                    n_reps,
+                    budget,
+                    cost_escalation,
+                    policy,
+                    emergency_multiplier,
+                    mobilization_per_segment,
+                    emergency_charged_to_budget,
+                    n_classes,
+                    n_years,
+                    threads,
+                )
+            }
+        })
+        .map_err(|failure| match failure {
+            simulate::ChunkError::NanScore(_) => PyValueError::new_err(failure.to_string()),
+            // The operating system refusing to start threads, rather than
+            // anything wrong with the arguments, so not a `ValueError`.
+            simulate::ChunkError::ThreadPool(_) => PyRuntimeError::new_err(failure.to_string()),
+        })?;
 
     let dimensions = (n_reps, n_years, n_classes);
     PyTuple::new(
@@ -400,10 +461,292 @@ fn run_chunk<'py>(
     )
 }
 
+/// How many threads this machine can run at once.
+///
+/// Read here rather than in Python so that the number a run records and the
+/// number rayon would pick come from one place. `available_parallelism` honours
+/// a CPU affinity mask and a container's CPU quota, which a bare processor
+/// count does not, and it is the same call rayon's own default is built on.
+///
+/// # Returns
+///
+/// The available parallelism, or 1 where the platform will not say.
+#[pyfunction]
+fn available_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+}
+
+/// Uniforms from the counter-based generator, one per position asked for.
+///
+/// Exposed so that the Python side can be held to producing the identical
+/// numbers. The reference implementation and the batched loops still take their
+/// draws as arrays, so both languages have to agree on every bit of every draw;
+/// checking that against NumPy's own Philox is what establishes it, and this is
+/// what the check calls.
+///
+/// # Arguments
+///
+/// * `key_low` - low word of the key, derived from the run's seed.
+/// * `key_high` - high word of the key.
+/// * `start` - the first position in the stream to produce.
+/// * `count` - how many consecutive positions to produce.
+///
+/// # Returns
+///
+/// `count` doubles in `[0, 1)`.
+#[pyfunction]
+fn philox_uniforms(
+    py: Python<'_>,
+    key_low: u64,
+    key_high: u64,
+    start: u64,
+    count: usize,
+) -> Bound<'_, PyArray1<f64>> {
+    // Released for the same reason the simulation releases it: nothing in here
+    // touches a Python object, and a caller asking for millions of draws should
+    // not hold the interpreter while they are computed.
+    let values: Vec<f64> = py.detach(|| {
+        (0..count as u64)
+            .map(|offset| draws::uniform_at(start + offset, [key_low, key_high]))
+            .collect()
+    });
+    values.into_pyarray(py)
+}
+
+/// Uniforms for a block of the simulation, every replication and segment.
+///
+/// The dense case: the left-truncated draw every segment takes at the start of
+/// a run, and the fixed per-segment priority the random policy ranks on. Both
+/// are read for every segment of every replication, so there is nothing to
+/// select and the positions are known from the shape alone.
+///
+/// # Arguments
+///
+/// * `key_low` - low word of the key, derived from the run's seed.
+/// * `key_high` - high word of the key.
+/// * `purpose` - which stream, keeping unrelated draws independent.
+/// * `first_replication` - the replication this chunk starts at, so a chunk
+///   draws the same numbers wherever it sits in a run.
+/// * `n_reps` - replications in this chunk.
+/// * `n_segments` - segments in the population.
+/// * `year` - the year these draws belong to.
+///
+/// # Returns
+///
+/// `n_reps * n_segments` doubles, replication-major.
+///
+/// # Errors
+///
+/// `ValueError` if any position would not fit the index, which is a run larger
+/// than the packing allows rather than anything about this call.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn uniforms_dense<'py>(
+    py: Python<'py>,
+    key_low: u64,
+    key_high: u64,
+    purpose: u64,
+    first_replication: u64,
+    n_reps: usize,
+    n_segments: usize,
+    year: u64,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    // Refused rather than answered with an empty array: this entry point is
+    // reached from a chunk loop, and a chunk covering no replications is a
+    // caller's arithmetic gone wrong. `n_reps - 1` below also needs it, since
+    // that subtraction is on an unsigned word.
+    if n_reps == 0 {
+        return Err(PyValueError::new_err(
+            "n_reps is 0, so there are no positions to draw at",
+        ));
+    }
+    // The largest position this call reaches, not one past it, which is what
+    // `run_chunk` and the Python mirror both check — and saturating for the
+    // same reason they are.
+    let last_replication = first_replication.saturating_add(n_reps as u64 - 1);
+    within_the_purpose(purpose)?;
+    within_the_index(
+        last_replication,
+        (n_segments as u64).saturating_sub(1),
+        year,
+    )?;
+    let key = [key_low, key_high];
+    let values: Vec<f64> = py.detach(|| {
+        (0..n_reps as u64)
+            .flat_map(|offset| {
+                let replication = first_replication + offset;
+                (0..n_segments as u64).map(move |segment| {
+                    draws::uniform_at(draws::index(purpose, replication, segment, year), key)
+                })
+            })
+            .collect()
+    });
+    Ok(values.into_pyarray(py))
+}
+
+/// Uniforms at named positions, for the segments that actually need one.
+///
+/// The sparse case, and the reason the generator is indexed at all: a year's
+/// replacement draw is consumed only by a segment replaced that year, which is
+/// a few percent of them. A stream would have to produce the rest anyway to
+/// keep its position; this produces what is asked for and nothing else.
+///
+/// # Arguments
+///
+/// * `key_low` - low word of the key, derived from the run's seed.
+/// * `key_high` - high word of the key.
+/// * `purpose` - which stream.
+/// * `replications` - one entry per wanted draw.
+/// * `segments` - the matching segment of each.
+/// * `year` - the year these draws belong to.
+///
+/// # Returns
+///
+/// One double per position, in the order given.
+///
+/// # Errors
+///
+/// `ValueError` if the two position arrays are different lengths, or if a
+/// position would not fit the index.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn uniforms_at<'py>(
+    py: Python<'py>,
+    key_low: u64,
+    key_high: u64,
+    purpose: u64,
+    replications: PyReadonlyArray1<'py, u32>,
+    segments: PyReadonlyArray1<'py, u32>,
+    year: u64,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let replications = contiguous("replications", &replications)?;
+    let segments = contiguous("segments", &segments)?;
+    if replications.len() != segments.len() {
+        return Err(PyValueError::new_err(format!(
+            "replications has {} entries against {} segments; a draw is named \
+             by both, so they pair up one for one",
+            replications.len(),
+            segments.len()
+        )));
+    }
+    within_the_purpose(purpose)?;
+    within_the_index(
+        u64::from(replications.iter().copied().max().unwrap_or(0)),
+        u64::from(segments.iter().copied().max().unwrap_or(0)),
+        year,
+    )?;
+    let key = [key_low, key_high];
+    let values: Vec<f64> = py.detach(|| {
+        (0..replications.len())
+            .map(|row| {
+                draws::uniform_at(
+                    draws::index(
+                        purpose,
+                        u64::from(replications[row]),
+                        u64::from(segments[row]),
+                        year,
+                    ),
+                    key,
+                )
+            })
+            .collect()
+    });
+    Ok(values.into_pyarray(py))
+}
+
+/// Refuses a purpose the index cannot represent.
+///
+/// Separate from the position check because only a caller supplying a purpose
+/// can get it wrong: the annual loop draws at the purposes this crate names,
+/// and that those fit is settled when it compiles. The field sits in the top
+/// bits, so one past the limit shifts out of the word and lands on a purpose
+/// that fits — identically on both sides of the boundary, which is why no
+/// comparison between implementations could see it.
+///
+/// # Arguments
+///
+/// * `purpose` - which stream the caller asked for.
+fn within_the_purpose(purpose: u64) -> PyResult<()> {
+    if purpose > draws::MAX_PURPOSE {
+        return Err(PyValueError::new_err(format!(
+            "purpose {purpose} is past the {} a draw index can carry; beyond it \
+             two positions would share one draw",
+            draws::MAX_PURPOSE
+        )));
+    }
+    Ok(())
+}
+
+/// Refuses a position the index cannot represent.
+///
+/// The packing gives each field a fixed width, so a run past one of them would
+/// silently alias two positions onto the same draw — a correlation nothing
+/// downstream could detect. The shipped run is nowhere near any of the bounds.
+///
+/// # Arguments
+///
+/// * `replication` - the largest replication in this call.
+/// * `segment` - the largest segment.
+/// * `year` - the year.
+fn within_the_index(replication: u64, segment: u64, year: u64) -> PyResult<()> {
+    for (name, value, limit) in [
+        ("replication", replication, draws::MAX_REPLICATION),
+        ("segment", segment, draws::MAX_SEGMENT),
+        ("year", year, draws::MAX_YEAR),
+    ] {
+        if value > limit {
+            return Err(PyValueError::new_err(format!(
+                "{name} {value} is past the {limit} a draw index can carry; \
+                 beyond it two positions would share one draw"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Registers the extension module's contents under the name `_cablesim`.
 #[pymodule]
 fn _cablesim(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_chunk, m)?)?;
+    m.add_function(wrap_pyfunction!(available_threads, m)?)?;
+    m.add_function(wrap_pyfunction!(philox_uniforms, m)?)?;
+    m.add_function(wrap_pyfunction!(uniforms_dense, m)?)?;
+    m.add_function(wrap_pyfunction!(uniforms_at, m)?)?;
+    // The engine names are authored in this crate and read on the Python side,
+    // so the two cannot drift into disagreeing about what a name means.
+    // The draw index's field widths, so the Python side packs a position the
+    // same way this crate does rather than repeating the numbers. A packing
+    // written twice would diverge silently: two positions would share a draw,
+    // and nothing downstream could tell.
+    m.add(
+        "DRAW_INDEX_LIMITS",
+        (
+            draws::MAX_REPLICATION,
+            draws::MAX_SEGMENT,
+            draws::MAX_YEAR,
+            draws::MAX_PURPOSE,
+        ),
+    )?;
+    m.add(
+        "DRAW_INDEX_SHIFTS",
+        (
+            draws::PURPOSE_SHIFT,
+            draws::REPLICATION_SHIFT,
+            draws::YEAR_SHIFT,
+            draws::SEGMENT_SHIFT,
+        ),
+    )?;
+    m.add(
+        "DRAW_PURPOSES",
+        (
+            ("lifetimes", draws::purpose::LIFETIMES),
+            ("policies", draws::purpose::POLICIES),
+            ("population", draws::purpose::POPULATION),
+            ("records", draws::purpose::RECORDS),
+        ),
+    )?;
     // Which profile this was compiled with, so a run records what actually ran
     // rather than what the person starting it believed. `debug_assertions` is
     // on in a debug build and off in a release one, and it is resolved at

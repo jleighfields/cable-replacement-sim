@@ -67,8 +67,10 @@ addopts = "-m 'not notebooks and not app'"
 
 [tool.ruff]
 line-length = 88
-# The Rust build output and the virtual environment hold no source of ours.
-extend-exclude = ["target"]
+# The Rust build output and the virtual environment hold no source of ours, and
+# `deprecated/` holds retired implementations kept only so the measurements that
+# retired them can be reproduced — nothing imports them and no test runs them.
+extend-exclude = ["target", "deprecated"]
 
 [tool.ruff.lint]
 # E/F pyflakes+pycodestyle, I import-sort, B bugbear, SIM simplify, S bandit.

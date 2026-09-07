@@ -93,6 +93,44 @@ def plan_citations(text: str) -> list[str]:
     return re.findall(pattern, text)
 
 
+CALLERS_THAT_NAME_IMPLEMENTATIONS: tuple[pathlib.Path, ...] = (
+    constants.PROJECT_ROOT / "scripts" / "run_benchmarks.py",
+    constants.PROJECT_ROOT / "notebooks" / "05_parity_and_bench.py",
+)
+"""Files that build a benchmark table by naming implementations in source.
+
+Neither is reached by a default test run — one is a driver script and the other
+a marimo notebook behind the ``notebooks`` marker — so a name that stopped
+existing goes unreported in both until someone runs them by hand.
+"""
+
+
+def requested_implementations(path: pathlib.Path) -> set[str]:
+    """Reads the implementation names a file asks the benchmark harness for.
+
+    Matches the literal first argument of ``benchmarks.Configuration``, which
+    is how both callers spell the request. Reading the source rather than
+    importing it is what lets a marimo notebook be checked without executing
+    its cells, which costs minutes.
+
+    Args:
+        path: The file to read.
+
+    Returns:
+        Every implementation name it names, or an empty set if it names none.
+
+    Raises:
+        FileNotFoundError: If the path does not exist. An empty result would
+            otherwise report a moved file as a file that requests nothing.
+    """
+    return set(
+        re.findall(
+            r"""Configuration\(\s*["']([^"']+)["']""",
+            path.read_text(encoding="utf-8"),
+        )
+    )
+
+
 def resolved(name: str, **params: float | str) -> policies.Resolved:
     """Validates a policy and reduces it to what the annual loop reads.
 
@@ -121,9 +159,11 @@ def first_segments(
     reuse the fixture's population instead of building a second one that would
     drift away from it.
 
-    The draw arrays are sliced on their segment axis and made contiguous again,
-    because the kernel reads every array as a flat slice in C order and a
-    strided view is not one.
+    Nothing has to be done about the draws. They are computed from the position
+    they sit at rather than handed over as an array, so keeping the first
+    ``n_segments`` segments keeps exactly the draws those segments would have
+    had in the larger population — which is what makes a cut-down fixture a
+    smaller version of the same run rather than a different one.
 
     Args:
         arguments: The arguments to copy, as the parity fixtures build them.
@@ -133,16 +173,7 @@ def first_segments(
         A new argument dictionary; the original is untouched.
     """
     kept = {name: arguments[name][:n_segments] for name in simulate.SEGMENT_ARGUMENTS}
-    return {
-        **arguments,
-        **kept,
-        "lifetime_uniforms": np.ascontiguousarray(
-            arguments["lifetime_uniforms"][:, :n_segments, :]
-        ),
-        "policy_uniforms": np.ascontiguousarray(
-            arguments["policy_uniforms"][:, :n_segments]
-        ),
-    }
+    return {**arguments, **kept}
 
 
 FAILS_AT_ONCE = 1e-6

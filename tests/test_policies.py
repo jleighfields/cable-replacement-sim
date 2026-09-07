@@ -9,7 +9,7 @@ import math
 
 import numpy as np
 import pytest
-from cablesim import config, policies
+from cablesim import batched, config, policies
 
 
 def spec(name: str, **params: float | str) -> config.PolicySpec:
@@ -237,6 +237,24 @@ def test_a_candidate_that_scores_nan_is_refused_rather_than_sorted_last() -> Non
 
     with pytest.raises(ValueError, match="NaN"):
         policies.order_by_rank(rank, np.array([0, 1, 2]))
+
+
+def test_the_batched_ordering_refuses_a_nan_the_same_way() -> None:
+    """The reference's guard is pinned above; its batched twin was not.
+
+    The two orderings are separate code — one compacts each replication's
+    candidates and sorts those, the other sorts whole rows and pushes the
+    ineligible behind them — so a guard removed from either is invisible to the
+    other's test. And the batched form is where its absence hides best: it
+    demotes an ineligible segment by scoring it negative infinity, and a NaN
+    sorts to the tail alongside them, so the segment is simply never funded and
+    the run completes.
+    """
+    rank = np.array([[1.0, np.nan, 3.0]])
+    eligible = np.ones((1, 3), dtype=bool)
+
+    with pytest.raises(ValueError, match="NaN"):
+        batched.order_all_by_rank(rank, eligible)
 
 
 def test_a_nan_outside_the_candidate_set_is_not_an_error() -> None:
