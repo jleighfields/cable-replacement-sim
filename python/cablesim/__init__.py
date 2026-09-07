@@ -9,7 +9,6 @@ Python reference implementation mirrors it so the two can be compared. That
 duplication is the validation strategy rather than an oversight.
 """
 
-from cablesim._cablesim import add
 from cablesim.config import Config, load_config
 
-__all__ = ["Config", "add", "load_config"]
+__all__ = ["Config", "load_config"]

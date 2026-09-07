@@ -29,7 +29,15 @@ import numpy as np
 import polars as pl
 
 from cablesim import config as config_module
-from cablesim import constants, policies, population, random_draws, results, simulate
+from cablesim import (
+    constants,
+    kernel,
+    policies,
+    population,
+    random_draws,
+    results,
+    simulate,
+)
 
 log = logging.getLogger(__name__)
 
@@ -83,6 +91,20 @@ what a bare alias already says with less ceremony; one that pinned all
 twenty-odd argument names would be the contract worth having, and that contract
 is already written as ``simulate.run_chunk``'s signature — the argument names
 the kernel's binding has to mirror, since every call here is by keyword.
+"""
+
+
+IMPLEMENTATIONS: dict[str, Implementation] = {
+    "reference": simulate.run_chunk,
+    "kernel": kernel.run_chunk,
+}
+"""The annual loops a caller can select by name.
+
+The keys are the manifest's implementation names, so what a driver script takes
+on the command line is what ends up recorded as provenance, with no second
+spelling in between. Two of the four names a result can carry — the batched
+baselines — have no implementation yet and so are absent here rather than
+mapped to something that would run.
 """
 
 

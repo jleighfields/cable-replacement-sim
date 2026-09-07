@@ -15,14 +15,15 @@ figure an end-to-end check on the whole stack.
 
 The default size is reduced, because a full-size sweep through the pure-Python
 reference takes tens of minutes. Pass ``--full`` for the configured replication
-count and population.
+count and population, and ``--implementation kernel`` to run the same sweep
+through the Rust kernel, which computes the same numbers from the same draws.
 """
 
 import argparse
 import logging
 import pathlib
 
-from cablesim import config, constants, run
+from cablesim import config, constants, kernel, run
 
 log = logging.getLogger("budget_sweep")
 
@@ -47,6 +48,12 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "--full",
         action="store_true",
         help="use the configured replication count and population size",
+    )
+    parser.add_argument(
+        "--implementation",
+        choices=sorted(run.IMPLEMENTATIONS),
+        default="reference",
+        help="which annual loop to run; the name is recorded in the manifest",
     )
     parser.add_argument(
         "--batch-size",
@@ -83,13 +90,28 @@ def main(argv: list[str] | None = None) -> None:
             shipped.population.total_customers,
         )
 
+    # Read from the compiled extension rather than assumed, because a debug
+    # build is the one way this sweep silently takes far longer than it should,
+    # and a timing recorded without the profile it ran under says nothing.
+    build_profile = (
+        kernel.BUILD_PROFILE if arguments.implementation == "kernel" else None
+    )
+
     grid = run.budget_grid(settings.budget.annual)
-    log.info("sweeping %d budget levels into %s", len(grid), arguments.out)
+    log.info(
+        "sweeping %d budget levels into %s, through the %s implementation",
+        len(grid),
+        arguments.out,
+        arguments.implementation,
+    )
     for index, level in enumerate(grid, start=1):
         point = config.with_overrides(settings, {"budget.annual": level})
         directory = run.run(
             point,
             arguments.out,
+            implementation=run.IMPLEMENTATIONS[arguments.implementation],
+            implementation_name=arguments.implementation,
+            build_profile=build_profile,
             batch_size=arguments.batch_size,
             swept={"annual_budget": level},
         )

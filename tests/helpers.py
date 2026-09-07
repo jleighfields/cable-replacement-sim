@@ -7,7 +7,7 @@ belong in `conftest.py`.
 import pathlib
 import re
 
-from cablesim import constants
+from cablesim import config, constants, policies
 
 PLAN_PATH: pathlib.Path = constants.PROJECT_ROOT / "PLAN.md"
 """The standing project plan, whose structure the document tests check."""
@@ -90,3 +90,20 @@ def plan_citations(text: str) -> list[str]:
     """
     pattern = r"PLAN\.md`?[^.\n]{0,12}?(?:§|[Ss]ection\s*)\d+(?:\.\d+)*"
     return re.findall(pattern, text)
+
+
+def resolved(name: str, **params: float | str) -> policies.Resolved:
+    """Validates a policy and reduces it to what the annual loop reads.
+
+    Going through the schema rather than building the NamedTuple directly is
+    what makes a test's policy the same object a run's policy is, including the
+    neutral threshold values that decide eligibility.
+
+    Args:
+        name: The policy name.
+        **params: Policy parameters.
+
+    Returns:
+        The resolved policy.
+    """
+    return policies.resolve(config.PolicySpec(name=name, params=params))

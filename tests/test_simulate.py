@@ -10,7 +10,9 @@ branch only tests reach.
 
 import numpy as np
 import pytest
-from cablesim import config, policies, simulate
+from cablesim import simulate
+
+from tests.helpers import resolved
 
 N_SEGMENTS = 4
 N_YEARS = 3
@@ -27,19 +29,6 @@ service.
 
 NEVER_FAILS = 1e6
 """A scale that puts the first failure hundreds of thousands of years out."""
-
-
-def resolved(name: str, **params: float | str) -> policies.Resolved:
-    """Validates a policy and reduces it to what the loop reads.
-
-    Args:
-        name: The policy name.
-        **params: Policy parameters.
-
-    Returns:
-        The resolved policy.
-    """
-    return policies.resolve(config.PolicySpec(name=name, params=params))
 
 
 def inputs(**overrides: object) -> dict[str, object]:

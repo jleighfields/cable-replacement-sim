@@ -8,19 +8,52 @@ before any test that depends on a working kernel runs at all.
 
 import pathlib
 
+import numpy as np
 import pytest
-from cablesim import add, config, constants
+from cablesim import config, constants, kernel, policies
 
 
-def test_add_round_trips_through_the_extension_module() -> None:
-    """The Rust `add` is reachable from Python and returns its sum.
+def test_the_kernel_runs_one_chunk_through_the_extension_module() -> None:
+    """The Rust kernel is reachable from Python and arrays survive both ways.
 
     This is the end-to-end check that maturin built the crate, that the
-    resulting module imported, and that an integer survived the boundary in
-    both directions.
+    resulting module imported, and that a run crossed the boundary in both
+    directions. Randomness is removed by forcing the Weibull scale near zero
+    through the ordinary `scale` array, so both segments fail in the first
+    year and the answer is known without simulating anything.
     """
-    assert add(2, 3) == 5
-    assert add(-1, 1) == 0
+    n_segments, n_years, n_classes = 2, 1, 1
+    results = kernel.run_chunk(
+        length_ft=np.full(n_segments, 100.0),
+        customers=np.array([10.0, 20.0]),
+        customer_minutes_per_failure=np.array([100.0, 200.0]),
+        customer_minutes_per_planned=np.zeros(n_segments),
+        outage_cost_per_failure=np.zeros(n_segments),
+        class_index=np.zeros(n_segments, dtype=np.uint8),
+        age0=np.array([10.0, 20.0]),
+        shape=np.full(n_segments, 6.2),
+        scale=np.full(n_segments, 1e-6),
+        replacement_shape=np.full(n_segments, 6.2),
+        replacement_scale=np.full(n_segments, 1e-6),
+        cost_per_ft=np.full(n_segments, 10.0),
+        lifetime_uniforms=np.full((1, n_segments, n_years + 1), 0.5),
+        policy_uniforms=np.full((1, n_segments), 0.5),
+        budget=np.zeros(n_years),
+        cost_escalation=np.ones(n_years),
+        policy=policies.resolve(config.PolicySpec(name="run_to_failure", params={})),
+        emergency_multiplier=2.5,
+        mobilization_per_segment=500.0,
+        emergency_charged_to_budget=False,
+        n_classes=n_classes,
+        n_years=n_years,
+    )
+
+    assert results.failures.shape == (1, n_years, n_classes)
+    assert results.failures[0, 0, 0] == 2.0
+    assert results.customers_interrupted[0, 0, 0] == 30.0
+    # Planned cost is 100 feet at 10 dollars plus 500 of mobilization, and an
+    # emergency replacement is 2.5 times that.
+    assert results.emergency_spend[0, 0, 0] == 2 * 1_500.0 * 2.5
 
 
 def test_base_config_satisfies_the_schema() -> None:
