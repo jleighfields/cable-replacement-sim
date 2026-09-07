@@ -29,8 +29,8 @@ from collections.abc import Callable, Iterable
 import numpy as np
 import polars as pl
 
-from cablesim import config as config_module
 from cablesim import (
+    batched,
     constants,
     kernel,
     policies,
@@ -39,6 +39,7 @@ from cablesim import (
     results,
     simulate,
 )
+from cablesim import config as config_module
 
 log = logging.getLogger(__name__)
 
@@ -97,15 +98,14 @@ the kernel's binding has to mirror, since every call here is by keyword.
 
 RUNNABLE: dict[str, Implementation] = {
     "reference": simulate.run_chunk,
+    "batched_numpy": batched.run_chunk_numpy,
     "kernel": kernel.run_chunk,
 }
 """The annual loops that exist, by the name a manifest records them under.
 
 Named for what it holds rather than for the set it draws from: ``results``
 carries the closed set of names a saved run may claim, and this is the subset
-with something behind it. Two of those four — the batched baselines — have no
-implementation yet and so are absent here rather than mapped to something that
-would run.
+with something behind it.
 
 The keys must all be names ``results`` accepts, which is checked below rather
 than left to the manifest validator. Left there, a misspelling would be taken

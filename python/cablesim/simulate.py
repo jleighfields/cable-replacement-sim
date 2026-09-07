@@ -120,6 +120,147 @@ def running_total(values: np.ndarray) -> float:
     return float(np.cumsum(values)[-1])
 
 
+def check_arguments(arguments: dict[str, object]) -> tuple[int, int]:
+    """Refuses an argument set no implementation of this loop should accept.
+
+    Authored once and called by every Python implementation, so that the four
+    of them cannot drift into refusing different things. The Rust binding makes
+    the same checks in the same order and with the same wording; that copy is
+    the deliberate one, because a rule written in two languages is the only way
+    a caller gets the same answer from either side of the boundary.
+
+    Left to themselves the implementations would give an answer to most of
+    these. An unrecognized policy tag falls to the catch-all in ``rank_key``,
+    scores every candidate zero and funds them in segment order; a per-segment
+    array of the wrong length raises ``IndexError`` from NumPy rather than
+    ``ValueError``; a per-year series longer than the horizon has its extra
+    entries read by nothing; and the rest complete and return zeros, or
+    silently widen a ``bincount``.
+
+    The kernel cannot give an answer to most of them: reaching its loop divides
+    by zero or indexes past the end of a buffer, which is a Rust panic, and a
+    panic crosses into Python as ``PanicException``, which does not inherit
+    from ``Exception``.
+
+    The configuration schema forbids every one of these, which makes a direct
+    caller the only way to arrive here: every parity test and every driver
+    script is one.
+
+    Args:
+        arguments: Every argument of ``run_chunk``, keyed by name. Callers pass
+            ``locals()`` from the first line of their own ``run_chunk``, which
+            is that mapping exactly. Read by name rather than as a positional
+            tuple: a second list of the twelve per-segment names would fix
+            their order in a second place, and a pair whose order drifted would
+            check the wrong array against the wrong name while every length
+            still matched.
+
+    Returns:
+        The replication and segment counts, read off ``policy_uniforms``.
+
+    Raises:
+        ValueError: If the policy tag names no policy, if the population is
+            empty, if there is no class axis to accumulate into, if the draw
+            array's shape is not ``(replications, segments, n_years + 1)``, if
+            a per-segment or per-year array is the wrong length, if a class
+            index is past the end of the class axis, or if ``threads`` is not
+            1 — no Python implementation of this loop runs replications
+            concurrently, and the compute kernel is the one that can.
+        TypeError: If ``policy.kind`` is not an integer.
+    """
+    policy_uniforms = arguments["policy_uniforms"]
+    policy = arguments["policy"]
+    n_classes = arguments["n_classes"]
+    n_years = arguments["n_years"]
+
+    if policy_uniforms.ndim != 2:
+        raise ValueError(
+            f"policy_uniforms has shape {policy_uniforms.shape}, expected "
+            f"(replications, segments): one fixed priority per segment per "
+            f"replication"
+        )
+    n_reps, n_segments = policy_uniforms.shape
+    # Every check below is in the order `src/lib.rs` makes it and carries the
+    # same message, so a caller gets the same answer whichever side of the
+    # boundary it asked.
+    #
+    # `isinstance` before membership, because `2.0 in {0, 1, 2, 3, 4}` is true
+    # by hash equality: a float tag would pass the membership test and run the
+    # branch it happens to equal. The binding refuses a non-integer with a
+    # `TypeError` of PyO3's own wording, which is the class mirrored here.
+    if isinstance(policy.kind, bool) or not isinstance(policy.kind, int):
+        raise TypeError(
+            f"policy.kind is {policy.kind!r}, which is not an integer tag; "
+            f"the tags are authored in cablesim.policies.KIND"
+        )
+    if policy.kind not in policies.RANKABLE:
+        raise ValueError(
+            f"policy.kind is {policy.kind}, which no ranking branch covers; "
+            f"the tags are authored in cablesim.policies.KIND and the ones "
+            f"that can be scored are {sorted(policies.RANKABLE)}"
+        )
+    if n_segments == 0:
+        raise ValueError("the population is empty; there is nothing to simulate")
+    if n_classes == 0:
+        raise ValueError(
+            "n_classes is 0, so the results have no class axis to accumulate into"
+        )
+    lifetime_uniforms = arguments["lifetime_uniforms"]
+    if lifetime_uniforms.shape != (n_reps, n_segments, n_years + 1):
+        raise ValueError(
+            f"lifetime_uniforms is {list(lifetime_uniforms.shape)}, expected "
+            f"{[n_reps, n_segments, n_years + 1]}: one draw per segment per "
+            f"year, plus the left-truncated draw at index 0"
+        )
+    for name in SEGMENT_ARGUMENTS:
+        column = arguments[name]
+        if column.ndim != 1:
+            # The binding takes a one-dimensional array and rejects anything
+            # else with a `TypeError` of PyO3's own wording, so this case is
+            # one the two implementations report differently by nature. What
+            # it must not do is pass: a two-dimensional array of the right
+            # element count would otherwise fail later inside NumPy as a
+            # broadcast error naming neither the argument nor the reason.
+            raise ValueError(
+                f"{name} has shape {column.shape}; every per-segment array is "
+                f"one-dimensional, one entry per segment, ordered by segment_id"
+            )
+        if column.size != n_segments:
+            raise ValueError(
+                f"{name} has {column.size} entries against {n_segments} "
+                f"segments; every per-segment array is one entry per segment, "
+                f"ordered by segment_id"
+            )
+    for name in ("budget", "cost_escalation"):
+        series = arguments[name]
+        if series.size != n_years:
+            raise ValueError(
+                f"{name} has {series.size} entries against a {n_years}-year "
+                f"horizon"
+            )
+    class_index = arguments["class_index"]
+    past_the_axis = class_index[class_index >= n_classes]
+    if past_the_axis.size > 0:
+        raise ValueError(
+            f"class_index holds {int(past_the_axis[0])}, which is past the "
+            f"{n_classes} classes the results have an axis for; the index is a "
+            f"position in the class list, not a name"
+        )
+    # Last, which is where the binding checks its own thread count, so the two
+    # sides ask their questions in the same order. What they ask differs, and
+    # that difference is the whole point of the kernel: the binding refuses
+    # only 0, because it can spread replications over any number above that.
+    threads = arguments["threads"]
+    if threads != 1:
+        raise ValueError(
+            f"threads is {threads}; this implementation runs one replication "
+            f"at a time and cannot use more than 1. cablesim.kernel is the "
+            f"implementation that can"
+        )
+
+    return n_reps, n_segments
+
+
 def run_chunk(
     length_ft: np.ndarray,
     customers: np.ndarray,
@@ -224,106 +365,7 @@ def run_chunk(
         TypeError: If ``policy.kind`` is not an integer, or an array is not
             one-dimensional where one entry per segment is expected.
     """
-    if policy_uniforms.ndim != 2:
-        raise ValueError(
-            f"policy_uniforms has shape {policy_uniforms.shape}, expected "
-            f"(replications, segments): one fixed priority per segment per "
-            f"replication"
-        )
-    n_reps, n_segments = policy_uniforms.shape
-    # Six checks, in the order `src/lib.rs` makes them and carrying the same
-    # messages, because the two implementations are documented as
-    # interchangeable behind one call and a caller must not get an answer from
-    # one and an error from the other. Left to itself this side would give an
-    # answer to every one of them: an unrecognized policy tag falls to the
-    # catch-all in `rank_key`, scores every candidate zero and funds them in
-    # segment order; a per-segment array of the wrong length raises
-    # `IndexError` from NumPy rather than `ValueError`; a per-year series
-    # longer than the horizon has its extra entries read by nothing; and the
-    # rest complete and return zeros, or silently widen a `bincount`.
-    #
-    # The kernel cannot give an answer to most of them: reaching its loop
-    # divides by zero or indexes past the end of a buffer, which is a Rust
-    # panic, and a panic crosses into Python as `PanicException`, which does
-    # not inherit from `Exception`.
-    #
-    # The schema forbids every one of these, which makes a direct caller the
-    # only way to arrive here: every parity test and every driver script is one.
-    # `isinstance` before membership, because `2.0 in {0, 1, 2, 3, 4}` is true
-    # by hash equality: a float tag would pass the membership test and run the
-    # branch it happens to equal. The binding refuses a non-integer with a
-    # `TypeError` of PyO3's own wording, which is the class mirrored here.
-    if isinstance(policy.kind, bool) or not isinstance(policy.kind, int):
-        raise TypeError(
-            f"policy.kind is {policy.kind!r}, which is not an integer tag; "
-            f"the tags are authored in cablesim.policies.KIND"
-        )
-    if policy.kind not in policies.RANKABLE:
-        raise ValueError(
-            f"policy.kind is {policy.kind}, which no ranking branch covers; "
-            f"the tags are authored in cablesim.policies.KIND and the ones "
-            f"that can be scored are {sorted(policies.RANKABLE)}"
-        )
-    if n_segments == 0:
-        raise ValueError("the population is empty; there is nothing to simulate")
-    if n_classes == 0:
-        raise ValueError(
-            "n_classes is 0, so the results have no class axis to accumulate into"
-        )
-    if lifetime_uniforms.shape != (n_reps, n_segments, n_years + 1):
-        raise ValueError(
-            f"lifetime_uniforms is {list(lifetime_uniforms.shape)}, expected "
-            f"{[n_reps, n_segments, n_years + 1]}: one draw per segment per "
-            f"year, plus the left-truncated draw at index 0"
-        )
-    # Read by name from the frame rather than listed again as a tuple of the
-    # twelve parameters: a second list would fix their order in a second place,
-    # and a pair whose order drifted would check the wrong array against the
-    # wrong name while every length still matched.
-    per_segment = locals()
-    for name in SEGMENT_ARGUMENTS:
-        column = per_segment[name]
-        if column.ndim != 1:
-            # The binding takes a one-dimensional array and rejects anything
-            # else with a `TypeError` of PyO3's own wording, so this case is
-            # one the two implementations report differently by nature. What
-            # it must not do is pass: a two-dimensional array of the right
-            # element count would otherwise fail later inside NumPy as a
-            # broadcast error naming neither the argument nor the reason.
-            raise ValueError(
-                f"{name} has shape {column.shape}; every per-segment array is "
-                f"one-dimensional, one entry per segment, ordered by segment_id"
-            )
-        if column.size != n_segments:
-            raise ValueError(
-                f"{name} has {column.size} entries against {n_segments} "
-                f"segments; every per-segment array is one entry per segment, "
-                f"ordered by segment_id"
-            )
-    for name, series in (("budget", budget), ("cost_escalation", cost_escalation)):
-        if series.size != n_years:
-            raise ValueError(
-                f"{name} has {series.size} entries against a {n_years}-year "
-                f"horizon"
-            )
-    past_the_axis = class_index[class_index >= n_classes]
-    if past_the_axis.size > 0:
-        raise ValueError(
-            f"class_index holds {int(past_the_axis[0])}, which is past the "
-            f"{n_classes} classes the results have an axis for; the index is a "
-            f"position in the class list, not a name"
-        )
-    # Last, which is where the binding checks its own thread count, so the two
-    # sides ask their questions in the same order. What they ask differs, and
-    # that is the difference between them: the binding refuses only 0, because
-    # it can spread replications over any number above that.
-    if threads != 1:
-        raise ValueError(
-            f"threads is {threads}; this implementation runs one replication "
-            f"at a time and cannot use more than 1. cablesim.kernel is the "
-            f"implementation that can"
-        )
-
+    n_reps, n_segments = check_arguments(locals())
     results = Results(
         *(np.zeros((n_reps, n_years, n_classes)) for _ in Results._fields)
     )

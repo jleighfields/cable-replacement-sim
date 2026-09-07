@@ -1,31 +1,38 @@
-"""The Rust kernel against the Python reference.
+"""Every other implementation of the annual loop, against the Python reference.
 
-The two implement the same model twice, and this is what that duplication buys.
-When they disagree, `simulate.py` arbitrates: it is written to be checkable by
-reading, so a difference is a defect in the kernel until shown otherwise.
+Several programs implement the same model, and this is what that duplication
+buys. When any of them disagrees with the reference, `simulate.py` arbitrates:
+it is written to be checkable by reading, so a difference is a defect in the
+other implementation until shown otherwise.
 
-**The draws are identical by construction rather than by test.** Both
-implementations read the same uniforms, generated once in NumPy by the fixture
+Which implementations run here is read from the runnable registry rather than
+listed, so one added there is held to these tests from the moment it exists.
+Each is compared against the reference and none against another: a defect two
+of them share would otherwise pass by agreeing with itself.
+
+**The draws are identical by construction rather than by test.** Every
+implementation reads the same uniforms, generated once in NumPy by the fixture
 in `conftest.py`, so there is no random-number stream to reconcile across the
-two languages and nothing here verifies that there is not.
+languages and nothing here verifies that there is not.
 
 Most of these tests remove randomness entirely by forcing the Weibull scale
 through the ordinary `scale` array, and this is where allocation defects
 actually surface: a scale near zero makes every segment fail in its first year,
 one far past the horizon makes none fail at all, and the two mixed together
-makes failures crowd out prevention in the same year. Because both sides then
-consume the same draws and take the same decisions, these compare **exactly** —
-every array, every cell. One test runs a real population instead and compares
-replication against replication, which is what the shared draws make possible.
+makes failures crowd out prevention in the same year. Because every
+implementation then consumes the same draws and takes the same decisions, these
+compare **exactly** — every array, every cell, with no tolerance anywhere. One
+test runs a real population instead and compares replication against
+replication, which is what the shared draws make possible.
 
-What the kernel does with input it cannot run is a separate question, asked in
-`test_kernel.py`: a boundary check that never fires is invisible here, because
-both implementations agree on every input these tests build.
+What an implementation does with input it cannot run is a separate question,
+asked in `test_kernel.py`: a boundary check that never fires is invisible here,
+because they all agree on every input these tests build.
 
 All five policies run through the exact tests, which is also what would catch
-the two sides disagreeing about a policy's integer tag: the tags are authored
-in `policies.py` and read again as constants in `policies.rs`, and any two
-exchanged funds a different set of segments.
+two implementations disagreeing about a policy's integer tag: the tags are
+authored in `policies.py` and read again as constants in `policies.rs`, and any
+two exchanged funds a different set of segments.
 """
 
 import pathlib
@@ -62,12 +69,41 @@ would leave the other unexercised on this side of the boundary.
 """
 
 
+UNDER_TEST: tuple[str, ...] = tuple(
+    name for name in run.RUNNABLE if name != "reference"
+)
+"""Every implementation that is not the reference, by the name a run records.
+
+Read from the runnable set rather than listed, so an implementation added there
+is held to these tests from the moment it exists rather than from the moment
+someone remembers to add it here.
+"""
+
+
+@pytest.fixture(params=UNDER_TEST, ids=str)
+def implementation(request: pytest.FixtureRequest) -> run.Implementation:
+    """One annual loop to compare against the reference.
+
+    Every test taking this runs once per implementation. They are all held to
+    the same bar — every cell of every array, exactly — because they all read
+    the same draws and take the same decisions from them; nothing here is a
+    tolerance.
+
+    Args:
+        request: Supplies the implementation name this run is parametrized on.
+
+    Returns:
+        The callable, taking `simulate.run_chunk`'s arguments by keyword.
+    """
+    return run.RUNNABLE[request.param]
+
+
 def assert_identical(reference: simulate.Results, produced: simulate.Results) -> None:
     """Asserts two results agree in every cell of every array.
 
     Args:
         reference: What the Python reference returned.
-        produced: What the kernel returned.
+        produced: What the implementation under test returned.
 
     Raises:
         AssertionError: On the first array that differs, named.
@@ -79,32 +115,36 @@ def assert_identical(reference: simulate.Results, produced: simulate.Results) ->
 
 
 @pytest.mark.parametrize("policy", POLICIES, ids=lambda spec: str(spec.kind))
-def test_the_kernel_matches_the_reference_when_nothing_ever_fails(
-    deterministic_arguments: dict[str, object], policy: policies.Resolved
+def test_every_implementation_matches_the_reference_with_no_failures(
+    deterministic_arguments: dict[str, object],
+    policy: policies.Resolved,
+    implementation: run.Implementation,
 ) -> None:
-    """With no failures at all, the two agree cell for cell.
+    """With no failures at all, the results agree cell for cell.
 
     This is the greedy fill on its own: the budget is the configured one, which
     funds a small fraction of the population, so every year runs off the end of
     the ranked order with candidates behind it and the last funded segment is
     decided by the cumulative cost. It is exact rather than tolerant because
-    both sides accumulate that total one candidate at a time — `numpy.cumsum`
-    on one side and a running sum on the other — which is a discrete outcome
-    rather than a rounding difference.
+    every implementation accumulates that total one candidate at a time —
+    `numpy.cumsum` in Python and a running sum in Rust — which is a discrete
+    outcome rather than a rounding difference.
     """
     arguments = helpers.forced_lifetimes(deterministic_arguments, helpers.NEVER_FAILS)
 
     assert_identical(
         simulate.run_chunk(**arguments, policy=policy),
-        kernel.run_chunk(**arguments, policy=policy),
+        implementation(**arguments, policy=policy),
     )
 
 
 @pytest.mark.parametrize("policy", POLICIES, ids=lambda spec: str(spec.kind))
-def test_the_kernel_matches_the_reference_when_everything_fails_at_once(
-    deterministic_arguments: dict[str, object], policy: policies.Resolved
+def test_every_implementation_matches_when_everything_fails_at_once(
+    deterministic_arguments: dict[str, object],
+    policy: policies.Resolved,
+    implementation: run.Implementation,
 ) -> None:
-    """With every segment failing every year, the two agree cell for cell.
+    """With every segment failing every year, the results agree cell for cell.
 
     Nothing is ever a planned candidate here, because a segment that failed
     this year has already been replaced, so what this pins is the emergency
@@ -116,13 +156,15 @@ def test_the_kernel_matches_the_reference_when_everything_fails_at_once(
 
     assert_identical(
         simulate.run_chunk(**arguments, policy=policy),
-        kernel.run_chunk(**arguments, policy=policy),
+        implementation(**arguments, policy=policy),
     )
 
 
 @pytest.mark.parametrize("policy", POLICIES, ids=lambda spec: str(spec.kind))
-def test_the_kernel_matches_the_reference_when_failures_crowd_out_prevention(
-    deterministic_arguments: dict[str, object], policy: policies.Resolved
+def test_every_implementation_matches_when_failures_crowd_out_prevention(
+    deterministic_arguments: dict[str, object],
+    policy: policies.Resolved,
+    implementation: run.Implementation,
 ) -> None:
     """Both paths run in the same year, with the year's failures charged first.
 
@@ -135,7 +177,7 @@ def test_the_kernel_matches_the_reference_when_failures_crowd_out_prevention(
     mobilization, and no escalation — so that the year's emergency bill is
     exactly representable whatever order it is added in. That keeps this test
     on the ordering: it compares which segments each implementation funds, not
-    whether the two reductions that produce the budget agree in their last
+    whether the reductions that produce the budget agree in their last
     bits. `test_both_implementations_charge_the_same_emergency_total` leaves
     the costs uneven and pins that arithmetic instead.
     """
@@ -157,16 +199,17 @@ def test_the_kernel_matches_the_reference_when_failures_crowd_out_prevention(
 
     assert_identical(
         simulate.run_chunk(**arguments, policy=policy),
-        kernel.run_chunk(**arguments, policy=policy),
+        implementation(**arguments, policy=policy),
     )
 
 
-def test_both_implementations_fund_a_candidate_costing_exactly_the_remainder(
+def test_every_implementation_funds_a_candidate_costing_the_remainder(
     deterministic_arguments: dict[str, object],
+    implementation: run.Implementation,
 ) -> None:
     """The greedy fill's boundary: spending may equal the budget, not exceed it.
 
-    Every other test here compares the two implementations against each other,
+    Every other test here compares an implementation against the reference,
     which cannot see a boundary they are both wrong about in the same
     direction. This one knows the answer without simulating anything: nothing
     fails, every segment costs exactly 1,500 to replace, and the year's budget
@@ -189,21 +232,22 @@ def test_both_implementations_fund_a_candidate_costing_exactly_the_remainder(
     policy = helpers.resolved("worst_first")
 
     reference = simulate.run_chunk(**arguments, policy=policy)
-    produced = kernel.run_chunk(**arguments, policy=policy)
+    produced = implementation(**arguments, policy=policy)
 
     assert reference.planned_replacements[0, 0].sum() == funded_exactly
     assert reference.planned_spend[0, 0].sum() == funded_exactly * planned
     assert_identical(reference, produced)
 
 
-def test_both_implementations_charge_the_same_emergency_total(
+def test_every_implementation_charges_the_same_emergency_total(
     deterministic_arguments: dict[str, object],
+    implementation: run.Implementation,
 ) -> None:
-    """The year's emergency bill must be reduced the same way on both sides.
+    """The year's emergency bill must be reduced the same way by everything.
 
     Where `emergency_charged_to_budget` is true, the year's emergency spend is
     subtracted from the budget before the planned pass is scored, so it decides
-    how far down the ranked order the money reaches. Both sides total it one
+    how far down the ranked order the money reaches. All of them total it one
     failure at a time — `simulate.running_total` on the reference, a running
     sum in the kernel — and this is what holds them to that. A reference that
     reduced with `numpy.sum` instead would add pairwise, which disagrees in the
@@ -269,29 +313,30 @@ def test_both_implementations_charge_the_same_emergency_total(
 
     assert_identical(
         simulate.run_chunk(**arguments, policy=policy),
-        kernel.run_chunk(**arguments, policy=policy),
+        implementation(**arguments, policy=policy),
     )
 
 
 @pytest.mark.parametrize("charged", [False, True], ids=["uncharged", "charged"])
 @pytest.mark.parametrize("policy", POLICIES, ids=lambda spec: str(spec.kind))
-def test_the_kernel_matches_the_reference_over_a_real_population(
+def test_every_implementation_matches_over_a_real_population(
     statistical_arguments: dict[str, object],
     policy: policies.Resolved,
     charged: bool,
+    implementation: run.Implementation,
 ) -> None:
     """Paired, replication against replication, on drawn lifetimes.
 
     Run with the year's emergency bill charged against the budget and without.
     The shipped configuration leaves it off, so without this parameter the
     charged path is reached only by the deterministic tests, and those force
-    costs round precisely so that both implementations' reductions are exact.
+    costs round precisely so that every implementation's reduction is exact.
     Drawn lifetimes are what make the emergency bill uneven, so this is where a
-    difference in how the two implementations reduce it would reach the budget
-    the candidates are then scored against.
+    difference in how an implementation reduces it would reach the budget the
+    candidates are then scored against.
 
-    Both sides consume the same draws, so replication `r` sees identical
-    lifetimes in each, and the results should differ only where a last-place
+    Every implementation consumes the same draws, so replication `r` sees
+    identical lifetimes in each, and the results should differ only where a last-place
     difference in a score flipped a sort and changed which candidate was funded
     last. The comparison is paired for that reason: treating the two runs as
     independent samples would throw the pairing away and could only see a
@@ -307,7 +352,7 @@ def test_the_kernel_matches_the_reference_over_a_real_population(
     """
     arguments = {**statistical_arguments, "emergency_charged_to_budget": charged}
     reference = simulate.run_chunk(**arguments, policy=policy)
-    produced = kernel.run_chunk(**arguments, policy=policy)
+    produced = implementation(**arguments, policy=policy)
 
     for name, expected, actual in zip(
         simulate.Results._fields, reference, produced, strict=True
@@ -335,14 +380,14 @@ def test_the_kernel_matches_the_reference_over_a_real_population(
 
 
 def test_two_saved_runs_agree_row_for_row(tmp_path: pathlib.Path) -> None:
-    """The two implementations agree on disk, not only in memory.
+    """Every implementation agrees on disk, not only in memory.
 
-    An in-memory comparison ends when the test does. Two runs written out can
+    An in-memory comparison ends when the test does. Runs written out can
     be diffed afterwards, which is what makes a parity failure diagnosable
     rather than merely red, and it is also the only check that covers what sits
     between the annual loop and the saved file: the chunking, the per-policy
     loop, the concatenation and the row builder are all outside `run_chunk` and
-    are driven identically for both.
+    are driven identically for all of them.
 
     The runs are written through the same entry point a real sweep uses, so
     what is compared is the shipped path. Only the manifest may differ — it
@@ -413,17 +458,19 @@ def test_a_saved_kernel_run_records_the_profile_it_was_built_with(
 
 def test_charging_an_empty_year_of_failures_leaves_the_budget_whole(
     deterministic_arguments: dict[str, object],
+    implementation: run.Implementation,
 ) -> None:
     """A year with nothing to charge is the empty-reduction case.
 
     The reference adds the year's emergency bill left to right so that it and
-    the kernel reach the greedy fill with the same budget. Left to itself that
-    reduction raises on an empty array — a cumulative sum of nothing has no
-    last element — which is a year in which nothing failed, and the shipped
+    every other implementation reach the greedy fill with the same budget. Left
+    to itself that reduction raises on an empty array — a cumulative sum of
+    nothing has no last element — which is a year in which nothing failed, and
+    the shipped
     configuration reaches one as soon as anything is charged to the budget.
 
     Nothing fails here at all, so every year takes that path, and the budget
-    must arrive at the fill unreduced: the two implementations agree, and both
+    must arrive at the fill unreduced: the implementations agree, and both
     fund what an uncharged run would.
     """
     arguments = {
@@ -441,7 +488,7 @@ def test_charging_an_empty_year_of_failures_leaves_the_budget_whole(
 
     assert charged.failures.sum() == 0.0
     assert charged.planned_replacements.sum() > 0.0
-    assert_identical(charged, kernel.run_chunk(**arguments, policy=policy))
+    assert_identical(charged, implementation(**arguments, policy=policy))
     uncharged = simulate.run_chunk(
         **{**arguments, "emergency_charged_to_budget": False}, policy=policy
     )
@@ -450,6 +497,7 @@ def test_charging_an_empty_year_of_failures_leaves_the_budget_whole(
 
 def test_a_year_that_overruns_its_budget_funds_nothing_and_carries_no_debt(
     deterministic_arguments: dict[str, object],
+    implementation: run.Implementation,
 ) -> None:
     """The limiting case of failures crowding out prevention.
 
@@ -496,7 +544,7 @@ def test_a_year_that_overruns_its_budget_funds_nothing_and_carries_no_debt(
     assert overrun.emergency_spend.sum() > 10.0 * n_years
     assert overrun.planned_replacements.sum() == 0.0
     assert overrun.planned_spend.sum() == 0.0
-    assert_identical(overrun, kernel.run_chunk(**arguments, policy=policy))
+    assert_identical(overrun, implementation(**arguments, policy=policy))
 
 
 def test_the_parity_fixture_refuses_a_single_replication() -> None:

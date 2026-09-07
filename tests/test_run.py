@@ -256,8 +256,12 @@ def test_an_implementation_that_does_not_exist_is_refused_before_any_work(
     # below raises `KeyError` carrying the same name, so a test matching only
     # that cannot tell the guard from its absence — and the guard exists for
     # the message, which names what would have worked.
+    #
+    # A misspelling rather than a name that exists but has nothing behind it:
+    # every implementation a saved result may claim is now runnable, so that
+    # second case has no example left to make.
     with pytest.raises(KeyError, match="are the ones that exist"):
-        run.run(small_config(), tmp_path, implementation="batched_numpy")
+        run.run(small_config(), tmp_path, implementation="kernal")
 
 
 def test_a_name_no_result_may_claim_is_reported_as_unknown() -> None:
