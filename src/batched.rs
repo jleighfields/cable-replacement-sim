@@ -94,14 +94,8 @@ mod column {
     pub const ELIGIBLE: &str = "eligible";
     /// The rank key, meaningful only where eligible.
     pub const RANK: &str = "rank";
-    /// The rank key with ineligible segments pushed below every real one.
-    pub const DEMOTED: &str = "demoted";
-    /// What this segment adds to the running cost, infinite where ineligible.
-    pub const STEP: &str = "step";
     /// Cumulative planned cost down this replication's ranked order.
     pub const RUNNING: &str = "running";
-    /// What this replication has left to spend this year.
-    pub const AVAILABLE: &str = "available";
 }
 
 /// Whether a segment was replaced this year, by failure or as planned work.
@@ -149,7 +143,7 @@ fn tile(values: &[f64], times: usize) -> Vec<f64> {
 ///
 /// * `frame` - the frame to read.
 /// * `name` - the column to read.
-fn column_values(frame: &DataFrame, name: &str) -> PolarsResult<Vec<f64>> {
+fn floats(frame: &DataFrame, name: &str) -> PolarsResult<Vec<f64>> {
     Ok(frame.column(name)?.f64()?.into_no_null_iter().collect())
 }
 
@@ -159,7 +153,7 @@ fn column_values(frame: &DataFrame, name: &str) -> PolarsResult<Vec<f64>> {
 ///
 /// * `frame` - the frame to read.
 /// * `name` - the column to read.
-fn column_flags(frame: &DataFrame, name: &str) -> PolarsResult<Vec<bool>> {
+fn flags(frame: &DataFrame, name: &str) -> PolarsResult<Vec<bool>> {
     // `into_no_null_iter` is only for numeric columns; a boolean one yields
     // `Option<bool>` and the nulls are ruled out by construction here, since
     // every boolean column is built by a comparison over non-null values.
@@ -171,34 +165,65 @@ fn column_flags(frame: &DataFrame, name: &str) -> PolarsResult<Vec<bool>> {
         .collect())
 }
 
-/// A quantity's contribution, zero where the row does not contribute.
+/// Copies an integer key column out as a plain vector.
+///
+/// The replication and segment columns are read back to mark rows by position
+/// and to look a replication's remaining budget up, both of which are indexing
+/// rather than frame work.
 ///
 /// # Arguments
 ///
-/// * `flag` - the boolean column deciding whether the row contributes.
-/// * `value` - what it contributes when it does.
-fn contribution(flag: &str, value: Expr) -> Expr {
-    when(col(flag)).then(value).otherwise(lit(0.0))
+/// * `frame` - the frame to read.
+/// * `name` - the column to read.
+fn integers(frame: &DataFrame, name: &str) -> PolarsResult<Vec<i32>> {
+    Ok(frame.column(name)?.i32()?.into_no_null_iter().collect())
+}
+
+/// Totals a column within a group, one row at a time in the frame's order.
+///
+/// # Arguments
+///
+/// * `column` - the column to total.
+fn summed(column: &str) -> Expr {
+    col(column).cum_sum(false).last()
+}
+
+/// Counts the rows in a group.
+///
+/// A count needs no ordering argument: a sum of ones is exact whatever order it
+/// is taken in, which is why this is the group's length rather than a running
+/// total of a literal. Writing it as one would also be wrong rather than merely
+/// unnecessary — a bare literal is a scalar, and a cumulative sum of a scalar is
+/// that scalar, so every group would count as one.
+fn counted() -> Expr {
+    len().cast(DataType::Float64)
 }
 
 /// Totals each quantity per replication and per segment class.
 ///
-/// **A cumulative sum's last element rather than a grouped sum.** A grouped sum
-/// adds in whatever order the engine finds convenient, which differs from a
-/// running total in the last bits and therefore differs from what the reference
-/// reports. A cumulative sum is defined by its order, so it keeps one. This is
-/// the same choice `batched.py` makes and for the same reason.
+/// The caller supplies each reduction rather than having one imposed, because
+/// the right one differs: a total has to accumulate in a stated order and a
+/// count does not. `summed` and `counted` are the two.
+///
+/// **A total is a cumulative sum's last element rather than a grouped sum.** A
+/// grouped sum adds in whatever order the engine finds convenient, which
+/// differs from a running total in the last bits and therefore differs from
+/// what the reference reports. A cumulative sum is defined by its order, so it
+/// keeps one. This is the same choice `batched.py` makes and for the same
+/// reason.
 ///
 /// # Arguments
 ///
-/// * `frame` - rows in the order the totals should accumulate: segment order
-///   for what failures contribute, rank order for what funded work contributes.
-/// * `quantities` - the reported quantity names, paired with the expression
-///   giving each row's contribution.
+/// * `frame` - the contributing rows, in the order the totals should
+///   accumulate: segment order for what failures contribute, rank order for
+///   what funded work contributes. Rows contributing nothing are filtered out
+///   before this, so no reduction has to skip over them.
+/// * `quantities` - the reported quantity names, paired with the aggregation
+///   giving each group's total.
 fn totals_per_class(frame: LazyFrame, quantities: Vec<(&str, Expr)>) -> LazyFrame {
     let aggregated: Vec<Expr> = quantities
         .into_iter()
-        .map(|(name, value)| value.cum_sum(false).last().alias(name))
+        .map(|(name, value)| value.alias(name))
         .collect();
     frame
         .group_by([col(column::REP), col(column::CLASS)])
@@ -309,7 +334,6 @@ pub fn run_chunk(
         // 1. Failures, resolved before planned work so that a segment failing
         //    this year is not also a candidate this year.
         state = state
-            .clone()
             .lazy()
             .with_column((col(column::PLANNED_AT_PAR) * lit(escalation)).alias(column::PLANNED_NOW))
             .with_column(
@@ -321,32 +345,34 @@ pub fn run_chunk(
             .collect()
             .map_err(ChunkError::Polars)?;
 
-        let emergency_now = contribution(
-            column::FAILED,
-            col(column::PLANNED_NOW) * lit(emergency_multiplier),
-        );
+        // Compacted before anything is totalled over it. A few percent of
+        // segments fail in a year, so a grouped total over the whole frame does
+        // twenty times the work for the same numbers — and it is the same
+        // numbers exactly, because a running total over the contributing rows
+        // ends where one over those rows with zeros interleaved ends.
+        let failing = state
+            .clone()
+            .lazy()
+            .filter(col(column::FAILED))
+            .collect()
+            .map_err(ChunkError::Polars)?;
         let failures = totals_per_class(
-            state.clone().lazy(),
+            failing.clone().lazy(),
             vec![
-                (QUANTITIES[0], contribution(column::FAILED, lit(1.0))),
+                (QUANTITIES[0], counted()),
+                (QUANTITIES[1], summed(column::CUSTOMERS)),
+                (QUANTITIES[2], summed(column::MINUTES_FAILURE)),
                 (
-                    QUANTITIES[1],
-                    contribution(column::FAILED, col(column::CUSTOMERS)),
+                    QUANTITIES[6],
+                    (col(column::PLANNED_NOW) * lit(emergency_multiplier))
+                        .cum_sum(false)
+                        .last(),
                 ),
-                (
-                    QUANTITIES[2],
-                    contribution(column::FAILED, col(column::MINUTES_FAILURE)),
-                ),
-                (QUANTITIES[6], emergency_now.clone()),
             ],
         );
 
         // 2. Planned replacement, funded greedily down the ranked order.
-        let mut available = df![
-            column::REP => (0..n_reps as i32).collect::<Vec<i32>>(),
-            column::AVAILABLE => vec![budget[year]; n_reps],
-        ]
-        .map_err(ChunkError::Polars)?;
+        let mut available = vec![budget[year]; n_reps];
         if emergency_charged_to_budget {
             // Accumulated one row at a time within a replication, in segment
             // order, which is the order the reference adds it in. This total is
@@ -359,46 +385,40 @@ pub fn run_chunk(
             // negative, and it is left negative: every planned cost is
             // positive, so nothing is funded at or below zero and nothing
             // carries into the next year.
-            let charged = emergency_now
+            let running = (col(column::PLANNED_NOW) * lit(emergency_multiplier))
                 .cum_sum(false)
                 .over([col(column::REP)])
                 .map_err(ChunkError::Polars)?
                 .last()
                 .alias("charge");
-            available = state
-                .clone()
+            let charged = failing
                 .lazy()
                 .group_by([col(column::REP)])
-                .agg([charged])
-                .join(
-                    available.lazy(),
-                    [col(column::REP)],
-                    [col(column::REP)],
-                    JoinArgs::new(JoinType::Inner),
-                )
-                .select([
-                    col(column::REP),
-                    (col(column::AVAILABLE) - col("charge")).alias(column::AVAILABLE),
-                ])
+                .agg([running])
                 .collect()
                 .map_err(ChunkError::Polars)?;
+            let charged_rep = integers(&charged, column::REP).map_err(ChunkError::Polars)?;
+            let charge = floats(&charged, "charge").map_err(ChunkError::Polars)?;
+            for (row, &replication) in charged_rep.iter().enumerate() {
+                available[replication as usize] -= charge[row];
+            }
         }
 
-        let age = column_values(&state, column::AGE).map_err(ChunkError::Polars)?;
-        let failed = column_flags(&state, column::FAILED).map_err(ChunkError::Polars)?;
+        let age = floats(&state, column::AGE).map_err(ChunkError::Polars)?;
+        let failed = flags(&state, column::FAILED).map_err(ChunkError::Polars)?;
         let eligible: Vec<bool> = (0..age.len())
             .map(|row| policies::eligible(policy, age[row], failed[row]))
             .collect();
 
-        let planned = if eligible.iter().any(|&candidate| candidate) {
+        let mut replaced = failed.clone();
+        let funded = if eligible.iter().any(|&candidate| candidate) {
             let current_shape =
-                column_values(&state, column::CURRENT_SHAPE).map_err(ChunkError::Polars)?;
+                floats(&state, column::CURRENT_SHAPE).map_err(ChunkError::Polars)?;
             let current_scale =
-                column_values(&state, column::CURRENT_SCALE).map_err(ChunkError::Polars)?;
-            let outage = column_values(&state, column::OUTAGE_COST).map_err(ChunkError::Polars)?;
-            let planned_now =
-                column_values(&state, column::PLANNED_NOW).map_err(ChunkError::Polars)?;
-            let priority = column_values(&state, column::PRIORITY).map_err(ChunkError::Polars)?;
+                floats(&state, column::CURRENT_SCALE).map_err(ChunkError::Polars)?;
+            let outage = floats(&state, column::OUTAGE_COST).map_err(ChunkError::Polars)?;
+            let planned_now = floats(&state, column::PLANNED_NOW).map_err(ChunkError::Polars)?;
+            let priority = floats(&state, column::PRIORITY).map_err(ChunkError::Polars)?;
             let rank: Vec<f64> = (0..age.len())
                 .map(|row| {
                     policies::rank_key(
@@ -428,152 +448,135 @@ pub fn run_chunk(
                 }));
             }
 
-            // Ineligible segments are demoted below every real rank key and
-            // given an infinite cost, so the sort puts them behind the
-            // candidates and the cumulative cost cannot run past the last real
-            // one however much budget is left.
-            let ranked = state
+            // **Only the candidates are carried, and only the columns the fill
+            // and the totals read.** This is where a long frame beats a
+            // rectangular one rather than merely matching it: candidate sets
+            // differ between replications, which is what makes the batched
+            // NumPy form sort every segment of every replication, and what a
+            // frame handles by simply having fewer rows.
+            let candidates = state
                 .clone()
                 .lazy()
+                .select([
+                    col(column::REP),
+                    col(column::SEGMENT_ID),
+                    col(column::CLASS),
+                    col(column::MINUTES_PLANNED),
+                    col(column::PLANNED_NOW),
+                ])
                 .with_columns([
                     lit(Series::new(column::ELIGIBLE.into(), eligible.clone())),
                     lit(Series::new(column::RANK.into(), rank)),
                 ])
-                .with_columns([
-                    when(col(column::ELIGIBLE))
-                        .then(col(column::RANK))
-                        .otherwise(lit(f64::NEG_INFINITY))
-                        .alias(column::DEMOTED),
-                    when(col(column::ELIGIBLE))
-                        .then(col(column::PLANNED_NOW))
-                        .otherwise(lit(f64::INFINITY))
-                        .alias(column::STEP),
-                ])
+                .filter(col(column::ELIGIBLE))
                 .sort(
-                    [column::REP, column::DEMOTED, column::SEGMENT_ID],
+                    [column::REP, column::RANK, column::SEGMENT_ID],
                     SortMultipleOptions::default()
                         .with_order_descending_multi([false, true, false]),
                 );
-            let running = col(column::STEP)
+            // The cumulative cost down each replication's ranked order, which
+            // is the greedy fill: one partial sum at a time, in the order the
+            // reference spends the money.
+            let running = col(column::PLANNED_NOW)
                 .cum_sum(false)
                 .over([col(column::REP)])
                 .map_err(ChunkError::Polars)?
                 .alias(column::RUNNING);
-            let ranked = ranked
+            let ranked = candidates
                 .with_column(running)
-                .join(
-                    available.lazy(),
-                    [col(column::REP)],
-                    [col(column::REP)],
-                    JoinArgs::new(JoinType::Inner),
-                )
-                .with_column(
-                    col(column::RUNNING)
-                        .lt_eq(col(column::AVAILABLE))
-                        .alias(column::FUNDED),
-                )
                 .collect()
                 .map_err(ChunkError::Polars)?;
 
-            // Totalled here, while the rows are still in rank order, because
-            // that is the order the reference adds the funded segments in.
-            let planned = totals_per_class(
-                ranked.clone().lazy(),
-                vec![
-                    (
-                        QUANTITIES[3],
-                        contribution(column::FUNDED, col(column::MINUTES_PLANNED)),
-                    ),
-                    (QUANTITIES[4], contribution(column::FUNDED, lit(1.0))),
-                    (
-                        QUANTITIES[5],
-                        contribution(column::FUNDED, col(column::PLANNED_NOW)),
-                    ),
-                ],
-            );
-            // Back to the canonical order, which every later year's uniforms
-            // are attached by position.
-            state = ranked
+            // A candidate costing exactly what remains is funded: the rule is
+            // that spending may not exceed the budget, not that it must fall
+            // short. Every planned cost is positive, so the running total only
+            // rises and this cut is a prefix of the ranked order.
+            let ranked_rep = integers(&ranked, column::REP).map_err(ChunkError::Polars)?;
+            let cumulative = floats(&ranked, column::RUNNING).map_err(ChunkError::Polars)?;
+            let affordable: Vec<bool> = (0..cumulative.len())
+                .map(|row| cumulative[row] <= available[ranked_rep[row] as usize])
+                .collect();
+            let funded = ranked
                 .lazy()
-                .sort(
-                    [column::REP, column::SEGMENT_ID],
-                    SortMultipleOptions::default(),
-                )
-                .drop(by_name(
-                    [
-                        column::ELIGIBLE,
-                        column::RANK,
-                        column::DEMOTED,
-                        column::STEP,
-                        column::RUNNING,
-                        column::AVAILABLE,
-                    ],
-                    true,
-                    false,
-                ))
+                .filter(lit(Series::new(column::FUNDED.into(), affordable)))
                 .collect()
                 .map_err(ChunkError::Polars)?;
-            planned
+
+            // The state frame is never permuted — nothing above sorted it, only
+            // the candidate projection — so a row's position is still
+            // `replication * segments + segment_id`, and that is what marks the
+            // funded rows without a join back.
+            let funded_rep = integers(&funded, column::REP).map_err(ChunkError::Polars)?;
+            let funded_segment =
+                integers(&funded, column::SEGMENT_ID).map_err(ChunkError::Polars)?;
+            for row in 0..funded_rep.len() {
+                replaced[funded_rep[row] as usize * n_segments + funded_segment[row] as usize] =
+                    true;
+            }
+            funded
         } else {
-            state = state
-                .clone()
-                .lazy()
-                .with_column(lit(false).alias(column::FUNDED))
-                .collect()
-                .map_err(ChunkError::Polars)?;
-            totals_per_class(
-                state.clone().lazy().filter(lit(false)),
-                vec![
-                    (QUANTITIES[3], lit(0.0)),
-                    (QUANTITIES[4], lit(0.0)),
-                    (QUANTITIES[5], lit(0.0)),
-                ],
-            )
+            state.clear()
         };
 
+        // Still in rank order, which is the order the reference adds the funded
+        // segments in and therefore the order these have to accumulate in.
+        let planned = totals_per_class(
+            funded.lazy(),
+            vec![
+                (QUANTITIES[3], summed(column::MINUTES_PLANNED)),
+                (QUANTITIES[4], counted()),
+                (QUANTITIES[5], summed(column::PLANNED_NOW)),
+            ],
+        );
         yearly.push(
             failures
                 .join(
                     planned,
                     [col(column::REP), col(column::CLASS)],
                     [col(column::REP), col(column::CLASS)],
-                    JoinArgs::new(JoinType::Left),
+                    JoinArgs::new(JoinType::Full).with_coalesce(JoinCoalesce::CoalesceColumns),
                 )
-                .with_columns([
-                    col(QUANTITIES[3]).fill_null(lit(0.0)),
-                    col(QUANTITIES[4]).fill_null(lit(0.0)),
-                    col(QUANTITIES[5]).fill_null(lit(0.0)),
-                ])
+                .with_columns(
+                    QUANTITIES
+                        .iter()
+                        .map(|name| col(*name).fill_null(lit(0.0)))
+                        .collect::<Vec<Expr>>(),
+                )
                 .collect()
                 .map_err(ChunkError::Polars)?,
         );
 
         // 3. Everything replaced this year enters service next year, as new
         //    cable of the replacement technology.
-        let funded = column_flags(&state, column::FUNDED).map_err(ChunkError::Polars)?;
-        let failed = column_flags(&state, column::FAILED).map_err(ChunkError::Polars)?;
-        let replaced: Vec<bool> = (0..funded.len())
-            .map(|row| funded[row] || failed[row])
-            .collect();
         let replacement_shapes =
-            column_values(&state, column::REPLACEMENT_SHAPE).map_err(ChunkError::Polars)?;
+            floats(&state, column::REPLACEMENT_SHAPE).map_err(ChunkError::Polars)?;
         let replacement_scales =
-            column_values(&state, column::REPLACEMENT_SCALE).map_err(ChunkError::Polars)?;
-        let renewed: Vec<f64> = (0..replaced.len())
-            .map(|row| {
+            floats(&state, column::REPLACEMENT_SCALE).map_err(ChunkError::Polars)?;
+        let mut failure_time = floats(&state, column::FAILURE_TIME).map_err(ChunkError::Polars)?;
+        // Drawn at the replaced rows alone. Computing it for every row and
+        // selecting afterwards draws a lifetime for the ninety-seven percent
+        // that keep the one they have.
+        for row in 0..replaced.len() {
+            if replaced[row] {
                 let segment = row % n_segments;
                 let replication = row / n_segments;
                 let draw = lifetime_uniforms
                     [(replication * n_segments + segment) * draws_per_segment + year + 1];
-                (year + 1) as f64
-                    + weibull::draw_lifetime(draw, replacement_shapes[row], replacement_scales[row])
-            })
-            .collect();
+                failure_time[row] = (year + 1) as f64
+                    + weibull::draw_lifetime(
+                        draw,
+                        replacement_shapes[row],
+                        replacement_scales[row],
+                    );
+            }
+        }
 
         state = state
-            .clone()
             .lazy()
-            .with_column(lit(Series::new(REPLACED.into(), replaced)))
+            .with_columns([
+                lit(Series::new(REPLACED.into(), replaced)),
+                lit(Series::new(column::FAILURE_TIME.into(), failure_time)),
+            ])
             .with_columns([
                 when(col(REPLACED))
                     .then(col(column::REPLACEMENT_SHAPE))
@@ -584,21 +587,12 @@ pub fn run_chunk(
                     .otherwise(col(column::CURRENT_SCALE))
                     .alias(column::CURRENT_SCALE),
                 when(col(REPLACED))
-                    .then(lit(Series::new(column::FAILURE_TIME.into(), renewed)))
-                    .otherwise(col(column::FAILURE_TIME))
-                    .alias(column::FAILURE_TIME),
-                when(col(REPLACED))
                     .then(lit(0.0))
                     .otherwise(col(column::AGE) + lit(1.0))
                     .alias(column::AGE),
             ])
             .drop(by_name(
-                [
-                    column::FAILED,
-                    column::FUNDED,
-                    REPLACED,
-                    column::PLANNED_NOW,
-                ],
+                [column::FAILED, REPLACED, column::PLANNED_NOW],
                 true,
                 false,
             ))
