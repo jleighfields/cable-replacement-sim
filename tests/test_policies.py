@@ -273,3 +273,60 @@ def test_every_configured_policy_resolves_to_its_own_tag() -> None:
     ]
 
     assert sorted(policy.kind for policy in resolved) == list(range(len(names)))
+
+
+def test_funding_stops_at_the_first_candidate_that_does_not_fit() -> None:
+    """Not at the cheapest thing that would still fit below it.
+
+    Passing over an unaffordable candidate to fund cheaper ones underneath
+    spends more of the budget, but it is inherently sequential and no
+    vectorized implementation could reproduce it. Ranking per dollar is what
+    compensates, in the ranking rather than in the fill.
+    """
+    ranked = np.array([0, 1, 2])
+    planned = np.array([400.0, 900.0, 50.0])
+
+    funded = policies.fund(ranked, planned, budget=1_000.0)
+
+    assert funded.tolist() == [0], "the 50-dollar candidate below is not reached"
+
+
+def test_a_candidate_costing_exactly_what_remains_is_funded() -> None:
+    """Spending may not exceed the budget; it is not required to fall short."""
+    ranked = np.array([0, 1])
+    planned = np.array([600.0, 400.0])
+
+    assert policies.fund(ranked, planned, budget=1_000.0).tolist() == [0, 1]
+    assert policies.fund(ranked, planned, budget=999.99).tolist() == [0]
+
+
+def test_a_budget_that_covers_nothing_funds_nothing() -> None:
+    """Zero budget is a real configuration: it is the free end-to-end check.
+
+    Every policy at zero budget must equal run-to-failure at any budget.
+    """
+    funded = policies.fund(np.array([0, 1]), np.array([10.0, 10.0]), budget=0.0)
+
+    assert funded.tolist() == []
+
+
+def test_funding_an_empty_candidate_set_is_not_an_error() -> None:
+    """Run-to-failure reaches this every year of every run."""
+    funded = policies.fund(
+        np.array([], dtype=int), np.array([10.0, 10.0]), budget=1e9
+    )
+
+    assert funded.tolist() == []
+
+
+def test_the_fill_follows_the_ranking_rather_than_the_segment_order() -> None:
+    """It indexes cost through the ranked order, not through the raw array."""
+    ranked = np.array([2, 0, 1])
+    planned = np.array([1_000.0, 1_000.0, 10.0])
+
+    funded = policies.fund(ranked, planned, budget=1_010.0)
+
+    # Costs accumulate as 10 then 1,000, which exactly fills the budget. Read
+    # in segment order instead they would accumulate 1,000 then 1,000, and the
+    # second candidate would not fit.
+    assert funded.tolist() == [2, 0]

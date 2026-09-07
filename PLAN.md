@@ -1325,8 +1325,8 @@ cable-replacement-sim/
 ├── src/                        # Rust crate
 │   ├── lib.rs                  # PyO3 module definition
 │   ├── weibull.rs              # conditional p(t), left-truncated lifetime draw
-│   ├── policy.rs               # scoring + greedy budget allocation
-│   └── sim.rs                  # replication loop
+│   ├── policies.rs             # scoring + greedy budget allocation
+│   └── simulate.rs             # replication loop
 ├── python/cablesim/
 │   ├── __init__.py
 │   ├── config.py               # pydantic schema + loader
@@ -1335,8 +1335,8 @@ cable-replacement-sim/
 │   ├── population.py           # synthetic segment table (simulation input)
 │   ├── records.py              # synthetic censored failure records (fit input)
 │   ├── weibull.py              # censored MLE, effective-scale reduction
-│   ├── policies.py             # scoring functions (shared definitions)
-│   ├── simulate.py            # the annual loop; the correctness reference
+│   ├── policies.py             # scoring + greedy budget allocation
+│   ├── simulate.py             # the annual loop; the correctness reference
 │   ├── batched.py              # batched NumPy and polars loops; benchmark only
 │   ├── metrics.py              # SAIFI / SAIDI / CAIDI / CMI, discounting
 │   ├── run.py                  # config -> run directory; the only writer
@@ -1412,10 +1412,10 @@ question with a different answer.
 | Censored MLE and the AFT fit | `weibull.py` | — | A one-time fit over a modest table; porting it buys nothing (2.4) |
 | **Conditional `p(t)`** | `weibull.py` | `weibull.rs` | **Mirrored** |
 | **Left-truncated lifetime draw** | `weibull.py` | `weibull.rs` | **Mirrored** |
-| **Policy scoring** | `policies.py` | `policy.rs` | **Mirrored** |
-| **Greedy budget allocation** | `simulate.py` | `policy.rs` | **Mirrored** |
-| **Annual replication loop** | `simulate.py` | `sim.rs` | **Mirrored** |
-| Parallelism over replications | — | `sim.rs` (rayon) | The reference stays single-threaded and readable; it is the reference, not the fast path |
+| **Policy scoring** | `policies.py` | `policies.rs` | **Mirrored** |
+| **Greedy budget allocation** | `policies.py` | `policies.rs` | **Mirrored** |
+| **Annual replication loop** | `simulate.py` | `simulate.rs` | **Mirrored** |
+| Parallelism over replications | — | `simulate.rs` (rayon) | The reference stays single-threaded and readable; it is the reference, not the fast path |
 | Reliability metrics and discounting | `metrics.py` | — | Ratios derived once from returned counts, so both implementations are compared on what they compute (7.4) |
 | Run orchestration and writing | `run.py` | — | Owns the chunk and policy loops, the concatenation, and every write (7.1) |
 | Run directory format and sweep reading | `results.py` | — | The layout `run.py` writes through, and the reader; the kernel does no I/O |
@@ -1435,6 +1435,16 @@ Three rules decide that table, and each is a rule rather than a preference:
 - **The kernel does no I/O and never calls back into Python.** It takes arrays
   and returns arrays. Everything about files, formats and figures is on the
   Python side of the boundary.
+- **A mirrored pair carries the same module name on both sides, and the same
+  contents behind it.** `weibull.py`/`weibull.rs`,
+  `policies.py`/`policies.rs`, `simulate.py`/`simulate.rs`. The names are how a
+  reader finds the other half of a pair they are about to change, and the rule
+  that a change to one side is incomplete until the other is read only works if
+  finding it is trivial. Matching the names while splitting the contents
+  differently is the worse failure of the two, because it looks right: the
+  greedy budget allocation sits with scoring rather than with the year loop on
+  both sides, which is a decision about where it goes, not about what it is
+  called.
 
 Two further implementations of the annual loop exist **for the benchmark only**
 (`batched.py`, Section 6.5, Benchmarks): a batched NumPy baseline and a batched
@@ -1588,7 +1598,7 @@ Implementation notes:
 - **The initial draw is left-truncated** at each segment's starting age (2.2).
   Getting this wrong produces a run that completes and curves that look
   plausible.
-- Keep the scoring function in `policy.rs` mirroring `python/cablesim/policies.py`
+- Keep the scoring function in `policies.rs` mirroring `python/cablesim/policies.py`
   exactly. Any divergence shows up in the parity test.
 - Flat arrays rather than a struct per segment: arrays keep the boundary
   crossing to one call and let each column arrive zero-copy, where a list of
@@ -2504,7 +2514,7 @@ end-to-end result, pure Python, saved to disk.
 easier to diagnose against two saved runs than against two in-memory arrays.
 
 **Phase 4 — Rust kernel, single-threaded**
-Port the loop to `sim.rs` / `policy.rs` / `weibull.rs`. Bind with PyO3, build
+Port the loop to `simulate.rs` / `policies.rs` / `weibull.rs`. Bind with PyO3, build
 with maturin, use `rust-numpy` for zero-copy array passing. Pass the
 deterministic parity test and the Phase 4 form of the statistical one — scalar
 reference, 50 replications, 2,000 segments (6.4).

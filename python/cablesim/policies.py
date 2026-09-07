@@ -1,11 +1,10 @@
 """Replacement-policy eligibility and ranking.
 
-Each year the annual loop asks two questions of every segment: may it be
-replaced, and if several may, which first. This module answers both, over
-whole arrays, for the five policies of ``PLAN.md`` section 2.8, Replacement
-policies. The greedy fill that spends the budget down the resulting order
-lives in ``reference.py``, because that is the part the Rust kernel mirrors as
-allocation rather than as scoring.
+Each year the annual loop asks three questions of every segment: may it be
+replaced, if several may then which first, and how far down that order the
+budget reaches. This module answers all three, over whole arrays, for the five
+policies of ``PLAN.md`` section 2.8, Replacement policies. The year loop that
+calls it is ``simulate.py``.
 
 Two policies exist as controls rather than as proposals. ``worst_first`` ranks
 on failure probability alone, so the gap between it and ``risk_ranked`` is the
@@ -234,3 +233,38 @@ def order(rank: np.ndarray, candidates: np.ndarray) -> np.ndarray:
             f"finite by construction, so this is a defect upstream of ranking"
         )
     return candidates[np.lexsort((candidates, -scores))]
+
+
+def fund(ranked: np.ndarray, planned: np.ndarray, budget: float) -> np.ndarray:
+    """Spends the budget down the ranked order, stopping at the first misfit.
+
+    Funding down a ranked list until the money runs out is what a capital plan
+    does operationally, and it is also the rule that vectorizes: take the
+    cumulative cost in rank order and cut at the first candidate that exceeds
+    what is available. The alternative — passing over an unaffordable candidate
+    and continuing to fund cheaper ones below it — spends more of the budget,
+    but it is an unjustified knapsack heuristic and it is inherently
+    sequential, so no vectorized implementation could reproduce it. Ranking per
+    dollar is what compensates for a cheap candidate being passed over, and it
+    does so in the ranking rather than in the fill.
+
+    A candidate costing exactly what remains is funded: the rule is that
+    spending may not exceed the budget, not that it must fall short.
+
+    Args:
+        ranked: Eligible segment indices, best first, as ``order`` returns
+            them.
+        planned: Planned replacement cost per segment, in dollars, already
+            carrying the year's cost escalation.
+        budget: What this year has to spend, in dollars.
+
+    Returns:
+        The indices to replace, a prefix of ``ranked``.
+    """
+    # `cumsum` accumulates sequentially, one partial sum at a time, which is
+    # what a running total in another language does. `sum` is free to add
+    # pairwise and would disagree in the last bits, and here that is not a
+    # rounding difference to tolerate: it decides which segment is the last one
+    # funded, which is a discrete outcome the parity tests compare exactly.
+    running = np.cumsum(planned[ranked])
+    return ranked[: int(np.searchsorted(running, budget, side="right"))]
