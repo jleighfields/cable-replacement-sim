@@ -2066,11 +2066,11 @@ a candidate.
 
 | Implementation | `run_to_failure` | `age_threshold` | `risk_ranked` |
 |---|---|---|---|
-| Scalar Python reference | 0.01513 | 0.02817 | 0.05191 |
-| Batched NumPy | **0.00551** | **0.02498** | **0.04496** |
-| Rust kernel, 1 thread | 0.00224 | 0.00295 | 0.04748 |
-| **Rust kernel, 48 threads** | **0.00024** | **0.00030** | **0.00222** |
-| **Fastest Python, beaten by** | **23.0x** | **83.3x** | **20.3x** |
+| Scalar Python reference | 0.00747 | **0.02039** | 0.04425 |
+| Batched NumPy | **0.00445** | 0.02426 | **0.04400** |
+| Rust kernel, 1 thread | 0.00201 | 0.00262 | 0.04057 |
+| **Rust kernel, 48 threads** | **0.00024** | **0.00026** | **0.00195** |
+| **Fastest Python, beaten by** | **18.5x** | **78.4x** | **22.6x** |
 
 **Measured once at 100,000 segments**, which is eight times the shipped
 population and further than anything in the test suite goes. Ten replications,
@@ -2095,21 +2095,28 @@ same work is counted on both sides of the change and the improvement is a
 measurement rather than an artefact of where the clock went.
 
 Bold marks the fastest Python implementation in each column, which is the
-denominator of the last row. It is the batched loop in all three now, but that
-row exists because it has not always been: before the draws were computed rather
-than passed in, the scalar reference was faster on two of the three, and a
-speedup quoted against a baseline the reference beats is flattered.
+denominator of the last row. **It is not the same implementation in every
+column**, which is exactly why that row exists rather than a fixed baseline: the
+batched loop wins where a policy funds nothing or everything, and the scalar
+reference wins under `age_threshold`, where two percent of segments are
+eligible and the batched form still sorts every one of them.
+
+The two swapped places twice while this was being built — once when the batched
+loop was written with a wasted pass in it, and once when computing draws made
+the reference pay a per-call cost it had not paid before. A speedup quoted
+against whichever was named the baseline would have moved both times without the
+kernel changing at all.
 
 Five findings, and only the second is the one this project set out to make:
 
 - **Single-threaded, the compiled kernel is not reliably faster than Python.**
-  It is level under `risk_ranked` — 0.0475 against 0.0450 — and 8.5x under
-  `age_threshold`. The gap tracks the candidate set exactly: the kernel scores
+  It is roughly level under `risk_ranked` — 0.0406 against 0.0440 — and 7.8x
+  under `age_threshold`. The gap tracks the candidate set exactly: the kernel scores
   only the candidates, the array implementations score the whole population
   because that is what vectorizes, and when every segment is a candidate the
   advantage is gone. A claim that this model is faster in Rust, single
   threaded, would be false for the policy that is the actual proposal.
-- **The win is the replication axis: 20x to 83x.** Replications are
+- **The win is the replication axis: 18x to 78x.** Replications are
   independent, each reads its own slice of the draws and writes its own block,
   and the interpreter lock is released for the whole computation. Nothing on
   the Python side follows without multiprocessing. This holds for reasons that
