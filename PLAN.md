@@ -2867,21 +2867,42 @@ the argument belongs beside the model it constrains.
    does not yet make it for the segments a policy *chooses*.
 4. **Discount rate.** A number is in the config; it needs a stated basis, since
    the present-value comparison is sensitive to it over a 30-year horizon.
-5. **Settled: rung 5 stays in the suite.** Fitting per-technology shape was
+5. **Settled: NumPy keeps generating every uniform, and the draw array stays.**
+   The array is `(replications, segments, n_years + 1)` — 149 MB for a
+   fifty-replication chunk, 2.98 GB unchunked at the shipped replication count,
+   which is what the chunking exists to bound. Measured, only 1.45% to 1.74% of
+   the year draws are ever read: a year's draw is consumed only by a segment
+   replaced that year, and about three percent of segments are replaced in a
+   year. Generating a chunk's draws costs 0.173 s against roughly 2.1 s of
+   compute.
+
+   A counter-based generator — Philox or Threefry, keyed on the replication,
+   segment and year — would compute any draw in constant time and materialize
+   nothing, and would still give every policy the identical uniform at the
+   identical cell. It was considered and is not being done. The reason to keep
+   the array is not its size: it is that generation living entirely in NumPy is
+   what makes cross-language parity of the draws impossible to get wrong rather
+   than something a test has to catch. A counter-based generator implemented on
+   both sides of the boundary trades that guarantee for a test, and the memory
+   it would save is already bounded by a chunk size that changes no number.
+
+   So the waste is real, measured, and accepted. Anything reconsidering it has
+   to start by saying what it does about draw parity.
+6. **Settled: rung 5 stays in the suite.** Fitting per-technology shape was
    expected to need a record table large enough to be slow. Timed, the whole
    suite runs in about five seconds, so the rung is nowhere near the cost that
    would justify moving it to a notebook.
-6. **Switchability as a class average.** Restoration time per class (2.5)
+7. **Switchability as a class average.** Restoration time per class (2.5)
    averages over the segments in that class that can be switched around and
    those that cannot. Modeling it as a per-segment probability of having an
    alternate feed would be more faithful and would widen the outage
    distribution rather than only shifting its mean. Whether that is worth a
    second random draw per failure is a v2 question.
-7. **Splice-driven failure.** 2.3, Effective scale, notes that a length
+8. **Splice-driven failure.** 2.3, Effective scale, notes that a length
    coefficient shrunk toward zero would indicate failures concentrating at
    splices and terminations. Whether that becomes a modeled term or stays a
    documented diagnostic is a v2 question.
-8. **Settled: there is a polars implementation on the Rust side, and the
+9. **Settled: there is a polars implementation on the Rust side, and the
    answer it gave is that there was nothing to find.** The question was whether
    the frame form's cost is the engine being wrong for this shape of work or
    the cost of reaching it from Python, and the Python pair could not tell
