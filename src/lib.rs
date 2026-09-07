@@ -12,9 +12,9 @@
 //!
 //! # Reading this beside the Python
 //!
-//! This is the file with the most unfamiliar syntax in it and the least going
-//! on. Everything below is either an attribute telling PyO3 to generate glue
-//! code, or a check on what arrived.
+//! Everything below is either an attribute telling PyO3 to generate glue code,
+//! or a check on what arrived. No part of the model is decided here, so the
+//! unfamiliar syntax carries none of it.
 //!
 //! * **`#[pyfunction]` and `#[pymodule]` are code generators.** They expand
 //!   into the C-level functions CPython actually calls, converting each
@@ -95,6 +95,13 @@ fn contiguous<'a, T: Element, D: Dimension>(
 /// * `name` - the argument's name.
 /// * `actual` - the length it has.
 /// * `n_segments` - the length every per-segment array must have.
+///
+/// # Errors
+///
+/// `ValueError` naming the argument and both lengths, if they differ. A
+/// segment's array position is its `segment_id`, so an array of the wrong
+/// length is not merely short — every entry after the first missing one names
+/// a different segment than the caller meant.
 fn one_entry_per_segment(name: &str, actual: usize, n_segments: usize) -> PyResult<()> {
     if actual == n_segments {
         Ok(())

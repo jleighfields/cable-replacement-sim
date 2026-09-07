@@ -267,50 +267,64 @@ pub fn eligible(policy: Resolved, age: f64, replaced_this_year: bool) -> bool {
 /// The eligible positions in the order the budget should be spent on them, or
 /// `NanScore` if any candidate's key was not a number.
 pub fn order_by_rank(rank: &[f64], candidates: &[usize]) -> Result<Vec<usize>, NanScore> {
-    // `.iter().copied().filter(...).collect()` is a list comprehension read
-    // left to right: iterate, take each `usize` by value rather than by
-    // reference, keep the ones whose key is NaN, and build a `Vec` — Rust's
-    // growable list — from what is left. Nothing runs until `collect` asks for
-    // it, the same way a Python generator does nothing until something
-    // consumes it.
-    let unranked: Vec<usize> = candidates
+    // **The key travels with the identifier rather than being looked up.**
+    // Sorting the candidate positions directly would make every comparison
+    // read `rank[left]` and `rank[right]`, two scattered accesses into an
+    // array as long as the population; at twelve thousand candidates a year
+    // that is hundreds of millions of cache misses across a run, and it made
+    // the sort cost more than the whole rest of the year loop. Pairing each
+    // key with its position first costs one pass and one allocation, and the
+    // comparator then reads two adjacent machine words.
+    //
+    // `.iter().map(...).collect()` is a list comprehension read left to right:
+    // iterate, build a pair from each position, and collect into a `Vec` —
+    // Rust's growable list. Nothing runs until `collect` asks for it, the same
+    // way a Python generator does nothing until something consumes it.
+    let mut keyed: Vec<(f64, usize)> = candidates
         .iter()
-        .copied()
-        .filter(|&index| rank[index].is_nan())
+        .map(|&segment| (rank[segment], segment))
         .collect();
-    // `.first()` returns `Option<&usize>`: either `Some(value)` or `None`.
-    // Rust has no `null`, so "there might not be one here" is in the type and
-    // the compiler makes the caller handle both. `if let` is the shorthand for
-    // running a block only in the `Some` case and binding what is inside it.
-    if let Some(&first_segment_id) = unranked.first() {
+
+    // Scanned here rather than inside the comparator, where it would run once
+    // per comparison instead of once per candidate.
+    let unranked = keyed.iter().filter(|(key, _)| key.is_nan());
+    // `.next()` on an iterator is Python's `next(...)`, and the `Option` it
+    // returns is either `Some(value)` or `None`. Rust has no `null`, so "there
+    // might not be one here" is in the type and the compiler makes the caller
+    // handle both; `if let` runs a block only in the `Some` case.
+    if let Some(&(_, first_segment_id)) = unranked.clone().next() {
         return Err(NanScore {
-            count: unranked.len(),
+            count: unranked.count(),
             first_segment_id,
         });
     }
 
-    // `to_vec` copies, because this function returns an ordering of its own
-    // rather than rearranging the caller's list in place. `mut` is required to
-    // sort it: a binding cannot be modified unless it says so.
-    let mut ordered = candidates.to_vec();
-    // `sort_by` takes a comparator returning `Ordering::Less`, `Equal` or
-    // `Greater`, which is Python 2's `cmp` argument rather than Python 3's
-    // `key`. Comparing `rank[right]` against `rank[left]` — right before left
-    // — is what makes the primary key descending. `.then(...)` uses the second
-    // comparison only when the first came out `Equal`, so the pair reads as
-    // Python's `key=lambda i: (-rank[i], i)`.
-    ordered.sort_by(|&left, &right| {
-        rank[right]
-            .partial_cmp(&rank[left])
+    // `sort_unstable_by` takes a comparator returning `Ordering::Less`,
+    // `Equal` or `Greater`, which is Python 2's `cmp` argument rather than
+    // Python 3's `key`. Comparing `right.0` against `left.0` — right before
+    // left — is what makes the primary key descending, and `.then(...)` uses
+    // the second comparison only when the first came out `Equal`, so the pair
+    // reads as Python's `key=lambda i: (-rank[i], i)`.
+    //
+    // The unstable sort is the faster one and does not preserve the order of
+    // equal elements. That is safe **only because this key is total**: no two
+    // candidates share an identifier, so no two pairs ever compare `Equal` and
+    // there is no order left for stability to preserve. Against the plain
+    // `sort_by` used on the key alone it would decide ties arbitrarily, and
+    // the reference and the kernel would fund different segments.
+    keyed.sort_unstable_by(|left, right| {
+        right
+            .0
+            .partial_cmp(&left.0)
             // `partial_cmp` returns `None` for a comparison involving NaN.
             // `expect` turns that into a panic carrying this message — the
-            // blunt tool, used here only because the NaN check above has
+            // blunt tool, used here only because the NaN scan above has
             // already ruled the case out, so reaching it would mean this
             // function is broken rather than that its input was.
             .expect("NaN keys are rejected above, so every comparison here is ordered")
-            .then(left.cmp(&right))
+            .then(left.1.cmp(&right.1))
     });
-    Ok(ordered)
+    Ok(keyed.into_iter().map(|(_, segment)| segment).collect())
 }
 
 /// Spends the budget down the ranked order, stopping at the first misfit.

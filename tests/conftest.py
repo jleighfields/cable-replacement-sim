@@ -33,6 +33,13 @@ three replications of the scalar reference cost a fraction of a second.
 """
 
 DETERMINISTIC_REPS = 3
+"""Replications for those tests.
+
+Three rather than one, because the replication axis is where the two
+implementations index the draw arrays differently — the reference takes a
+NumPy row, the kernel offsets into a flat slice — so a run with a single
+replication would leave that arithmetic reading the same bytes either way.
+"""
 
 STATISTICAL_SEGMENTS = 2_000
 """Population for the paired comparison over a real population."""

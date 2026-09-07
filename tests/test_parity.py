@@ -29,7 +29,16 @@ import pathlib
 import numpy as np
 import polars as pl
 import pytest
-from cablesim import config, constants, kernel, policies, results, run, simulate
+from cablesim import (
+    config,
+    constants,
+    kernel,
+    policies,
+    results,
+    run,
+    simulate,
+    weibull,
+)
 
 from tests import conftest, helpers
 
@@ -189,6 +198,101 @@ def test_both_implementations_fund_a_candidate_costing_exactly_the_remainder(
     assert reference.planned_replacements[0, 0].sum() == funded_exactly
     assert reference.planned_spend[0, 0].sum() == funded_exactly * planned
     assert_identical(reference, produced)
+
+
+def test_both_implementations_charge_the_same_emergency_total(
+    deterministic_arguments: dict[str, object],
+) -> None:
+    """The year's emergency bill must be reduced the same way on both sides.
+
+    Where `emergency_charged_to_budget` is true, the year's emergency spend is
+    subtracted from the budget before the planned pass is scored, so it decides
+    how far down the ranked order the money reaches. The reference totals it
+    with `numpy.sum`, which adds pairwise; the kernel adds one failure at a
+    time. For as few as eight failures those two orders disagree in the last
+    bits, and that difference lands on a budget the greedy fill then compares
+    against a cumulative cost — turning a rounding difference into a different
+    set of funded segments.
+
+    `test_the_kernel_matches_the_reference_when_failures_crowd_out_prevention`
+    cannot see this: it forces every cost round, so both reductions are exact.
+    This one leaves the costs uneven and puts the budget exactly on the funding
+    boundary the two totals straddle, which is where the discrete outcome
+    flips. Both are needed — that test pins the ordering, this one pins the
+    arithmetic underneath it.
+    """
+    n_segments = 60
+    fails = np.arange(n_segments) % 2 == 0
+    # Uneven lengths, so the emergency total is not exactly representable and
+    # the two reduction orders land on different doubles.
+    length_ft = np.random.default_rng(13).uniform(300.0, 4000.0, n_segments)
+    planned = length_ft * 10.0 + 500.0
+    emergency = planned[fails] * 2.5
+
+    pairwise = float(emergency.sum())
+    sequential = 0.0
+    for cost in emergency:
+        sequential += float(cost)
+    assert pairwise != sequential, (
+        "the two reduction orders agree on these costs, so this test can no "
+        "longer reach the boundary it exists to pin"
+    )
+
+    # The budget that puts the kernel's remaining money exactly on a candidate
+    # boundary the reference's falls just short of.
+    arguments = {
+        **deterministic_arguments,
+        "length_ft": length_ft,
+        "cost_per_ft": np.full(n_segments, 10.0),
+        "mobilization_per_segment": 500.0,
+        "scale": np.where(fails, FAILS_AT_ONCE, NEVER_FAILS).astype(float),
+        "replacement_scale": np.where(fails, FAILS_AT_ONCE, NEVER_FAILS).astype(float),
+        "age0": np.random.default_rng(13).uniform(300.0, 4000.0, n_segments) * 0.0
+        + deterministic_arguments["age0"][:n_segments],
+        "customers": deterministic_arguments["customers"][:n_segments],
+        "customer_minutes_per_failure": deterministic_arguments[
+            "customer_minutes_per_failure"
+        ][:n_segments],
+        "customer_minutes_per_planned": deterministic_arguments[
+            "customer_minutes_per_planned"
+        ][:n_segments],
+        "outage_cost_per_failure": deterministic_arguments["outage_cost_per_failure"][
+            :n_segments
+        ],
+        "class_index": deterministic_arguments["class_index"][:n_segments],
+        "shape": deterministic_arguments["shape"][:n_segments],
+        "replacement_shape": deterministic_arguments["replacement_shape"][:n_segments],
+        "lifetime_uniforms": np.ascontiguousarray(
+            deterministic_arguments["lifetime_uniforms"][:, :n_segments, :]
+        ),
+        "policy_uniforms": np.ascontiguousarray(
+            deterministic_arguments["policy_uniforms"][:, :n_segments]
+        ),
+        "cost_escalation": np.ones(deterministic_arguments["n_years"]),
+        "emergency_charged_to_budget": True,
+    }
+    policy = helpers.resolved("worst_first")
+
+    survivors = np.flatnonzero(~fails)
+    probability = weibull.conditional_failure_probability(
+        arguments["age0"], arguments["shape"], arguments["scale"]
+    )
+    ranked = policies.order_by_rank(probability, survivors)
+    running = np.cumsum(planned[ranked])
+    boundary = next(
+        total
+        for total in running
+        if (total + sequential) - sequential == total
+        and (total + sequential) - pairwise < total
+    )
+    arguments["budget"] = np.full(
+        deterministic_arguments["n_years"], boundary + sequential
+    )
+
+    assert_identical(
+        simulate.run_chunk(**arguments, policy=policy),
+        kernel.run_chunk(**arguments, policy=policy),
+    )
 
 
 @pytest.mark.parametrize("policy", POLICIES, ids=lambda spec: str(spec.kind))
