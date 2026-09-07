@@ -10,20 +10,24 @@ policies evaluated against customer reliability (SAIFI / SAIDI / CMI) over a
 30-year horizon. All inputs are parameterized via config; the cable population
 is fully synthetic.
 
-**Status: the population layer is built, and the failure model can be fitted.**
+**Status: the simulation runs end to end in Python.**
 The configuration schema and its validators, the purpose-spawned sources of
 randomness, the Weibull forms and the synthetic population generator exist,
 along with the synthetic failure history and the censored, left-truncated
 maximum-likelihood fit that recovers the parameters it was generated from.
-Three marimo notebooks walk them. Every rung of the recovery ladder fits data
+Four marimo notebooks walk them. Every rung of the recovery ladder fits data
 generated at parameters the configuration states, and checks the estimates come
 back at them rather than checking that the generator and the estimator agree
 with each other; the confidence intervals have been checked for coverage rather
 than assumed.
 
-The continuous integration workflows run, and the extension module builds and
-imports under Python. The annual simulation loop, the replacement policies and
-the Rust kernel are not written yet. See [PLAN.md](PLAN.md) for the model, the decisions behind it, and the
+The annual simulation loop, the five replacement policies, the budget-constrained
+allocation, the reliability metrics and the shared figures all exist, and a
+budget sweep draws the reliability-against-budget curve — at zero budget every
+policy lands on the same point as run-to-failure, which is the end-to-end check
+that costs nothing to run. The continuous integration workflows run and the
+extension module builds and imports under Python; the Rust kernel that will
+replace the reference in the inner loop is not written yet. See [PLAN.md](PLAN.md) for the model, the decisions behind it, and the
 phased roadmap.
 
 ## Layout
@@ -31,7 +35,8 @@ phased roadmap.
 | Path | What it holds |
 |---|---|
 | `src/` | the Rust crate: the compute kernel, built as a Python extension module |
-| `python/cablesim/` | the Python package: configuration, the sources of randomness, the Weibull forms, the population generator, the synthetic failure history and its censored maximum-likelihood fit, and the pure-Python reference implementation that will mirror the kernel |
+| `python/cablesim/` | the Python package: configuration, the sources of randomness, the Weibull forms, the population generator, the synthetic failure history and its censored maximum-likelihood fit, the replacement policies, the annual loop that is the correctness reference for the kernel, and the run, metrics and figure layers above it |
+| `scripts/` | driver scripts that build configuration overrides and call the package in a loop; they hold no modelling logic |
 | `configs/base.yaml` | the documented default run configuration |
 | `notebooks/` | marimo notebooks that walk the package interface layer by layer |
 | `tests/` | the test suite |
@@ -49,10 +54,20 @@ in `rust-toolchain.toml` — and each tool installs what its file names on first
 use, so neither needs choosing.
 
 ```bash
-uv sync                            # create the environment
+uv sync --extra plots              # create the environment
 uv run maturin develop --release   # build and install the extension module
 uv run pytest                      # run the suite
 ```
+
+Plotting is an extra rather than a dependency, so installing this package for
+the compute kernel alone does not pull a plotting stack. `cablesim.plots`
+imports plotly at module scope and fails at the import without it, saying what
+is missing. Without `--extra plots` the default suite loses
+`tests/test_plots.py` to a collection error, and the notebook suite loses
+notebook 04, which imports the module. **`uv sync` installs exactly what it is
+asked for and removes the rest**, so every later sync has to name the extra
+again — `uv sync --extra plots --group notebooks`, not `uv sync --group
+notebooks`, which uninstalls plotly.
 
 `--release` is not optional for anything timed: the parity tests run many
 replications, and a debug build is slow enough to dominate the run. Rebuild
@@ -72,9 +87,14 @@ cargo test --no-default-features
 Two suites are excluded from a default run because each costs minutes:
 
 ```bash
-uv sync --group notebooks && uv run pytest -m notebooks   # executes every marimo notebook
-uv sync --group app && uv run pytest -m app               # drives the Shiny app in a browser
+uv sync --extra plots --group notebooks && uv run pytest -m notebooks  # every notebook
+uv sync --extra plots --group app && uv run pytest -m app              # the app, in a browser
 ```
+
+Both name `--extra plots` as well as their group, because `uv sync` removes
+whatever it is not asked for. The notebook suite needs it because notebook 04
+imports `cablesim.plots`; the app command needs it so that a later default
+`pytest` still collects `tests/test_plots.py`, which imports the same module.
 
 Neither gates a merge. The app suite runs weekly and on pushes to `main`, so a
 break in it surfaces within a week. **Nothing runs the notebooks for you** —

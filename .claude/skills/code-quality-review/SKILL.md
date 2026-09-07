@@ -408,8 +408,8 @@ are an ordered hierarchy you walk until one solves the problem.
 
 - **The Python reference and the Rust kernel are a deliberate mirror, so
   "duplication" here means *drift*, not repetition.**
-  `python/cablesim/policies.py` and `src/policy.rs` implement the same
-  scoring, and `python/cablesim/reference.py` and `src/sim.rs` the same annual
+  `python/cablesim/policies.py` and `src/policies.rs` implement the same
+  scoring, and `python/cablesim/simulate.py` and `src/simulate.rs` the same annual
   loop. Do not propose collapsing them — the parity tests are what validate
   the kernel. Do report any place the two have diverged, and treat a numeric
   literal appearing in both as a Must Fix: the copies drift, and the parity
@@ -552,8 +552,8 @@ Example layout:
    each source-of-truth finding, say whether the copies have already
    drifted.
 5. **Where the change touches one side of the Python/Rust mirror, open the
-   other.** A change to `src/policy.rs` or `src/sim.rs` means reading
-   `python/cablesim/policies.py` or `reference.py`, and the reverse. Report a
+   other.** A change to `src/policies.rs` or `src/simulate.rs` means reading
+   `python/cablesim/policies.py` or `simulate.py`, and the reverse. Report a
    one-sided change as a finding even when both sides still compile — the
    parity test is statistical and may not catch a small divergence.
 6. Present findings grouped by severity, ruff findings cited inline

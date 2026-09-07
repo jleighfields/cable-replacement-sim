@@ -110,7 +110,7 @@ regex. Run this over the target files, including `.py`, `.md`, and marimo
 cells:
 
 ```bash
-grep -rnEi 'tasks/|see the plan|step [0-9]|phase [0-9]|sprint [0-9]|as discussed|per (the )?(review|feedback|discussion)|#[0-9]{2,}|(commit|sha) [0-9a-f]{7,}|[0-9a-f]{40}' <paths>
+grep -rnEi 'tasks/|see the plan|PLAN\.md.{0,3}(§|section)|step [0-9]|phase [0-9]|sprint [0-9]|as discussed|per (the )?(review|feedback|discussion)|#[0-9]{2,}|(commit|sha) [0-9a-f]{7,}|[0-9a-f]{40}' <paths>
 ```
 
 **Read for the two classes that have no shape.** The grep cannot find these
@@ -355,14 +355,15 @@ track a refactor — that belongs in `tasks/`.
   `configs/base.yaml`, and whatever section of `README.md` documents the
   knob. A field added to the model without a commented entry in the YAML is
   invisible to anyone reading the config as documentation.
-- **`PLAN.md` is a durable in-repo reference and may be cited by section —
-  with the section title alongside the number.** A bare `§9` silently became
-  `§10` the day a section was inserted ahead of it; `§10, Phased roadmap`
-  shows the mismatch.
-  It is checked in and is where the modeling decisions are argued — a comment
-  saying "min-of-n scale reduction, PLAN.md §2.3" points somewhere that will
-  still exist. This is the exception to the rule against pointing outward;
-  the rule still bans references to `tasks/` plans, commits and tickets.
+- **`PLAN.md` is a working document rather than a durable reference, and no
+  comment or docstring may cite a section of it.** Its sections are inserted,
+  renumbered and rewritten as the project moves, so a citation into it rots
+  with nothing to report that it has — the numbering has broken more than once
+  already. A comment that needs a fact the plan argues **states that fact**:
+  "the effective scale falls with conductor count, because the segment fails
+  when the first of its conductors does", not "the effective-scale reduction,
+  `PLAN.md` §2.3". This is a **fix**, on the same terms as the `tasks/`,
+  commit and ticket references above.
 
 ## Steps
 

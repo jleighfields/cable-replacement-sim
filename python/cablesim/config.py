@@ -608,3 +608,87 @@ def load_config(path: pathlib.Path | None = None) -> Config:
     with config_path.open(encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
     return Config.model_validate(raw)
+
+
+def with_overrides(settings: Config, values: dict[str, object]) -> Config:
+    """Rebuilds a configuration with some values replaced.
+
+    Sweeps override configuration from a driver script or a notebook rather
+    than by editing the checked-in file, which stays the one documented
+    default. Every override goes back through validation, so a sweep cannot
+    reach a combination the schema forbids.
+
+    Args:
+        settings: The configuration to start from.
+        values: Dotted paths to new values, as in
+            ``{"budget.annual": 1e6, "simulation.n_reps": 40}``. A path of one
+            segment replaces a whole top-level section.
+
+    Returns:
+        The rebuilt, validated configuration.
+
+    Raises:
+        KeyError: If a path names a section, or a key within one, that does
+            not exist. Silently adding either would leave the override with no
+            effect and the run looking fine.
+        pydantic.ValidationError: If the result does not satisfy the schema.
+    """
+    raw = settings.model_dump()
+    for path, value in values.items():
+        section, _, key = path.partition(".")
+        if section not in raw:
+            raise KeyError(f"no configuration section {section!r} in {sorted(raw)}")
+        if not key:
+            raw[section] = value
+        elif key not in raw[section]:
+            raise KeyError(f"no key {key!r} in section {section!r}")
+        else:
+            raw[section][key] = value
+    return Config.model_validate(raw)
+
+
+def resize_population(
+    settings: Config, n_segments: int, n_reps: int | None = None
+) -> Config:
+    """Shrinks the population, keeping every reported quantity comparable.
+
+    **Two system-level figures have to move with the population, and missing
+    either leaves a bias that looks like a result.**
+
+    ``total_customers`` is the denominator of both reliability indices, and it
+    is a system figure rather than the sum over segments. Simulating a sixth of
+    the fleet against the whole system's customers understates both indices
+    roughly sixfold.
+
+    ``budget.annual`` is the capital the whole system has to spend. Leaving it
+    whole gives a sixth of the fleet six times the capital per segment, so
+    every policy that spends is funded far past where the constraint binds —
+    and the constraint binding is the entire subject. This one hides behind the
+    other: measured with run-to-failure, which never spends, the indices agree
+    and the budget bias is invisible.
+
+    Args:
+        settings: The configuration to shrink.
+        n_segments: How many segments to simulate.
+        n_reps: Replications, unchanged if omitted.
+
+    Returns:
+        The rebuilt configuration, with the customer count and the annual
+        budget both scaled by the same ratio as the segment count.
+
+    Raises:
+        ValueError: If the segment count is not positive.
+    """
+    if n_segments < 1:
+        raise ValueError(f"n_segments must be at least 1, got {n_segments}")
+    ratio = n_segments / settings.population.n_segments
+    values: dict[str, object] = {
+        "population.n_segments": n_segments,
+        "population.total_customers": max(
+            1, round(settings.population.total_customers * ratio)
+        ),
+        "budget.annual": settings.budget.annual * ratio,
+    }
+    if n_reps is not None:
+        values["simulation.n_reps"] = n_reps
+    return with_overrides(settings, values)

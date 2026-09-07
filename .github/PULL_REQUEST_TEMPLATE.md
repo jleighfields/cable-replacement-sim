@@ -26,8 +26,8 @@
      neither, delete this section. -->
 - [ ] Touches `src/` — the matching `python/cablesim/` module was read and
       updated, or is confirmed unaffected
-- [ ] Touches `python/cablesim/policies.py`, `reference.py` or `weibull.py` —
-      likewise for `src/policy.rs`, `sim.rs`, `weibull.rs`
+- [ ] Touches `python/cablesim/policies.py`, `simulate.py` or `weibull.py` —
+      likewise for `src/policies.rs`, `simulate.rs`, `weibull.rs`
 - [ ] Parity tests still pass, and any changed numeric default appears in
       exactly one place
 

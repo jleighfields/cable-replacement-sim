@@ -6,6 +6,8 @@ a section that no longer existed, and it survived a line-by-line scan because
 it wrapped across a line break.
 """
 
+import pathlib
+
 from cablesim import constants
 
 from tests import helpers
@@ -63,3 +65,49 @@ def test_a_citation_written_without_a_prefix_is_still_found() -> None:
 
     assert found == {"2.9", "2.11"}
 
+
+
+def test_nothing_outside_the_plan_cites_a_section_of_it() -> None:
+    """An outward citation into the plan rots with nothing reporting it.
+
+    The plan is a working document: sections get inserted, renumbered and
+    rewritten. Its own cross-references are checked by the test above, so they
+    can be trusted. A citation from anywhere else has no such check, and this
+    project has had three of them go stale — a conventions file pointing at a
+    section that had been renumbered, two agent definitions naming modules that
+    had been renamed, and a rule whose cited section had come to say the
+    opposite.
+
+    Finished plans under ``tasks/`` are exempt: they are dated records of what
+    was done, and editing them to track the document they described would
+    falsify the record rather than repair it. So are the two files that define
+    this rule, which have to quote the form they forbid to show it.
+    """
+    roots = ["python", "tests", "scripts", "notebooks", ".claude", ".github"]
+    files = [
+        path
+        for root in roots
+        for path in (helpers.PLAN_PATH.parent / root).rglob("*")
+        if path.suffix in {".py", ".md", ".yml", ".toml"} and path.is_file()
+    ]
+    files += [helpers.PLAN_PATH.parent / name for name in ("CLAUDE.md", "README.md")]
+
+    # Named exactly, not by basename: exempting every SKILL.md would let any
+    # skill cite freely, and one of them did until this test was written.
+    defines_the_rule = {
+        pathlib.Path("tests/test_plan_document.py"),
+        pathlib.Path(".claude/skills/comment-docstring/SKILL.md"),
+    }
+    offenders = {
+        str(relative): found
+        for path in files
+        if (relative := path.relative_to(helpers.PLAN_PATH.parent))
+        not in defines_the_rule
+        and (found := helpers.plan_citations(path.read_text(encoding="utf-8")))
+    }
+
+    assert not offenders, (
+        f"these files cite a section of PLAN.md, which renumbers without "
+        f"warning: {offenders}. State the fact where it is needed, or name the "
+        f"topic rather than the number."
+    )
