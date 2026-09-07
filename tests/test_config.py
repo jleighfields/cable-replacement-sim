@@ -262,3 +262,93 @@ def test_a_study_ending_before_the_last_install_is_refused() -> None:
 
     # The shipped window ends after the last install and must still load.
     assert config.load_config().records.study_end > last
+
+
+def test_an_override_reaches_the_value_it_names() -> None:
+    """Sweeps override the configuration rather than editing the base file."""
+    settings = config.load_config(constants.DEFAULT_CONFIG_PATH)
+
+    changed = config.overridden(settings, {"budget.annual": 1_234.0})
+
+    assert changed.budget.annual == 1_234.0
+    assert settings.budget.annual != 1_234.0, "the original must not be mutated"
+    assert changed.simulation.seed == settings.simulation.seed
+
+
+def test_an_override_naming_a_section_replaces_the_whole_section() -> None:
+    """A one-segment path is a section, which is how the policy list is set."""
+    settings = config.load_config(constants.DEFAULT_CONFIG_PATH)
+
+    changed = config.overridden(
+        settings,
+        {
+            "policies": [{"name": "run_to_failure"}],
+            "reporting": {"baseline_policy": "run_to_failure"},
+        },
+    )
+
+    assert [policy.name for policy in changed.policies] == ["run_to_failure"]
+
+
+def test_an_override_still_goes_through_validation() -> None:
+    """A sweep must not be able to reach a state the schema forbids."""
+    settings = config.load_config(constants.DEFAULT_CONFIG_PATH)
+
+    with pytest.raises(pydantic.ValidationError):
+        config.overridden(settings, {"budget.annual": -1.0})
+
+
+def test_a_misspelled_override_path_is_refused() -> None:
+    """Silently adding the key would leave the override with no effect.
+
+    The run then completes on the unmodified value and looks entirely fine,
+    which is the failure this refuses rather than absorbs.
+    """
+    settings = config.load_config(constants.DEFAULT_CONFIG_PATH)
+
+    # Asserted on the message, not only the type. Without the check the dict
+    # access raises `KeyError` too — the same failure with none of the help, so
+    # matching on the type alone cannot tell a guard from its absence.
+    with pytest.raises(KeyError, match="no configuration section 'budgets'"):
+        config.overridden(settings, {"budgets.annual": 1.0})
+    with pytest.raises(KeyError, match="population"):
+        config.overridden(settings, {"budgets.annual": 1.0})
+    with pytest.raises(KeyError, match="anual"):
+        config.overridden(settings, {"budget.anual": 1.0})
+
+
+def test_resizing_scales_the_customer_denominator_with_the_population() -> None:
+    """Otherwise every reliability index is wrong by the population ratio.
+
+    Both indices divide interrupted customers by the system-wide count, which
+    is not the sum over segments. Simulating a sixth of the fleet against the
+    whole system's customers understates both roughly sixfold — a systematic
+    bias rather than sampling noise, and the curves look entirely plausible.
+    """
+    settings = config.load_config(constants.DEFAULT_CONFIG_PATH)
+    before = settings.population.total_customers / settings.population.n_segments
+
+    smaller = config.resized(settings, settings.population.n_segments // 6)
+
+    after = smaller.population.total_customers / smaller.population.n_segments
+    assert smaller.population.n_segments == settings.population.n_segments // 6
+    assert after == pytest.approx(before, rel=1e-3)
+    assert smaller.population.total_customers < settings.population.total_customers
+
+
+def test_resizing_leaves_the_replication_count_alone_unless_asked() -> None:
+    """The two are independent knobs; only one of them is being reduced here."""
+    settings = config.load_config(constants.DEFAULT_CONFIG_PATH)
+
+    assert config.resized(settings, 100).simulation.n_reps == (
+        settings.simulation.n_reps
+    )
+    assert config.resized(settings, 100, n_reps=7).simulation.n_reps == 7
+
+
+def test_resizing_to_nothing_is_refused() -> None:
+    """A population of zero divides by zero in every index that reads it."""
+    settings = config.load_config(constants.DEFAULT_CONFIG_PATH)
+
+    with pytest.raises(ValueError, match="at least 1"):
+        config.resized(settings, 0)

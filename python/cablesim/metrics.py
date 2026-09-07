@@ -281,8 +281,11 @@ def against_baseline(
             "total_spend_discounted": "baseline_total_spend_discounted",
         }
     )
+    # A cross join with no keys attaches the single baseline row to every row;
+    # with keys it attaches each level's own. Both are the same statement about
+    # what a baseline is, so they are written as one.
     joined = (
-        collected.join(reference, on=list(by), how="cross" if not by else "inner")
+        collected.join(reference, on=list(by), how="inner")
         if by
         else collected.join(reference, how="cross")
     )
