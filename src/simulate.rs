@@ -271,11 +271,16 @@ pub fn run_chunk(
             if emergency_charged_to_budget {
                 // Charged before this year's planned pass is scored, which is
                 // what produces the loop where failures crowd out prevention.
-                // The floor changes no funding decision — every planned cost is
-                // positive, so the greedy fill funds nothing at zero or below —
-                // and it stops a year whose failures cost more than the budget
-                // from carrying a negative that reads as a debt.
-                available = (available - emergency_total).max(0.0);
+                //
+                // A year whose failures cost more than the budget leaves this
+                // negative, and that is left alone rather than floored at zero.
+                // Every planned cost is positive, so the greedy fill funds
+                // nothing at any value at or below zero, and nothing carries to
+                // the next year — each year takes the amount in the budget
+                // series and no more. A floor here would be a line no result
+                // could distinguish from its absence, which mutation testing
+                // confirms: removing one left the whole suite green.
+                available -= emergency_total;
             }
 
             candidates.clear();

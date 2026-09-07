@@ -256,14 +256,17 @@ def test_an_implementation_that_does_not_exist_is_refused_before_any_work(
         run.run(small_config(), tmp_path, implementation="batched_numpy")
 
 
-def test_every_runnable_implementation_is_a_name_a_result_may_claim() -> None:
-    """The two sets are related, and nothing but this holds them together.
+def test_a_name_no_result_may_claim_is_reported_as_unknown() -> None:
+    """The check behind the import-time guard, driven with a bad name.
 
-    `results` owns the closed set of names a saved run may carry; `run` owns
-    the subset with a loop behind it. A name in the second and not the first
-    would be taken on a command line and refused at the write.
+    Asserting the invariant directly — that what is runnable is a subset of
+    what a result may claim — would be a test that cannot fail: breaking it
+    raises at import and stops the suite at collection, so the assertion never
+    runs. Calling the check is what can report.
     """
-    assert set(run.RUNNABLE) <= set(results.IMPLEMENTATIONS)
+    assert run.unknown_implementations(["batched_pandas"]) == {"batched_pandas"}
+    assert run.unknown_implementations(run.RUNNABLE) == set()
+    assert run.unknown_implementations(results.IMPLEMENTATIONS) == set()
 
 
 def test_the_run_takes_policy_priorities_from_the_policy_stream(

@@ -234,11 +234,12 @@ fn run_chunk<'py>(
         unreachable!("a PyReadonlyArray2 has exactly two axes")
     };
 
-    // The replication count is recovered by dividing by the segment count, so
-    // an empty population divides by zero. Rust does not raise on that: it
-    // panics, and PyO3 surfaces a panic as `PanicException`, which does not
-    // inherit from `Exception` and so passes straight through a driver
-    // script's error handling.
+    // `simulate::run_chunk` receives flat slices, so it recovers the
+    // replication count by dividing the draw array's length by the segment
+    // count — and an empty population divides by zero there. Rust does not
+    // raise on that: it panics, and PyO3 surfaces a panic as
+    // `PanicException`, which does not inherit from `Exception` and so passes
+    // straight through a driver script's error handling.
     if n_segments == 0 {
         return Err(PyValueError::new_err(
             "the population is empty; there is nothing to simulate",
@@ -304,8 +305,14 @@ fn run_chunk<'py>(
     // A class index past the end of the result axis indexes out of bounds and
     // panics, and it does so only once a segment of that class is selected in
     // some year — so the same mismatched arguments complete on one seed and
-    // panic on another. The reference raises here instead, because NumPy
-    // refuses the out-of-range bin.
+    // panic on another. Checking every entry here refuses them before any year
+    // runs, which is what makes the failure independent of the draws.
+    //
+    // The reference is not equivalent on this input. `numpy.bincount` grows
+    // its output to fit the largest index it is given rather than refusing it,
+    // so the reference raises only in a year where a segment of that class is
+    // selected — the mismatched totals will not broadcast onto the class axis
+    // — and it completes silently in every other year.
     let classes = contiguous("class_index", &class_index)?;
     if let Some(&past_the_axis) = classes.iter().find(|&&c| usize::from(c) >= n_classes) {
         return Err(PyValueError::new_err(format!(

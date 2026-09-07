@@ -83,14 +83,19 @@ def test_nothing_outside_the_plan_cites_a_section_of_it() -> None:
     falsify the record rather than repair it. So are the two files that define
     this rule, which have to quote the form they forbid to show it.
     """
-    roots = ["python", "tests", "scripts", "notebooks", ".claude", ".github"]
+    # `src` is in this list because the Rust crate is half the codebase and was
+    # unscanned until it had files in it worth scanning.
+    roots = ["python", "src", "tests", "scripts", "notebooks", ".claude", ".github"]
     files = [
         path
         for root in roots
         for path in (helpers.PLAN_PATH.parent / root).rglob("*")
-        if path.suffix in {".py", ".md", ".yml", ".toml"} and path.is_file()
+        if path.suffix in {".py", ".rs", ".md", ".yml", ".toml"} and path.is_file()
     ]
-    files += [helpers.PLAN_PATH.parent / name for name in ("CLAUDE.md", "README.md")]
+    files += [
+        helpers.PLAN_PATH.parent / name
+        for name in ("CLAUDE.md", "README.md", "Cargo.toml", "pyproject.toml")
+    ]
 
     # Named exactly, not by basename: exempting every SKILL.md would let any
     # skill cite freely, and one of them did until this test was written.

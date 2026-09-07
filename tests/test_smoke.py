@@ -10,7 +10,9 @@ import pathlib
 
 import numpy as np
 import pytest
-from cablesim import config, constants, kernel, policies
+from cablesim import config, constants, kernel
+
+from tests import helpers
 
 
 def test_the_kernel_runs_one_chunk_through_the_extension_module() -> None:
@@ -32,15 +34,15 @@ def test_the_kernel_runs_one_chunk_through_the_extension_module() -> None:
         class_index=np.zeros(n_segments, dtype=np.uint8),
         age0=np.array([10.0, 20.0]),
         shape=np.full(n_segments, 6.2),
-        scale=np.full(n_segments, 1e-6),
+        scale=np.full(n_segments, helpers.FAILS_AT_ONCE),
         replacement_shape=np.full(n_segments, 6.2),
-        replacement_scale=np.full(n_segments, 1e-6),
+        replacement_scale=np.full(n_segments, helpers.FAILS_AT_ONCE),
         cost_per_ft=np.full(n_segments, 10.0),
         lifetime_uniforms=np.full((1, n_segments, n_years + 1), 0.5),
         policy_uniforms=np.full((1, n_segments), 0.5),
         budget=np.zeros(n_years),
         cost_escalation=np.ones(n_years),
-        policy=policies.resolve(config.PolicySpec(name="run_to_failure", params={})),
+        policy=helpers.resolved("run_to_failure"),
         emergency_multiplier=2.5,
         mobilization_per_segment=500.0,
         emergency_charged_to_budget=False,

@@ -92,9 +92,14 @@ def conditional_failure_probability(
 
     Returns:
         The annual failure probability, on [0, 1]. It reaches exactly 1 once
-        the accumulated hazard passes about 745, where ``exp`` underflows —
-        an age far beyond anything this model simulates, but the bound is
-        closed rather than half-open.
+        the accumulated hazard passes about 37.4, where ``exp(-h)`` falls
+        below half an ulp of 1 and the subtraction rounds to 1. That is not
+        unreachable here: at the shipped population 324 of 12,000 segments
+        pass a saturating age within a 30-year horizon. What makes it
+        unobservable is survival, not age — the best-placed of those segments
+        reaches its saturating age with probability 6e-10 — so the closed
+        bound is what the interval says rather than something the loop
+        exercises.
     """
     accumulated = ((age + 1.0) / scale) ** shape - (age / scale) ** shape
     return -np.expm1(-accumulated)

@@ -70,14 +70,15 @@ class Results(NamedTuple):
 def running_total(values: np.ndarray) -> float:
     """Adds an array one element at a time, left to right.
 
-    ``sum`` is free to add pairwise, which is faster and gives a different
-    answer in the last bits. That difference is tolerable wherever the result
-    is only reported, and is not tolerable where it feeds a comparison that
-    decides a discrete outcome: both places this is used reach the greedy
-    budget fill, where a last-bit difference changes which segment is the last
-    one funded. Accumulating left to right is also what a running total in
-    another language does, so it is what makes the two implementations agree
-    exactly rather than approximately.
+    ``sum`` is free to add pairwise, which gives a different answer in the last
+    bits. That difference is tolerable wherever the result is only reported,
+    and is not tolerable where it feeds a comparison that decides a discrete
+    outcome. Its one caller subtracts this total from the year's budget, which
+    the greedy fill then compares a cumulative cost against, so a last-bit
+    difference changes which segment is the last one funded. Accumulating left
+    to right is also what a running total in another language does, so it is
+    what makes the two implementations agree exactly rather than
+    approximately.
 
     Args:
         values: What to add. May be empty.
@@ -154,14 +155,39 @@ def run_chunk(
         The seven per-year, per-class arrays for this chunk.
 
     Raises:
-        ValueError: If the draw array's shape is not ``(replications,
-            segments, n_years + 1)``. The year axis is why the check exists: a
-            short one raises on its own only when a replacement happens to fall
-            in the final year, so a run can complete against a wrong array and
-            be wrong nowhere visible. The other two axes are checked with it
-            because they cost nothing to compare.
+        ValueError: If the population is empty, if there is no class axis to
+            accumulate into, if a class index is past the end of that axis, or
+            if the draw array's shape is not ``(replications, segments,
+            n_years + 1)``. The year axis is why the last check exists: a short
+            one raises on its own only when a replacement happens to fall in
+            the final year, so a run can complete against a wrong array and be
+            wrong nowhere visible. The other two axes are checked with it
+            because they cost nothing to compare. The first three are refused
+            here because the kernel refuses them, and the two are documented as
+            interchangeable.
     """
     n_reps, n_segments = policy_uniforms.shape
+    # The kernel refuses these three because reaching its loop with any of them
+    # is a panic rather than an exception, and a panic does not inherit from
+    # `Exception`. The reference has no such hazard — it would complete and
+    # return zeros, or silently widen a bincount — but the two are documented
+    # as interchangeable behind one call, so a caller must not get an answer
+    # from one and an error from the other. The schema forbids all three, which
+    # makes a direct caller the only way to arrive here: every parity test and
+    # every driver script is one.
+    if n_segments == 0:
+        raise ValueError("the population is empty; there is nothing to simulate")
+    if n_classes == 0:
+        raise ValueError(
+            "n_classes is 0, so the results have no class axis to accumulate into"
+        )
+    past_the_axis = class_index[class_index >= n_classes]
+    if past_the_axis.size > 0:
+        raise ValueError(
+            f"class_index holds {int(past_the_axis[0])}, which is past the "
+            f"{n_classes} classes the results have an axis for; the index is a "
+            f"position in the class list, not a name"
+        )
     if lifetime_uniforms.shape != (n_reps, n_segments, n_years + 1):
         raise ValueError(
             f"lifetime_uniforms is {lifetime_uniforms.shape}, expected "
@@ -229,10 +255,15 @@ def run_chunk(
             if emergency_charged_to_budget:
                 # Charged before this year's planned pass is scored, which is
                 # what produces the loop where failures crowd out prevention.
-                # The floor changes no funding decision — every planned cost is
-                # positive, so the greedy fill funds nothing at zero or below —
-                # and it stops a year whose failures cost more than the budget
-                # from carrying a negative that reads as a debt.
+                #
+                # A year whose failures cost more than the budget leaves this
+                # negative, and that is left alone rather than floored at zero.
+                # Every planned cost is positive, so the greedy fill funds
+                # nothing at any value at or below zero, and nothing carries to
+                # the next year — each year takes the amount in the budget
+                # series and no more. A floor here would be a line no result
+                # could distinguish from its absence, which mutation testing
+                # confirms: removing one left the whole suite green.
                 #
                 # `cumsum` rather than `sum`, for the reason the greedy fill
                 # uses it: this total is subtracted from the budget that the
@@ -242,7 +273,7 @@ def run_chunk(
                 # disagrees with a running total often enough to change that
                 # decision — measured, the two orders differ in the last bits
                 # for most years with more than a handful of failures.
-                available = max(0.0, available - running_total(emergency_now))
+                available -= running_total(emergency_now)
 
             candidates = np.flatnonzero(policies.eligible(policy, age, replaced))
             if candidates.size > 0:

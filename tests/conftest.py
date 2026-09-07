@@ -3,9 +3,9 @@
 **One builder makes the population, the draw arrays and the configuration, and
 both implementations under test are handed that one set of objects.** That is
 what makes "the same draws" true by construction rather than by coincidence: a
-stored draw file would be bypassed by a test that built its own inputs exactly
-as easily as a fixture would, and two builders that drift apart turn a parity
-failure into a question about the fixtures first.
+stored draw file would be bypassed by a test that built its own inputs, exactly
+as a fixture would, and two builders that drift apart turn a parity failure
+into a question about the fixtures first.
 
 Across test functions the draws need not match. A parity test asserts that two
 implementations agree with *each other* on whatever they were handed, not that
@@ -74,6 +74,18 @@ def simulation_arguments(settings: config_module.Config) -> dict[str, object]:
     n_segments = segments["age0"].size
     sources = random_draws.spawn_sources(simulation.seed)
     replications = range(simulation.n_reps)
+
+    if simulation.n_reps < 2:
+        # One replication removes what this fixture exists for without failing
+        # anything: the reference takes a NumPy row per replication and the
+        # kernel offsets into a flat slice, so an offset defect is invisible
+        # until there is a second row to get wrong. Mutating either offset away
+        # reddens the parity tests at three replications and none at one.
+        raise ValueError(
+            f"the parity fixtures need at least 2 replications, got "
+            f"{simulation.n_reps}: the replication axis is where the two "
+            f"implementations index the draw arrays differently"
+        )
 
     return {
         **segments,

@@ -32,7 +32,7 @@ result type, so either implementation can be named at the call. It is
 single-threaded so far: rayon, the batched baselines and the benchmark numbers
 come next, and the kernel is deliberately unchanged by that work so the
 parallel speedup has a fixed thing to be measured against. The two are compared
-by four tests that force the lifetimes and compare every cell exactly, and by a
+by five tests that force the lifetimes and compare every cell exactly, and by a
 paired test over drawn lifetimes; on this platform they agree bit for bit. See
 [PLAN.md](PLAN.md) for the model, the decisions behind it, and the phased
 roadmap.

@@ -62,8 +62,6 @@ would leave the other unexercised on this side of the boundary.
 """
 
 
-
-
 def assert_identical(reference: simulate.Results, produced: simulate.Results) -> None:
     """Asserts two results agree in every cell of every array.
 
@@ -394,3 +392,71 @@ def test_a_saved_kernel_run_records_the_profile_it_was_built_with(
 
     assert manifest.implementation == "kernel"
     assert manifest.build_profile in {"debug", "release"}
+
+
+def test_charging_an_empty_year_of_failures_leaves_the_budget_whole(
+    deterministic_arguments: dict[str, object],
+) -> None:
+    """A year with nothing to charge is the empty-reduction case.
+
+    The reference adds the year's emergency bill left to right so that it and
+    the kernel reach the greedy fill with the same budget. Left to itself that
+    reduction raises on an empty array — a cumulative sum of nothing has no
+    last element — which is a year in which nothing failed, and the shipped
+    configuration reaches one as soon as anything is charged to the budget.
+
+    Nothing fails here at all, so every year takes that path, and the budget
+    must arrive at the fill unreduced: the two implementations agree, and both
+    fund what an uncharged run would.
+    """
+    arguments = {
+        **helpers.forced_lifetimes(deterministic_arguments, helpers.NEVER_FAILS),
+        "emergency_charged_to_budget": True,
+    }
+    # An age threshold rather than a whole-population policy, because the fill
+    # stops at the first candidate that does not fit and `risk_ranked` puts the
+    # largest feeder first: at this reduced size that one segment costs more
+    # than the year's whole budget, so nothing is funded and the test would
+    # assert on a run in which the budget was never reached.
+    policy = helpers.resolved("age_threshold", threshold_years=45)
+
+    charged = simulate.run_chunk(**arguments, policy=policy)
+
+    assert charged.failures.sum() == 0.0
+    assert charged.planned_replacements.sum() > 0.0
+    assert_identical(charged, kernel.run_chunk(**arguments, policy=policy))
+    uncharged = simulate.run_chunk(
+        **{**arguments, "emergency_charged_to_budget": False}, policy=policy
+    )
+    assert_identical(charged, uncharged)
+
+
+def test_a_year_that_overruns_its_budget_funds_nothing_and_carries_no_debt(
+    deterministic_arguments: dict[str, object],
+) -> None:
+    """The limiting case of failures crowding out prevention.
+
+    Every segment fails, so the emergency bill exceeds a budget deliberately
+    set to a few dollars. Both implementations floor the remainder at zero
+    rather than carrying a negative that would read as a debt against the
+    following year, and both fund nothing — the floor changes no funding
+    decision, because every planned cost is positive.
+
+    Nothing else reaches this regime: the crowd-out test sets a budget the
+    failures do not exhaust, and the paired test runs a population where most
+    segments survive.
+    """
+    n_years = deterministic_arguments["n_years"]
+    arguments = {
+        **helpers.forced_lifetimes(deterministic_arguments, helpers.FAILS_AT_ONCE),
+        "emergency_charged_to_budget": True,
+        "budget": np.full(n_years, 10.0),
+    }
+    policy = helpers.resolved("age_threshold", threshold_years=45)
+
+    overrun = simulate.run_chunk(**arguments, policy=policy)
+
+    assert overrun.emergency_spend.sum() > 10.0 * n_years
+    assert overrun.planned_replacements.sum() == 0.0
+    assert overrun.planned_spend.sum() == 0.0
+    assert_identical(overrun, kernel.run_chunk(**arguments, policy=policy))

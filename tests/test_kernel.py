@@ -14,7 +14,7 @@ panic message goes to stderr rather than into the traceback.
 
 import numpy as np
 import pytest
-from cablesim import kernel
+from cablesim import kernel, simulate
 
 from tests import helpers
 
@@ -114,15 +114,17 @@ def test_the_kernel_raises_rather_than_panicking_on_an_empty_population() -> Non
 def test_the_kernel_raises_rather_than_panicking_on_a_class_past_the_axis() -> None:
     """A class index the result axis has no room for must report, not panic.
 
-    The boundary checks every array's length and the draw array's shape, but
-    nothing checks that a class index is smaller than ``n_classes`` — so the
-    first segment of that class to fail indexes past the end of the result
-    buffer. The reference raises ``ValueError`` on the same input, which is
-    what makes this a divergence rather than a matter of taste.
+    Without the boundary's range check, the first segment of that class to fail
+    would index past the end of a result buffer, which is a Rust panic. That is
+    data-dependent: the index is reached only when a segment of that class is
+    selected in some year, so the same mismatched pair of arguments can
+    complete on one seed and panic on another. The check reads every entry
+    before the first year runs, so the refusal does not depend on the draws.
 
-    It is also data-dependent: the index is only reached when a segment of that
-    class is selected in some year, so the same mismatched pair of arguments
-    can complete on one seed and panic on another.
+    The reference raises on this particular input too, because the year's
+    totals no longer broadcast onto the class axis — but only because both
+    segments fail here. A class index that is never selected passes through the
+    reference silently.
     """
     arguments = minimal_arguments(n_segments=2, n_classes=1)
     arguments["class_index"] = np.array([0, 7], dtype=np.uint8)
@@ -194,3 +196,66 @@ def test_a_rank_key_that_is_not_a_number_reaches_python_as_an_error() -> None:
 
     with pytest.raises(ValueError, match="scored NaN, first at segment_id 1"):
         kernel.run_chunk(**arguments, policy=helpers.resolved("risk_ranked"))
+
+
+def a_class_index_past_the_axis() -> dict[str, object]:
+    """A population whose out-of-range class never has a segment selected.
+
+    The reference totals a year by class with ``numpy.bincount``, which grows
+    its output to fit the largest index it is handed, so the mismatch surfaces
+    only in a year where a segment of that class is selected. Segment 1 carries
+    class 7 against a single-class axis and never fails, and the budget is zero
+    so it is never funded either — which is the case that reaches neither
+    implementation's accumulation and separates the two at the boundary.
+
+    Returns:
+        Every argument of ``run_chunk`` except ``policy``.
+    """
+    arguments = minimal_arguments(n_segments=2, n_classes=1)
+    arguments["class_index"] = np.array([0, 7], dtype=np.uint8)
+    scales = np.array([helpers.FAILS_AT_ONCE, helpers.NEVER_FAILS])
+    arguments["scale"] = scales
+    arguments["replacement_scale"] = scales.copy()
+    return arguments
+
+
+DEGENERATE_ARGUMENTS: dict[str, dict[str, object]] = {
+    "empty_population": minimal_arguments(n_segments=0),
+    "no_class_axis": minimal_arguments(n_segments=2, n_classes=0),
+    "class_past_the_axis": a_class_index_past_the_axis(),
+}
+"""Argument sets no configuration produces, keyed by what is wrong with each.
+
+The schema forbids all three — ``population.n_segments`` is at least 1, the
+class list is non-empty, and ``class_index`` is built from that list — so these
+reach an implementation only through a direct call, which is what both the
+parity tests and a driver script make.
+"""
+
+
+@pytest.mark.parametrize("wrong", sorted(DEGENERATE_ARGUMENTS), ids=str)
+def test_both_implementations_refuse_the_same_degenerate_population(
+    wrong: str,
+) -> None:
+    """The boundary checks belong to the model, not to one implementation.
+
+    The kernel refuses all three because each would otherwise reach a Rust
+    panic, which crosses into Python as ``PanicException`` and is not caught by
+    ``except Exception``. The reference has no panic to convert, so it accepts
+    all three and returns a result: zeros of the shape the caller asked for, or
+    — for the class index — totals that silently omit a segment class the
+    results have no axis for.
+
+    That makes the two answer differently to input neither should accept, and
+    the two are meant to be interchangeable behind one call. Whichever is
+    right, they have to agree: a driver script that runs the reference and then
+    the kernel over the same arguments must not have one complete and the other
+    raise.
+    """
+    arguments = DEGENERATE_ARGUMENTS[wrong]
+    policy = helpers.resolved("run_to_failure")
+
+    with pytest.raises(ValueError):
+        kernel.run_chunk(**arguments, policy=policy)
+    with pytest.raises(ValueError):
+        simulate.run_chunk(**arguments, policy=policy)

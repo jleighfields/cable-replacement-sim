@@ -22,8 +22,9 @@ configured parameter.
 import datetime
 import logging
 import pathlib
+import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 import numpy as np
 import polars as pl
@@ -112,11 +113,29 @@ on the command line, accepted through a whole budget level's computation, and
 refused only at the write.
 """
 
-UNKNOWN_IMPLEMENTATIONS = set(RUNNABLE) - set(results.IMPLEMENTATIONS)
-if UNKNOWN_IMPLEMENTATIONS:
+
+
+def unknown_implementations(names: Iterable[str]) -> set[str]:
+    """Names among these that no saved result may claim.
+
+    A function rather than an expression evaluated once at import, because an
+    import-time check cannot be watched failing: breaking it stops the whole
+    suite at collection rather than reddening a test. This can be called with
+    a bad name and asserted on.
+
+    Args:
+        names: Implementation names to check.
+
+    Returns:
+        Those that are not in the closed set a manifest accepts.
+    """
+    return set(names) - set(results.IMPLEMENTATIONS)
+
+
+if unknown_implementations(RUNNABLE):
     raise ValueError(
-        f"{sorted(UNKNOWN_IMPLEMENTATIONS)} name no implementation a result "
-        f"may claim; the closed set is {list(results.IMPLEMENTATIONS)}"
+        f"{sorted(unknown_implementations(RUNNABLE))} name no implementation a "
+        f"result may claim; the closed set is {list(results.IMPLEMENTATIONS)}"
     )
 
 
@@ -311,7 +330,14 @@ def run(
             f"{sorted(RUNNABLE)} are the ones that exist"
         )
     annual_loop = RUNNABLE[implementation]
-    build_profile = kernel.BUILD_PROFILE if implementation == "kernel" else None
+    # The profile belongs to whichever module the loop came from: a pure-Python
+    # one defines none, and the kernel's wrapper reads it from the compiled
+    # extension. Asking the module rather than testing the name for "kernel"
+    # keeps that name out of a second place, so a later Rust-backed
+    # implementation records its profile instead of silently recording none.
+    build_profile = getattr(
+        sys.modules[annual_loop.__module__], "BUILD_PROFILE", None
+    )
     started = time.perf_counter()
     run_id = results.new_run_id()
     segments_frame = population.generate(settings)
