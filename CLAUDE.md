@@ -37,7 +37,7 @@ wins on *how work is done here*.
 - **Root causes, not workarounds.** A fix that leaves the cause in place has to
   be made again.
 - **Ask, don't assume.** When requirements are ambiguous or several approaches
-  exist, ask. `PLAN.md` ends with a list of decisions and what is still open;
+  exist, ask. `PLAN.md` carries a list of decisions and what is still open;
   answer the open ones with the user rather than picking a default.
 - **Verify by running, not by reading.** Any claim you can run is unverified
   until you have run it — yours and everyone else's. When a comment, docstring,
@@ -242,10 +242,11 @@ here. A mirrored pair carries the same module name on both sides:
   Features **squash-merge** into `main` with a message summarizing the whole
   feature, not just the last commit on the branch.
 - **`main` is protected and takes no direct pushes.** Every change arrives
-  through a squash-merged pull request. `PLAN.md`, on branch protection, has
-  the rulesets, the setup, and the ways branch protection goes wrong —
-  including why the `test` check is not required yet and why a red check should
-  be treated as blocking anyway.
+  through a squash-merged pull request, and `test` is a required check, so a
+  red one blocks the merge mechanically. `PLAN.md`, on branch protection, has
+  the rulesets, the setup, and the ways branch protection goes wrong — chiefly
+  that a required check which never runs leaves a pull request unable to merge
+  and unable to fail.
 - **A red check is a finding, not a flake.** Read the failure before re-running
   it. `uv sync --locked` failing means the lockfile does not match
   `pyproject.toml`, and no number of re-runs fixes that.
