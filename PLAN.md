@@ -2069,6 +2069,22 @@ a candidate.
 | **Rust kernel, 48 threads** | **0.00024** | **0.00030** | **0.00222** |
 | **Fastest Python, beaten by** | **23.0x** | **83.3x** | **20.3x** |
 
+**Measured once at 100,000 segments**, which is eight times the shipped
+population and further than anything in the test suite goes. Ten replications,
+30 years, `risk_ranked`: the scalar reference 0.418 s per replication, the
+batched loop 0.436, the kernel 0.445 on one thread and 0.048 on forty-eight,
+**and every one of them reproduced the reference exactly.** That last is the
+part worth having: the parity tests run at 400 and 2,000 segments, so a defect
+that only appears at scale — an index overflowing, a reduction reordering —
+would be invisible to the whole suite.
+
+Peak memory for the process was **0.28 GB**. The same run under the design that
+passed draws in as an array would have needed about 1.2 GB for the draws alone.
+
+The threading ratio there is 8.7 and not 20, and the population is not the
+reason: replications are the axis being parallelised, so ten of them cap the
+speedup at ten however many threads exist. 8.7 is 87% of that ceiling.
+
 **Draw generation is inside the timed region**, because a run pays for it once
 per chunk and an implementation producing only what it reads deserves the
 credit. Moving that boundary was done *before* the generator changed, so the

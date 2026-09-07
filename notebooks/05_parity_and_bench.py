@@ -89,21 +89,63 @@ def _(mo):
     segments than at 12,000 — so the size is stated with every figure and the
     full-size numbers are quoted separately at the end rather than implied by
     these.
+
+    **The population is a control below**, defaulting to the reduced size so
+    this opens in seconds. Raising it to 100,000 is worth doing once — it is
+    eight times the shipped population, and nothing else in the test suite runs
+    there. The scalar reference is what makes a large size expensive, so lower
+    the replication count with it; the reference is here for scale rather than
+    as a baseline, and a smaller count costs only precision.
+
+    **Read the threading ratio against the replication count, not the
+    population.** Replications are the axis being parallelised, so the speedup
+    cannot exceed how many there are however many threads the machine has. At
+    100,000 segments and 10 replications the kernel comes out 8.7 times faster
+    than the fastest Python — which is 87% of the ceiling of 10, not a sign that
+    parallelism degrades with population. Lowering replications to afford a
+    larger population lowers that ceiling with it.
     """
     )
     return
 
 
 @app.cell
-def _(config_module, constants, kernel, run):
+def _(mo, run):
+    # Defaults to the reduced size so the notebook opens in seconds and so the
+    # headless run that gates nothing still finishes quickly — a slider takes
+    # its default when nobody is there to move it.
+    #
+    # The large sizes are reachable at all because draws are computed from their
+    # position rather than materialized: at 100,000 segments the old design
+    # needed about 1.2 GB of uniforms per chunk, where the population itself is
+    # under 10 MB.
+    n_segments = mo.ui.dropdown(
+        options={
+            "2,000 — reduced, opens in seconds": run.REDUCED_SEGMENTS,
+            "12,000 — the shipped population": 12_000,
+            "100,000 — eight times the shipped size": 100_000,
+        },
+        value="2,000 — reduced, opens in seconds",
+        label="population",
+    )
+    # The scalar reference is the binding cost at every size, and it is in the
+    # table for scale rather than as a baseline, so a smaller count costs only
+    # precision.
+    n_reps = mo.ui.slider(2, 50, step=2, value=run.REDUCED_REPS, label="replications")
+    mo.hstack([n_segments, n_reps])
+    return n_reps, n_segments
+
+
+@app.cell
+def _(config_module, constants, kernel, n_reps, n_segments, run):
     settings = config_module.resize_population(
         config_module.load_config(constants.DEFAULT_CONFIG_PATH),
-        run.REDUCED_SEGMENTS,
-        n_reps=run.REDUCED_REPS,
+        n_segments.value,
+        n_reps=n_reps.value,
     )
     provenance = kernel.BUILD_PROFILE, kernel.AVAILABLE_THREADS
     print(
-        f"{settings.population.n_segments} segments, "
+        f"{settings.population.n_segments:,} segments, "
         f"{settings.simulation.n_years} years, "
         f"{settings.simulation.n_reps} replications"
     )
