@@ -260,14 +260,16 @@ def against_baseline(
     """
     collected = totals.collect()
     matching = collected.filter(pl.col("policy") == baseline_policy)
-    # Counting rows is not enough: a baseline present twice at one level and
-    # absent at another counts correctly and still attaches the wrong row to
-    # one level while dropping the other from the comparison entirely. The
-    # question is whether every level has exactly one baseline, so the keys are
-    # compared as sets and the baseline's own keys checked for duplicates.
-    levels = collected.select(by).unique() if by else collected.select(pl.lit(0))
-    baseline_levels = matching.select(by).unique() if by else matching
-    if matching.is_empty() or collected.is_empty():
+    # Every level needs exactly one baseline row. Counting baseline rows alone
+    # is not enough — two at one level and none at another counts correctly
+    # while duplicating the first and dropping the second — so the count of
+    # distinct levels is compared against both the baseline's row count and the
+    # levels present. With no grouping keys there is one level, so the same two
+    # comparisons hold with the counts fixed at one rather than derived, and
+    # the duplicate case is caught in that path too.
+    levels = collected.select(by).unique().height if by else 1
+    baseline_levels = matching.select(by).unique().height if by else 1
+    if matching.is_empty():
         present = (
             collected["policy"].unique().to_list()
             if not collected.is_empty()
@@ -277,14 +279,18 @@ def against_baseline(
             f"baseline policy {baseline_policy!r} is not in these results "
             f"({present}); every avoided quantity would be null"
         )
-    if baseline_levels.height != matching.height:
+    if baseline_levels != matching.height:
         raise ValueError(
-            f"baseline policy {baseline_policy!r} appears more than once at "
-            f"some level of {list(by)}; each level needs exactly one baseline "
-            f"row or its rows would be duplicated"
+            f"baseline policy {baseline_policy!r} has {matching.height} rows "
+            f"across {baseline_levels} level(s) of {list(by)}; each level needs "
+            f"exactly one baseline row or its rows would be duplicated"
         )
-    if by and baseline_levels.height != levels.height:
-        missing = levels.join(baseline_levels, on=list(by), how="anti")
+    if baseline_levels != levels:
+        missing = (
+            collected.select(by)
+            .unique()
+            .join(matching.select(by).unique(), on=list(by), how="anti")
+        )
         raise ValueError(
             f"baseline policy {baseline_policy!r} is missing at "
             f"{missing.height} level(s) of {list(by)}: "

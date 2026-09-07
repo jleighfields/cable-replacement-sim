@@ -26,15 +26,6 @@ from cablesim import config, constants, run
 
 log = logging.getLogger("budget_sweep")
 
-REDUCED_REPS = 40
-REDUCED_SEGMENTS = 2_000
-"""The default size: the eight-level sweep takes about 15 seconds at it.
-
-Reducing the population also scales the customer denominator, which is what
-``config.resize_population`` is for: leaving it at the system total would
-understate every reliability index by the population ratio.
-"""
-
 
 def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     """Reads the command line.
@@ -79,7 +70,7 @@ def main(argv: list[str] | None = None) -> None:
     settings = shipped
     if not arguments.full:
         settings = config.resize_population(
-            shipped, REDUCED_SEGMENTS, n_reps=REDUCED_REPS
+            shipped, run.REDUCED_SEGMENTS, n_reps=run.REDUCED_REPS
         )
         log.info(
             "reduced size: %d replications, %d segments, %d customers. Pass "

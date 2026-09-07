@@ -62,8 +62,10 @@ def _():
     import polars as pl
     from cablesim import config, metrics, plots, policies, population, results, run
 
-    N_REPS = 40
-    N_SEGMENTS = 2_000
+    # The reduced size lives in the package, so this notebook, the sweep script
+    # and anything else showing a figure are all drawn at the same one.
+    N_REPS = run.REDUCED_REPS
+    N_SEGMENTS = run.REDUCED_SEGMENTS
 
     # `resize_population` scales the customer denominator with the population. Left at
     # the system total, every reliability index below would be understated by

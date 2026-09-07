@@ -473,6 +473,27 @@ def totals_row(policy: str, budget: float, minutes: float) -> dict[str, object]:
     }
 
 
+def test_two_baseline_rows_are_refused_when_there_are_no_grouping_keys() -> None:
+    """The ungrouped path needs the same guard, and had a weaker one.
+
+    Written as a comparison of the baseline's own row count against its own
+    distinct levels, the check reads as a tautology when there are no levels to
+    be distinct in, and a duplicated baseline is cross-joined onto every row:
+    three rows in, six out, no error, the same policy reported twice with
+    contradictory figures.
+    """
+    totals = pl.LazyFrame(
+        [
+            totals_row("run_to_failure", 0.0, 10_000.0),
+            totals_row("run_to_failure", 0.0, 9_000.0),
+            totals_row("risk_ranked", 0.0, 4_000.0),
+        ]
+    ).drop("annual_budget")
+
+    with pytest.raises(ValueError, match="each level needs"):
+        metrics.against_baseline(totals, "run_to_failure")
+
+
 def test_a_level_carrying_two_baseline_rows_is_refused() -> None:
     """Joining on it would duplicate every row at that level.
 
@@ -488,7 +509,7 @@ def test_a_level_carrying_two_baseline_rows_is_refused() -> None:
         ]
     )
 
-    with pytest.raises(ValueError, match="more than once"):
+    with pytest.raises(ValueError, match="each level needs"):
         metrics.against_baseline(totals, "run_to_failure", by=("annual_budget",))
 
 

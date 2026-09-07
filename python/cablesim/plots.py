@@ -19,6 +19,8 @@ figure at the end of a long run.
 import plotly.graph_objects as go
 import polars as pl
 
+from cablesim import metrics
+
 BAND_OPACITY = 0.18
 """How solid the shaded interval is behind its line."""
 
@@ -67,7 +69,11 @@ def trajectory(
         KeyError: If the summary columns for this quantity are absent, which
             would otherwise draw an empty figure that looks like a result.
     """
-    needed = [f"{quantity}_mean", f"{quantity}_p10", f"{quantity}_p90"]
+    # Derived from the quantiles the summary was built with, rather than
+    # written out again here: two spellings of one pair drift apart, and the
+    # drift shows up as a figure that raises rather than as a wrong number.
+    lower, upper = (int(share * 100) for share in metrics.BAND_QUANTILES)
+    needed = [f"{quantity}_mean", f"{quantity}_p{lower}", f"{quantity}_p{upper}"]
     missing = [name for name in needed if name not in banded.columns]
     if missing:
         raise KeyError(
@@ -84,8 +90,8 @@ def trajectory(
         figure.add_trace(
             go.Scatter(
                 x=years + years[::-1],
-                y=rows[f"{quantity}_p90"].to_list()
-                + rows[f"{quantity}_p10"].to_list()[::-1],
+                y=rows[f"{quantity}_p{upper}"].to_list()
+                + rows[f"{quantity}_p{lower}"].to_list()[::-1],
                 fill="toself",
                 fillcolor=colors[policy],
                 opacity=BAND_OPACITY,

@@ -86,6 +86,20 @@ the kernel's binding has to mirror, since every call here is by keyword.
 """
 
 
+REDUCED_SEGMENTS = 2_000
+"""Population size for a run meant to finish while someone watches it.
+
+Here rather than in a driver script because a notebook and a script that each
+name their own reduced size are two sizes that drift apart, and a figure is
+only readable against the size it was drawn at. Use it through
+``config.resize_population``, which scales the customer count and the budget
+with it.
+"""
+
+REDUCED_REPS = 40
+"""Replication count to match ``REDUCED_SEGMENTS``."""
+
+
 def budget_grid(annual: float, levels: int = BUDGET_GRID_LEVELS) -> list[float]:
     """Builds the swept budget levels for the deliverable figure.
 
