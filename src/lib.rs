@@ -302,7 +302,8 @@ fn run_chunk<'py>(
     // a replication past every limit, so saturating reports it as exactly that.
     let last_replication = first_replication.saturating_add(n_reps as u64 - 1);
     // No purpose is checked here: the loop draws only at the purposes this crate
-    // names, and that they fit their field is settled when this compiles.
+    // names, and that each of them fits its field is settled when this
+    // compiles — see the assertions beside their definitions.
     within_the_index(last_replication, n_segments as u64 - 1, n_years as u64)?;
 
     // A fixed-size array of name-and-length pairs, checked in one loop so that

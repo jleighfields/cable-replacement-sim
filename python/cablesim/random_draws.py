@@ -428,8 +428,20 @@ def uniforms_dense(
     Returns:
         ``(n_reps, n_segments)`` doubles in ``[0, 1)``.
     """
-    if n_reps < 1:
+    if n_reps == 0:
+        # Worded exactly as the binding words it: the two are documented as
+        # computing the same values, so they must refuse the same input the
+        # same way.
         raise ValueError("n_reps is 0, so there are no positions to draw at")
+    if n_reps < 0 or n_segments < 0:
+        # A separate branch rather than a reworded message, because the one
+        # above has to stay byte-identical to the binding's. The binding gets
+        # these refused by PyO3's own extraction, which will not take a
+        # negative into an unsigned argument.
+        raise ValueError(
+            f"n_reps is {n_reps} and n_segments is {n_segments}; neither counts "
+            f"anything below zero"
+        )
     check_positions(first_replication + n_reps - 1, n_segments - 1, year, purpose)
     # One run per replication: a replication's segments are consecutive, so its
     # draws are consecutive too. Across replications they are not, because the

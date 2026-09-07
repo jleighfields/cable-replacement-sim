@@ -25,7 +25,8 @@ array.** A uniform is a function of `(purpose, replication, segment, year)`
 under a key derived from the run's seed, using Philox-4x64-10, which both
 languages implement and both are checked against NumPy's. That removes the
 149 MB draw array from a chunk, produces only the draws that are read — 1.5% of
-the year draws ever were — and is what lets a worker generate without a lock.
+the year draws are ever read, depending on the policy — and is what lets a
+worker generate without a lock.
 
 The kernel runs replications over worker threads with the interpreter lock
 released, and the benchmark table exists. Phase 6, the Shiny application and the
@@ -927,7 +928,9 @@ Three properties follow, and each is load-bearing:
   the result does not depend on the thread count or on scheduling — which
   `test_every_thread_count_gives_the_reference_answer` checks.
 - **Only what is read is computed.** A year's draw is consumed only by a
-  segment replaced that year — measured, 1.45% to 1.74% of them. A stream would
+  segment replaced that year — measured across the five configured policies,
+  1.4% to 2.6% of them, lowest under `run_to_failure` and highest under
+  `random`. A stream would
   have to produce the rest anyway to keep its position aligned.
 
 **The index packs four fields into fixed bit widths**, authored in `draws.rs`
@@ -957,10 +960,12 @@ block for a counter is Philox's at that counter plus one — the first
 implementation here was one block out everywhere, which looks like perfectly
 good randomness.
 
-The rest of this section describes the design this replaced. It is kept because
-the argument for common random numbers is unchanged and because 13.2, Still
-open, records why the array went; a reader wanting the current mechanism has it
-above.
+What follows is unchanged by any of this and still describes the model: which
+policies must agree on which draws, and the year-indexing convention — index 0
+is the left-truncated draw made at the start of the run, and a replacement made
+in year `y` reads `y + 1`. Only the *delivery* changed. Where a paragraph below
+speaks of an array being passed in, read it as the position being computed;
+13.2, Still open, records why the array went.
 
 Index `y = 0` is the left-truncated draw made at the start of the run, and a
 replacement made in year `y` takes index `y + 1`. Years run `0 .. n_years - 1`,
@@ -1407,7 +1412,7 @@ cable-replacement-sim/
 │   ├── weibull.py              # censored MLE, effective-scale reduction
 │   ├── policies.py             # scoring + greedy budget allocation
 │   ├── simulate.py             # the annual loop; the correctness reference
-│   ├── batched.py              # batched NumPy and polars loops; benchmark only
+│   ├── batched.py              # the batched NumPy loop; benchmark only
 │   ├── benchmarks.py           # times them and checks agreement in one pass
 │   ├── metrics.py              # SAIFI / SAIDI / CAIDI / CMI, discounting
 │   ├── run.py                  # config -> run directory; the only writer
@@ -2025,9 +2030,11 @@ carries their measurements and the reason.
   possible at all**, and it is why that rule is pinned rather than left to each
   implementation to settle.
 - **Chunk size is never a config knob, on either side of the boundary.** The
-  kernel batches replications to bound the draw array (2.11) and the batched
-  Python implementations batch to bound their state, and both trade memory
-  against time while changing no number — replication `r` reads the same draws
+  batched Python implementations batch to bound their state, which is
+  `(replications, segments)` and so scales with the batch; the kernel no longer
+  needs to, since it computes each draw rather than holding an array of them and
+  its per-worker scratch scales with the thread count instead. Both trade
+  memory against time while changing no number — replication `r` reads the same draws
   at any batch size, which is what the per-replication seed children buy. Both
   are therefore driver-script arguments, recorded in the run manifest beside
   the thread count and the build profile (7.1). Putting either on the config
@@ -2038,19 +2045,15 @@ carries their measurements and the reason.
   replications the state is 12 million cells, so one f64 array is 96 MB; at
   40,000 it is 320 MB and the working set runs to a few gigabytes. Not having to chunk is one of the kernel's real
   advantages, and it is a more defensible claim than saying loops are slow.
-- **polars has no addressable per-element generator**, so its uniforms are
-  drawn in NumPy and attached as a column (2.11, Random numbers and why
-  policies must share them). The polars implementation is therefore not purely
-  polars, which is worth stating rather than leaving to be discovered.
-- **If polars loses, publish the number and delete the implementation.** The
-  measurement is the deliverable. Carrying a fourth mirror of the annual loop
-  to answer a question that has already been answered is not.
+- **That rule was applied.** Both polars implementations lost, their numbers
+  are published in `deprecated/README.md`, and they are retired. Carrying a
+  mirror of the annual loop to answer a question already answered is what this
+  rule exists to prevent.
 - Always build with `maturin develop --release` before benchmarking; debug
   builds are slow enough to make timing numbers meaningless.
 
 **The measured table.** 12,000 segments over a 30-year horizon, release build,
-48 cores available, polars 1.44.1 with its own 48-thread pool, mean of 2 runs,
-seconds per replication. **Every row reproduced the reference exactly**, which
+48 cores available, mean of 3 runs, seconds per replication. **Every row reproduced the reference exactly**, which
 is asserted rather than observed: the harness checks agreement in the same pass
 that times, because timing an implementation that has drifted measures
 something else being computed.
@@ -2092,8 +2095,10 @@ same work is counted on both sides of the change and the improvement is a
 measurement rather than an artefact of where the clock went.
 
 Bold marks the fastest Python implementation in each column, which is the
-denominator of the last row. It is not always the same one, which is the reason
-that row exists — see below.
+denominator of the last row. It is the batched loop in all three now, but that
+row exists because it has not always been: before the draws were computed rather
+than passed in, the scalar reference was faster on two of the three, and a
+speedup quoted against a baseline the reference beats is flattered.
 
 Five findings, and only the second is the one this project set out to make:
 
@@ -3125,7 +3130,26 @@ the argument belongs beside the model it constrains.
    competitive, and faster than the array form where few segments are eligible
    — but that the Rust one put 142 seconds on every Rust edit and answered a
    question that came back empty.
-3. Confirm branch protection refuses what it claims to. Both rulesets in
+3. **Give each implementation its own batch size.** Measured at the shipped
+   population through the kernel on 48 threads, a full run takes 7.99 s at the
+   default batch of 50, 5.63 s at 200 and **4.40 s at 1000** — 1.8 times, for
+   nothing but the shape of the split. At 50 each worker gets about one
+   replication, so every chunk ends with a ragged tail of idle workers and a
+   run pays 100 of those tails.
+
+   The kernel can take all of them at once because it no longer holds an array
+   of draws and its per-worker scratch scales with the thread count rather than
+   with how many replications are in flight.
+
+   **Only one implementation runs per call**, so nothing is competing for that
+   memory — what is shared is the *default*, one number that has to be sensible
+   for whichever implementation was chosen. The batched NumPy loop is the one
+   that still needs a bound, its state being `(replications, segments)`: a
+   thousand replications at twelve thousand segments is about 576 MB. So the
+   right default is a property of the implementation, which is a small change to
+   `run.py` and a change to a shipped default.
+
+4. Confirm branch protection refuses what it claims to. Both rulesets in
    Section 10.4, Branch protection on `main`, are applied and match their
    checked-in files, and every change since continuous integration existed has
    arrived through a pull request with a green `test` — the two commits that
@@ -3134,5 +3158,5 @@ the argument belongs beside the model it constrains.
    the merge button refuses, then confirm a direct `git push origin main` is
    rejected. A protection rule nobody has watched refuse something is not
    known to work.
-4. Source the placeholder numbers in 13.2, Still open, before any result is
+5. Source the placeholder numbers in 13.2, Still open, before any result is
    presented as a finding rather than as a demonstration of the machinery.

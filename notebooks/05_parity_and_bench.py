@@ -110,7 +110,7 @@ def _(mo):
 
 
 @app.cell
-def _(mo, run):
+def _(kernel, mo, run):
     # Defaults to the reduced size so the notebook opens in seconds and so the
     # headless run that gates nothing still finishes quickly — a slider takes
     # its default when nobody is there to move it.
@@ -131,7 +131,19 @@ def _(mo, run):
     # The scalar reference is the binding cost at every size, and it is in the
     # table for scale rather than as a baseline, so a smaller count costs only
     # precision.
-    n_reps = mo.ui.slider(2, 50, step=2, value=run.REDUCED_REPS, label="replications")
+    #
+    # It reaches twice the machine's thread count deliberately. Replications are
+    # the axis being parallelised, so this number is the ceiling on the speedup
+    # — below the thread count, threads sit idle and the ratio understates what
+    # the kernel does; at two per worker there is also something left to steal
+    # when one replication finishes before another.
+    n_reps = mo.ui.slider(
+        2,
+        max(2 * kernel.AVAILABLE_THREADS, 50),
+        step=2,
+        value=run.REDUCED_REPS,
+        label="replications",
+    )
     mo.hstack([n_segments, n_reps])
     return n_reps, n_segments
 

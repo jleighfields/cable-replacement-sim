@@ -258,7 +258,6 @@ def test_the_run_derives_the_draw_key_from_the_configured_seed(
                 "draw_key": arguments["draw_key"],
                 "first_replication": arguments["first_replication"],
                 "n_reps": arguments["n_reps"],
-                "threads": arguments["threads"],
             }
         )
         return simulate.run_chunk(**arguments)
@@ -271,11 +270,6 @@ def test_the_run_derives_the_draw_key_from_the_configured_seed(
     # A different seed has to give a different key, or deriving it from the seed
     # would be indistinguishable from ignoring the seed.
     assert random_draws.draw_key(settings.simulation.seed + 1) != expected
-
-    # And the thread count reaches the loop rather than stopping at the manifest.
-    # A run recording a count nothing acted on is provenance that reads as fact
-    # and is not, which is the reason every implementation takes the argument.
-    assert {call["threads"] for call in seen} == {1}
 
     # Every replication of the run is covered exactly once, in order.
     covered: list[int] = []

@@ -257,7 +257,23 @@ const _: () = assert!(
 // Every purpose this crate names has to fit the field it sits in. Checked when
 // this compiles, which is why the annual loop's own draws need no run-time
 // purpose check — only a caller supplying one can get it wrong.
-const _: () = assert!(purpose::RECORDS <= MAX_PURPOSE, "a purpose must fit");
+//
+// The whole set, rather than whichever constant is largest today: asserting one
+// of them would keep compiling when a fifth purpose is added past the field.
+// Adding a purpose means adding it here, which is the point.
+const NAMED_PURPOSES: [u64; 4] = [
+    purpose::LIFETIMES,
+    purpose::POLICIES,
+    purpose::POPULATION,
+    purpose::RECORDS,
+];
+const _: () = {
+    let mut index = 0;
+    while index < NAMED_PURPOSES.len() {
+        assert!(NAMED_PURPOSES[index] <= MAX_PURPOSE, "a purpose must fit");
+        index += 1;
+    }
+};
 
 /// Where in the stream the draw for one position of the simulation lives.
 ///
