@@ -535,6 +535,59 @@ def _(pl, sweep):
 def _(mo):
     mo.md(
         r"""
+    ## 75 · The same answer, computed in Rust
+
+    Everything above ran through the Python reference: the annual loop written
+    to be checkable by reading, so that when two implementations disagree it is
+    the one that arbitrates. The Rust kernel computes the same model from the
+    same draws, and the two are interchangeable behind the same call — same
+    argument names, same result type — so the run below differs from the run in
+    section 40 only in which implementation it named.
+
+    Every saved row must match. The draws are not regenerated and not compared:
+    both implementations read the identical uniforms, so there is no
+    random-number stream to reconcile across the two languages.
+
+    **No timing is claimed here.** The reference is the correctness reference
+    and not the benchmark baseline — it is written for readability, so timing
+    the kernel against it would overstate what the kernel is worth. The
+    benchmark notebook measures against a batched NumPy implementation instead,
+    with the build profile and thread count stated.
+    """
+    )
+    return
+
+
+@app.cell
+def _(pathlib, pl, results, run, saved, settings, tempfile):
+    from cablesim import kernel
+
+    with tempfile.TemporaryDirectory(prefix="cablesim_04_kernel_") as _root:
+        _directory = run.run(
+            settings,
+            pathlib.Path(_root),
+            implementation=kernel.run_chunk,
+            implementation_name="kernel",
+            build_profile=kernel.BUILD_PROFILE,
+        )
+        from_kernel = pl.read_parquet(_directory / results.RESULTS_NAME)
+
+    _order = ["policy", "replication", "year", "class"]
+    assert saved.sort(_order).equals(from_kernel.sort(_order)), (
+        "the kernel and the reference disagree on a saved run; the reference "
+        "arbitrates, so this is a defect in the kernel until shown otherwise"
+    )
+    (
+        f"{from_kernel.height:,} rows, identical in both implementations, "
+        f"from a kernel compiled in {kernel.BUILD_PROFILE} mode on one thread"
+    )
+    return from_kernel, kernel
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
     ## 80 · What this is and is not
 
     The value-of-lost-load figures and the Weibull parameters in the shipped

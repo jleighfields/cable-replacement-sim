@@ -24,9 +24,12 @@ in `policies.py` and read again as constants in `policies.rs`, and any two
 exchanged funds a different set of segments.
 """
 
+import pathlib
+
 import numpy as np
+import polars as pl
 import pytest
-from cablesim import kernel, policies, simulate
+from cablesim import config, constants, kernel, policies, results, run, simulate
 
 from tests import conftest, helpers
 
@@ -235,3 +238,74 @@ def test_the_kernel_matches_the_reference_over_a_real_population(
                 f"{name}: mean paired difference {paired.mean():.6g} is more "
                 f"than three standard errors from zero"
             )
+
+
+def test_two_saved_runs_agree_row_for_row(tmp_path: pathlib.Path) -> None:
+    """The two implementations agree on disk, not only in memory.
+
+    An in-memory comparison ends when the test does. Two runs written out can
+    be diffed afterwards, which is what makes a parity failure diagnosable
+    rather than merely red, and it is also the only check that covers what sits
+    between the annual loop and the saved file: the chunking, the per-policy
+    loop, the concatenation and the row builder are all outside `run_chunk` and
+    are driven identically for both.
+
+    The runs are written through the same entry point a real sweep uses, so
+    what is compared is the shipped path. Only the manifest may differ — it
+    records which implementation ran, and a wall-clock time that is not a
+    result.
+    """
+    settings = config.resize_population(
+        config.load_config(constants.DEFAULT_CONFIG_PATH), 300, n_reps=4
+    )
+
+    saved = {
+        name: run.run(
+            settings,
+            tmp_path / name,
+            implementation=implementation,
+            implementation_name=name,
+            batch_size=3,
+        )
+        for name, implementation in run.IMPLEMENTATIONS.items()
+    }
+
+    frames = {
+        name: pl.read_parquet(directory / results.RESULTS_NAME).sort(
+            ["policy", "replication", "year", "class"]
+        )
+        for name, directory in saved.items()
+    }
+
+    assert frames["reference"].height > 0
+    assert frames["reference"].equals(frames["kernel"])
+
+
+def test_a_saved_kernel_run_records_the_profile_it_was_built_with(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A run through the kernel records which Cargo profile produced it.
+
+    The reference has no build profile and records none rather than inventing
+    one. The kernel's comes from the compiled binary itself, so it cannot
+    disagree with what ran; a debug build is slower by enough that a timing
+    recorded without it says nothing.
+    """
+    settings = config.resize_population(
+        config.load_config(constants.DEFAULT_CONFIG_PATH), 100, n_reps=2
+    )
+
+    directory = run.run(
+        settings,
+        tmp_path,
+        implementation=kernel.run_chunk,
+        implementation_name="kernel",
+        build_profile=kernel.BUILD_PROFILE,
+    )
+
+    manifest = results.Manifest.model_validate_json(
+        (directory / results.MANIFEST_NAME).read_text(encoding="utf-8")
+    )
+
+    assert manifest.implementation == "kernel"
+    assert manifest.build_profile in {"debug", "release"}
