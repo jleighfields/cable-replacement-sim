@@ -25,6 +25,8 @@ covers how tests are laid out here and why.
 | `test_random_draws.py` | the four sources are independent, and the stream is pinned |
 | `test_weibull.py` | the closed forms, against the analytical results |
 | `test_population.py` | the generated table, and the columns derived from it |
+| `test_records.py` | the synthetic failure history, and the technology coding |
+| `test_mle_recovery.py` | the recovery ladder, and the fit against `lifelines` |
 | `test_plan_document.py` | `PLAN.md` structure: citations resolve, and it quotes the config verbatim |
 | `test_notebooks.py` | every notebook runs headless (marker: `notebooks`) |
 

@@ -659,3 +659,63 @@ def test_the_reported_likelihood_is_the_summed_one() -> None:
     assert fitted.log_likelihood == pytest.approx(
         weibull.log_likelihood(fitted.shape, fitted.scale, end, entry, observed)
     )
+
+
+def test_a_fit_carries_no_shared_mutable_default() -> None:
+    """`RegressionFit` must give no field a mutable default.
+
+    A NamedTuple evaluates a field default once, at class creation, so a `{}`
+    default is a single dictionary shared by every instance built without it:
+    writing through one instance is then visible through all the others. Ruff's
+    B006 catches that on a function argument and does not reach a class
+    attribute, so nothing but this notices.
+
+    Asserting the absence of defaults rather than constructing two instances
+    and writing through one, because with the defaults gone the class cannot be
+    built without them and that construction no longer compiles. This states
+    the property that keeps it safe.
+    """
+    assert not weibull.RegressionFit._field_defaults
+
+
+def test_the_regression_likelihood_is_the_summed_one() -> None:
+    """The mirror of the check above, for the fit that carries covariates.
+
+    `fit_regression` averages its objective over episodes for the same reason
+    `fit_censored` does, and multiplies the reported value back by the same
+    count. Nothing watched that: dividing the reported likelihood by the
+    episode count leaves every recovery test green, because the one test
+    comparing two regression likelihoods compares two values scaled
+    identically, and the difference survives. The error would be a factor of
+    the episode count, which is thousands here.
+
+    Both parameterisations are checked. Where the shape is common the model is
+    one shape and a scale per episode; where an ancillary design is given the
+    shape varies too, and that path is exercised by less than the other.
+    """
+    settings = one_technology_config()
+    end, entry, observed, design, names = cross_check_data(settings)
+
+    common = weibull.fit_regression(end, entry, observed, design, names)
+    scales = common.reference_scale * np.exp(
+        design @ np.array([common.coefficients[name] for name in names])
+    )
+    assert common.log_likelihood == pytest.approx(
+        weibull.log_likelihood(common.shape, scales, end, entry, observed)
+    )
+
+    varying = weibull.fit_regression(
+        end, entry, observed, design, names, ancillary=design, ancillary_names=names
+    )
+    # The ancillary coefficients are on the log scale, so the shape where a
+    # covariate is one is the reference shape times the exponent of its
+    # coefficient.
+    shapes = varying.shape * np.exp(
+        design @ np.array([varying.ancillary_coefficients[name] for name in names])
+    )
+    scales = varying.reference_scale * np.exp(
+        design @ np.array([varying.coefficients[name] for name in names])
+    )
+    assert varying.log_likelihood == pytest.approx(
+        weibull.log_likelihood(shapes, scales, end, entry, observed)
+    )

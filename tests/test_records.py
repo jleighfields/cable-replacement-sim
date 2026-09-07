@@ -141,12 +141,37 @@ def test_a_single_technology_removes_the_other_sources_of_variation(
 def test_generation_is_reproducible_and_seed_dependent(
     settings: config.Config,
 ) -> None:
-    """The same configuration gives the same table; an offset gives another."""
+    """The same configuration gives the same table; an offset gives another.
+
+    The offset reaches the seed at two places: the draws that set up each
+    segment -- install year, length, conductor count, class -- and the
+    lifetimes drawn per episode. Comparing whole tables only sees the second,
+    because differing lifetimes alone make the frames unequal, so each setup
+    column is checked as well. Two tables sharing every install year and length
+    while claiming to be independent draws would otherwise pass.
+    """
     again = records.episode_table(settings, n_segments=500)
     shifted = records.episode_table(settings, n_segments=500, seed_offset=1)
 
     assert records.episode_table(settings, n_segments=500).equals(again)
     assert not shifted.equals(again)
+
+    # Compared per segment rather than per row. The setup draws are made once
+    # per segment, while replacements add rows in between, so two tables can
+    # share every setup draw and still differ row by row -- which is what makes
+    # the frame comparison above blind to the offset missing these.
+    def per_segment(frame: pl.DataFrame) -> pl.DataFrame:
+        """The original installation of each segment, one row apiece."""
+        return frame.sort("segment_id", "install_year").unique(
+            subset="segment_id", keep="first", maintain_order=True
+        )
+
+    first, second = per_segment(again), per_segment(shifted)
+    assert first["segment_id"].to_list() == second["segment_id"].to_list()
+    for column in ("install_year", "length_ft"):
+        assert not np.array_equal(
+            first[column].to_numpy(), second[column].to_numpy()
+        ), f"{column} is identical across offsets, so the offset missed it"
 
 
 def test_implausibly_short_lifetimes_raise_rather_than_truncate(
@@ -204,3 +229,22 @@ def test_technologies_that_do_fail_are_coded_against_the_reference(
     # reference, coded as zeros, or carries a single one.
     assert set(design.sum(axis=1)) <= {0.0, 1.0}
     assert (design.sum(axis=1) == 0.0).sum() == (table["technology"] == "hmwpe").sum()
+
+
+def test_a_technology_override_whose_vintages_leave_a_gap_is_refused(
+    settings: config.Config,
+) -> None:
+    """An install year no supplied technology covers must not be assigned one.
+
+    `technology_index` is initialised to zeros and then filled per vintage, so
+    a year outside every supplied range keeps index zero and the segment is
+    generated from the first technology's parameters and labelled with its
+    name. With one technology that fallback is what makes the early rungs
+    work. With several it is a silent error: the configuration validator
+    refuses vintages that do not partition the install-year range for exactly
+    this reason, and passing the list directly walks around that check.
+    """
+    gapped = [settings.population.technologies[0], settings.population.technologies[2]]
+
+    with pytest.raises(ValueError, match="vintage"):
+        records.episode_table(settings, technologies=gapped, n_segments=500)

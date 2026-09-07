@@ -25,8 +25,8 @@ existed.
 Two other designs would give different data, and neither is what this builds:
 an asset register carrying every install and replacement back to the first
 install year has no truncation, because nothing is missing; a register listing
-only current inventory with no failure log has no failures, and the shape is
-then unidentified.
+only current inventory with no failure log has no failures, and the Weibull
+shape parameter is then unidentified.
 
 Censoring and truncation
 ------------------------
@@ -163,6 +163,29 @@ def episode_table(
     drawn_year = population.draw_categories(setup[0], year_probabilities)
     install_year = years[drawn_year].astype(float)
     technology_index = np.zeros(total, dtype=np.int64)
+    # A single technology is the documented fallback: its vintage need not
+    # cover the range, and every segment takes it. Two or more have to cover
+    # every year that can be drawn, because an uncovered year keeps the index
+    # the array was initialised with and the segment is then labelled with one
+    # technology's name while its lifetime is drawn from that technology's
+    # Weibull pair -- silently, and only for the years in the gap.
+    # `PopulationConfig.cross_checks` refuses this for the configured list;
+    # passing a list here goes around that check, so it is repeated.
+    if len(technologies) > 1:
+        covered = np.zeros(len(years), dtype=bool)
+        for technology in technologies:
+            first, last = technology.vintage
+            covered |= (years >= first) & (years <= last)
+        if not covered.all():
+            missing = years[~covered]
+            raise ValueError(
+                f"the supplied technology vintages leave "
+                f"{int(missing.min())} to {int(missing.max())} uncovered; a "
+                f"segment installed then would be labelled with whichever "
+                f"technology the index array happened to hold. Got "
+                f"{[(t.name, t.vintage) for t in technologies]}"
+            )
+
     for index, technology in enumerate(technologies):
         first, last = technology.vintage
         technology_index[(install_year >= first) & (install_year <= last)] = index
@@ -364,11 +387,17 @@ def technology_indicators(
 
     Few failures is the same problem short of the boundary rather than a
     different one, and it is not caught here because no threshold separates the
-    two. It is worth knowing what it looks like: at the shipped parameters the
-    newest technology draws 25 failures from 77,151 rows, and its coefficient
-    then varies across seeds by far more than its own value -- while any single
-    run returns something that looks reasonable. Check the failure count per
-    technology before believing a coefficient.
+    two. It is worth knowing what it looks like. At the shipped
+    `records.n_segments` of 20,000 the table holds about 21,400 rows, of which
+    the newest technology contributes roughly 12,900 and between one and five
+    observed failures; over eight consecutive seeds its fitted coefficient ran
+    from 0.39 to 0.70 about a mean of 0.54, and every individual run returned a
+    finite, ordinary-looking number. Count the observed failures per technology
+    before believing a coefficient::
+
+        table.group_by("technology").agg(
+            pl.col("failure_year").is_not_null().sum().alias("failures")
+        )
 
     Args:
         table: The episode table.

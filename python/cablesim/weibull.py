@@ -217,7 +217,17 @@ def log_likelihood(
     """
     hazard_at_end = (age_at_end / scale) ** shape
     hazard_at_entry = (entry_age / scale) ** shape
-    log_hazard = np.log(shape / scale) + (shape - 1.0) * np.log(age_at_end / scale)
+
+    # A censored episode of zero age contributes no failure term, but the
+    # logarithm below is still evaluated for it, and `0 * -inf` is `nan` rather
+    # than zero -- which would poison the whole sum and make the fit fail
+    # naming nothing. Substituting a ratio of one where there is no failure
+    # leaves the term multiplied by zero, as intended. An *observed* failure at
+    # age zero still gives negative infinity, which is right: that is a
+    # degenerate lifetime rather than a rounding artefact, and it should stop
+    # the fit rather than be smoothed away.
+    end_ratio = np.where(observed > 0.0, age_at_end / scale, 1.0)
+    log_hazard = np.log(shape / scale) + (shape - 1.0) * np.log(end_ratio)
     return float(
         np.sum(observed * log_hazard) - np.sum(hazard_at_end - hazard_at_entry)
     )
@@ -241,6 +251,9 @@ def fit_censored(
     hazard rises or falls; the mean age is the right order of magnitude for the
     scale whatever the censoring.
 
+    Implemented as `fit_regression` with no covariates, which is exactly what
+    this is, so the likelihood and its gradient exist once.
+
     Args:
         age_at_end: Age at failure, or at the study end for a censored episode.
         entry_age: Age when observation began, zero where none.
@@ -254,72 +267,31 @@ def fit_censored(
         ValueError: If no episode ended in a failure, which leaves the shape
             unidentified, or if the optimizer does not converge.
     """
-    if not np.any(observed):
-        raise ValueError("no observed failures: the shape is not identified")
-
-    # The objective is averaged over episodes rather than summed. BFGS stops on
-    # an absolute tolerance for the gradient norm, while the gradient of a sum
-    # grows with the number of rows, so a summed objective silently demands
-    # more precision from the line search the larger the sample gets -- past a
-    # few thousand episodes it asks for more than float64 can deliver and the
-    # fit reports failure while standing on the right answer. Averaging makes
-    # the stopping rule mean the same thing at every sample size. It rescales
-    # the curvature by the same factor, which `hess_inv` below undoes.
-    episodes = float(age_at_end.size)
-
-    def negative(log_parameters: np.ndarray) -> float:
-        shape, scale = np.exp(log_parameters)
-        return -log_likelihood(shape, scale, age_at_end, entry_age, observed) / episodes
-
-    def gradient(log_parameters: np.ndarray) -> np.ndarray:
-        """Analytic gradient of the negative log-likelihood in log-parameters.
-
-        Supplied rather than left to finite differences: near the optimum the
-        likelihood is flat enough that a numerical gradient loses precision and
-        the optimizer reports failure at the right answer, which is worse than
-        either succeeding or failing honestly.
-        """
-        shape, scale = np.exp(log_parameters)
-        end_ratio = age_at_end / scale
-        entry_ratio = entry_age / scale
-        end_hazard = end_ratio**shape
-        entry_hazard = entry_ratio**shape
-
-        # An episode watched from installation has zero entry age, where the
-        # hazard is zero and its logarithm is not finite. The product is zero,
-        # so the term is dropped rather than evaluated.
-        safe_ratio = np.where(entry_age > 0.0, entry_ratio, 1.0)
-        entry_term = np.where(entry_age > 0.0, entry_hazard * np.log(safe_ratio), 0.0)
-        d_shape = np.sum(observed * (1.0 / shape + np.log(end_ratio))) - np.sum(
-            end_hazard * np.log(end_ratio) - entry_term
-        )
-        d_scale = (shape / scale) * (
-            np.sum(end_hazard - entry_hazard) - np.sum(observed)
-        )
-        # Chain to the log-parameters the optimizer works in, and average to
-        # match the objective.
-        return -np.array([shape * d_shape, scale * d_scale]) / episodes
-
-    start = np.log([1.0, float(np.mean(age_at_end))])
-    result = optimize.minimize(negative, start, jac=gradient, method="BFGS")
-    if not result.success:
-        raise ValueError(f"the fit did not converge: {result.message}")
-
-    shape, scale = np.exp(result.x)
-    # hess_inv is the covariance of the log-parameters, so the interval is
-    # symmetric there and exponentiates to an asymmetric one for the parameter.
-    # It inverts the curvature of the averaged objective, so dividing by the
-    # episode count returns it to the scale of the likelihood itself.
-    errors = np.sqrt(np.diag(result.hess_inv) / episodes)
-    width = stats.norm.ppf(0.5 + level / 2.0)
-    low, high = np.exp(result.x - width * errors), np.exp(result.x + width * errors)
-
+    # Delegates rather than repeating the model. This is `fit_regression` with
+    # no covariates: one shape, one scale, the same censored and left-truncated
+    # likelihood, the same analytic gradient and the same rescaling of the
+    # objective. Keeping a second copy meant maintaining two gradients, and the
+    # averaging that made large samples converge had to be written into both.
+    #
+    # The separate entry point is worth keeping even so. Rungs 1 and 2 and the
+    # notebook fit lifetimes with no covariates at all, and asking them to
+    # build an empty design matrix would put the regression's vocabulary in
+    # front of a question that does not have any.
+    fitted = fit_regression(
+        age_at_end,
+        entry_age,
+        observed,
+        np.empty((age_at_end.size, 0)),
+        [],
+        level=level,
+    )
     return Fit(
-        shape=float(shape),
-        scale=float(scale),
-        shape_interval=(float(low[0]), float(high[0])),
-        scale_interval=(float(low[1]), float(high[1])),
-        log_likelihood=float(-result.fun * episodes),
+        shape=fitted.shape,
+        scale=fitted.reference_scale,
+        shape_interval=fitted.shape_interval,
+        # With no covariates the reference scale is the only scale there is.
+        scale_interval=fitted.reference_scale_interval,
+        log_likelihood=fitted.log_likelihood,
     )
 
 
@@ -327,12 +299,17 @@ class RegressionFit(NamedTuple):
     """A fitted accelerated-failure-time model with covariates on the scale.
 
     Attributes:
-        shape: Fitted shape, common to every episode.
-        reference_scale: `exp(mu)`, the scale where every covariate is zero —
-            with the covariates used here, a single conductor at the reference
-            length.
+        shape: Fitted Weibull shape where every ancillary covariate is
+            zero. With no ancillary design matrix that is the shape of every
+            episode; with one it is the shape of the reference level only, and
+            the other levels are read off `ancillary_coefficients`.
+        reference_scale: `exp(mu)`, the Weibull scale in years where every
+            covariate is zero — for the geometry covariates, a single conductor
+            at the reference length; for reference-coded indicators, the
+            reference level.
         coefficients: Fitted coefficient per covariate, in the order given.
-        shape_interval: Confidence interval for the shape.
+        shape_interval: Confidence interval for `shape`, on that same
+            reference reading.
         reference_scale_interval: Confidence interval for `exp(mu)`.
         coefficient_intervals: Confidence interval per covariate.
         log_likelihood: Value at the optimum.
@@ -349,8 +326,14 @@ class RegressionFit(NamedTuple):
     reference_scale_interval: tuple[float, float]
     coefficient_intervals: dict[str, tuple[float, float]]
     log_likelihood: float
-    ancillary_coefficients: dict[str, float] = {}
-    ancillary_intervals: dict[str, tuple[float, float]] = {}
+    # No default, deliberately. A NamedTuple evaluates a field default once at
+    # class creation, so a `{}` here would be one dictionary shared by every
+    # instance built without it, and a write through any of them visible
+    # through all the rest. Ruff's B006 catches that on a function argument and
+    # does not reach a class attribute. Both callers pass these, so requiring
+    # them costs nothing and removes the trap.
+    ancillary_coefficients: dict[str, float]
+    ancillary_intervals: dict[str, tuple[float, float]]
 
 
 def fit_regression(
@@ -438,7 +421,16 @@ def fit_regression(
 
     def gradient(parameters: np.ndarray) -> np.ndarray:
         shape, scale = unpack(parameters)
+        # Guarded on the age, not on whether the episode failed. Both terms
+        # below take the logarithm of this ratio, and the accumulated-hazard
+        # one applies to censored rows as much as to failures, so keying the
+        # substitution off `observed` would delete real exposure. At zero age
+        # the hazard is zero and the product is meant to be zero, but the
+        # unguarded form computes `0 * -inf`, which is `nan` and takes the
+        # whole gradient with it. Anywhere the age is positive this is exactly
+        # the ratio itself.
         end_ratio = age_at_end / scale
+        positive_end = np.where(age_at_end > 0.0, end_ratio, 1.0)
         entry_ratio = entry_age / scale
         end_hazard = end_ratio**shape
         entry_hazard = entry_ratio**shape
@@ -448,8 +440,8 @@ def fit_regression(
         # Both blocks act through one per-episode quantity, because every
         # parameter in a block shifts log(shape_i) or log(scale_i) identically.
         by_shape = shape * (
-            observed * (1.0 / shape + np.log(end_ratio))
-            - (end_hazard * np.log(end_ratio) - entry_term)
+            observed * (1.0 / shape + np.log(positive_end))
+            - (end_hazard * np.log(positive_end) - entry_term)
         )
         by_scale = shape * ((end_hazard - entry_hazard) - observed)
 

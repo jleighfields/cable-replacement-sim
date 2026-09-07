@@ -31,7 +31,7 @@ phased roadmap.
 | Path | What it holds |
 |---|---|
 | `src/` | the Rust crate: the compute kernel, built as a Python extension module |
-| `python/cablesim/` | the Python package: configuration, the sources of randomness, the Weibull forms, the population generator, and the pure-Python reference implementation that will mirror the kernel |
+| `python/cablesim/` | the Python package: configuration, the sources of randomness, the Weibull forms, the population generator, the synthetic failure history and its censored maximum-likelihood fit, and the pure-Python reference implementation that will mirror the kernel |
 | `configs/base.yaml` | the documented default run configuration |
 | `notebooks/` | marimo notebooks that walk the package interface layer by layer |
 | `tests/` | the test suite |

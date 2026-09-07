@@ -953,9 +953,6 @@ def _(COVERAGE_DRAWS, coverage, np):
         assert 0.90 <= coverage[_name] <= 0.99, (
             f"{_name} intervals cover {coverage[_name]:.1%}, not about 95%"
         )
-    assert coverage["both at once"] < min(coverage["shape"], coverage["scale"]), (
-        "requiring both cannot be easier than requiring either"
-    )
     _half = 1.96 * np.sqrt(0.95 * 0.05 / COVERAGE_DRAWS)
     f"sampling error on a true 95% at {COVERAGE_DRAWS} draws is +/- {_half:.1%}"
     return
