@@ -1,0 +1,18 @@
+# The toolchain every build of this crate uses. rustup reads this file on any
+# cargo invocation inside the checkout and installs what it names, so a
+# contributor and continuous integration compile against the same compiler
+# without either of them naming a version.
+#
+# Why pin at all: `cargo clippy --all-targets -- -D warnings` gates every pull
+# request, and clippy gains lints with each release. On a floating toolchain a
+# clippy release turns a green branch red with no change to the code, which is
+# how a red check stops being read as a finding. Pinning makes that a
+# deliberate bump with its own commit.
+[toolchain]
+# The minor version, not an exact patch. Lints arrive with minor releases, so
+# holding the minor is what keeps the gate stable; patch releases carry fixes
+# and no new lints, and following them costs nothing.
+channel = "1.98"
+# The minimal profile installs neither, and both are gates here.
+components = ["clippy", "rustfmt"]
+profile = "minimal"

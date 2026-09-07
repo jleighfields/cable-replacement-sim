@@ -32,7 +32,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # The version comes from `rust-toolchain.toml` at the repository root,
+      # which rustup reads inside the checkout.
+      - name: Install the pinned Rust toolchain
+        run: rustup install
       - uses: Swatinem/rust-cache@v2
 
       - uses: astral-sh/setup-uv@v5

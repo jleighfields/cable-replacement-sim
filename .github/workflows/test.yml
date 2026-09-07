@@ -27,9 +27,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
+      # `rust-toolchain.toml` at the repository root names the version and the
+      # components, and the runner ships rustup, so running it inside the
+      # checkout installs exactly what that file names. Naming a channel here
+      # instead would let the two disagree: the action would install its
+      # channel, then cargo would read the file and download a second
+      # toolchain on every run.
+      - name: Install the pinned Rust toolchain
+        run: rustup install
 
       # Caches the compiled dependency crates. Without it every run rebuilds
       # them from scratch, which is what makes --release unaffordable.

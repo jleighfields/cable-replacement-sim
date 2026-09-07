@@ -43,9 +43,10 @@ neither side is redundant.
 
 ## Getting started
 
-Requires the Rust toolchain ([rustup](https://rustup.rs)) and
-[uv](https://docs.astral.sh/uv/). The Python version is pinned in
-`.python-version`.
+Requires [rustup](https://rustup.rs) and [uv](https://docs.astral.sh/uv/).
+Both versions are pinned in the repository — Python in `.python-version`, Rust
+in `rust-toolchain.toml` — and each tool installs what its file names on first
+use, so neither needs choosing.
 
 ```bash
 uv sync                            # create the environment
