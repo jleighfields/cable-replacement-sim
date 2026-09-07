@@ -2,10 +2,12 @@
 
 `simulate.py` is the correctness reference and this is the fast path, and the
 point of this module is that nothing above them can tell which it holds. The
-call takes the same twenty-two arguments under the same names and returns the
+call takes the same twenty-three arguments under the same names and returns the
 same `simulate.Results`, so `run.py`, the metrics layer and every test drive
 both through one path rather than through two that could differ in how they are
-driven.
+driven. `threads` is one of those arguments on both sides: the reference accepts
+it and refuses anything but one, which says what it cannot do rather than
+silently ignoring the request.
 
 The extension module returns seven arrays rather than a result object of its
 own. Rebuilding the reference's NamedTuple from them here is what keeps a
@@ -21,6 +23,16 @@ working tree.
 import numpy as np
 
 from cablesim import _cablesim, policies, simulate
+
+AVAILABLE_THREADS: int = _cablesim.available_threads()
+"""How many threads this machine can run at once.
+
+Read from the extension module rather than from Python's own processor count,
+because the number here and the number rayon would choose for itself have to be
+the same one: it honours a CPU affinity mask and a container's CPU quota, and a
+bare processor count does not. Callers wanting every core pass this rather than
+a sentinel, so what a run records is the number that actually ran.
+"""
 
 BUILD_PROFILE: str = _cablesim.BUILD_PROFILE
 """Which Cargo profile the loaded extension module was compiled with.
@@ -55,6 +67,7 @@ def run_chunk(
     emergency_charged_to_budget: bool,
     n_classes: int,
     n_years: int,
+    threads: int = 1,
 ) -> simulate.Results:
     """Runs one chunk of replications under one policy, in Rust.
 
@@ -96,6 +109,14 @@ def run_chunk(
             the planned budget before scoring planned work.
         n_classes: Number of segment classes, sizing the third result axis.
         n_years: Horizon, in years.
+        threads: Workers to spread the replications over, which changes no
+            number: a replication reads its own slice of the draws and writes
+            its own block of the results, so the answer does not depend on how
+            many workers there were or on the order they finished in. One runs
+            them in sequence and builds no thread pool at all, which is what
+            makes a single-threaded timing a baseline rather than a measurement
+            of the pool's overhead. ``AVAILABLE_THREADS`` is this machine's
+            count.
 
     Returns:
         The seven per-year, per-class arrays for this chunk.
@@ -105,8 +126,12 @@ def run_chunk(
             empty, if ``n_classes`` is 0, if a class index is past the end of
             the class axis, if an array is not C-contiguous, if a per-segment
             or per-year array is the wrong length, if the draw array is not
-            the shape the horizon implies, or if a candidate scores a rank key
-            that is not a number.
+            the shape the horizon implies, if ``threads`` is 0, or if a
+            candidate scores a rank key that is not a number.
+        RuntimeError: If a thread pool of the requested size could not be
+            built. That is the operating system refusing to start the threads
+            rather than anything about the arguments, so it is not a
+            ``ValueError``, and it has no counterpart in the reference.
         TypeError: If an array's dtype is not the one the boundary reads —
             ``uint8`` for ``class_index`` and ``float64`` for the rest — if an
             array has the wrong number of axes, or if ``policy.kind`` is not an
@@ -140,5 +165,6 @@ def run_chunk(
             emergency_charged_to_budget,
             n_classes,
             n_years,
+            threads,
         )
     )

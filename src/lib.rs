@@ -49,7 +49,7 @@ use numpy::{
     Element, IntoPyArray, PyArray3, PyReadonlyArray, PyReadonlyArray1, PyReadonlyArray2,
     PyReadonlyArray3,
 };
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
@@ -166,6 +166,10 @@ fn as_result_array(
 /// entry per segment, ordered by `segment_id`, except `budget` and
 /// `cost_escalation`, which are one entry per year.
 ///
+/// `threads` spreads the replications over that many workers and changes no
+/// number: each replication reads its own slice of the draws and writes its own
+/// block of the results. One thread runs them in sequence with no pool built.
+///
 /// # Returns
 ///
 /// Seven `(replications, years, classes)` arrays, in the field order of
@@ -178,8 +182,12 @@ fn as_result_array(
 /// `ValueError` if the policy tag names no policy, if the population is empty,
 /// if `n_classes` is 0, if a class index is past the end of the class axis, if
 /// an array is not C-contiguous, if a per-segment or per-year array is the
-/// wrong length, if the draw array is not the shape the horizon implies, or if
-/// a candidate scores a rank key that is not a number.
+/// wrong length, if the draw array is not the shape the horizon implies, if
+/// `threads` is 0, or if a candidate scores a rank key that is not a number.
+///
+/// `RuntimeError` if a thread pool of the requested size could not be built,
+/// which is the operating system refusing to start the threads rather than
+/// anything about the arguments.
 #[pyfunction]
 #[pyo3(signature = (
     length_ft, customers, customer_minutes_per_failure,
@@ -187,7 +195,7 @@ fn as_result_array(
     age0, shape, scale, replacement_shape, replacement_scale, cost_per_ft,
     lifetime_uniforms, policy_uniforms, budget, cost_escalation, policy,
     emergency_multiplier, mobilization_per_segment,
-    emergency_charged_to_budget, n_classes, n_years,
+    emergency_charged_to_budget, n_classes, n_years, threads=1,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_chunk<'py>(
@@ -214,6 +222,7 @@ fn run_chunk<'py>(
     emergency_charged_to_budget: bool,
     n_classes: usize,
     n_years: usize,
+    threads: usize,
 ) -> PyResult<Bound<'py, PyTuple>> {
     // An unrecognized tag would otherwise score every candidate zero and fund
     // them in segment_id order, which is a plausible-looking run rather than an
@@ -353,37 +362,87 @@ fn run_chunk<'py>(
         )));
     }
 
-    let results = simulate::run_chunk(
-        contiguous("length_ft", &length_ft)?,
-        contiguous("customers", &customers)?,
-        contiguous(
-            "customer_minutes_per_failure",
-            &customer_minutes_per_failure,
-        )?,
-        contiguous(
-            "customer_minutes_per_planned",
-            &customer_minutes_per_planned,
-        )?,
-        contiguous("outage_cost_per_failure", &outage_cost_per_failure)?,
-        classes,
-        contiguous("age0", &age0)?,
-        contiguous("shape", &shape)?,
-        contiguous("scale", &scale)?,
-        contiguous("replacement_shape", &replacement_shape)?,
-        contiguous("replacement_scale", &replacement_scale)?,
-        contiguous("cost_per_ft", &cost_per_ft)?,
-        contiguous("lifetime_uniforms", &lifetime_uniforms)?,
-        contiguous("policy_uniforms", &policy_uniforms)?,
-        contiguous("budget", &budget)?,
-        contiguous("cost_escalation", &cost_escalation)?,
-        policy,
-        emergency_multiplier,
-        mobilization_per_segment,
-        emergency_charged_to_budget,
-        n_classes,
-        n_years,
-    )
-    .map_err(|unranked| PyValueError::new_err(unranked.to_string()))?;
+    if threads == 0 {
+        return Err(PyValueError::new_err(
+            "threads is 0, so no replication would run; 1 is the sequential \
+             path and the baseline a parallel run is measured against",
+        ));
+    }
+
+    // Every borrow is taken here, while the interpreter lock is still held,
+    // because each one reads the NumPy object's own metadata. What crosses into
+    // the released region below is plain slices of `f64` and `u8`.
+    let length_ft = contiguous("length_ft", &length_ft)?;
+    let customers = contiguous("customers", &customers)?;
+    let customer_minutes_per_failure = contiguous(
+        "customer_minutes_per_failure",
+        &customer_minutes_per_failure,
+    )?;
+    let customer_minutes_per_planned = contiguous(
+        "customer_minutes_per_planned",
+        &customer_minutes_per_planned,
+    )?;
+    let outage_cost_per_failure = contiguous("outage_cost_per_failure", &outage_cost_per_failure)?;
+    let age0 = contiguous("age0", &age0)?;
+    let shape = contiguous("shape", &shape)?;
+    let scale = contiguous("scale", &scale)?;
+    let replacement_shape = contiguous("replacement_shape", &replacement_shape)?;
+    let replacement_scale = contiguous("replacement_scale", &replacement_scale)?;
+    let cost_per_ft = contiguous("cost_per_ft", &cost_per_ft)?;
+    let lifetime_uniforms = contiguous("lifetime_uniforms", &lifetime_uniforms)?;
+    let policy_uniforms = contiguous("policy_uniforms", &policy_uniforms)?;
+    let budget = contiguous("budget", &budget)?;
+    let cost_escalation = contiguous("cost_escalation", &cost_escalation)?;
+
+    // `detach` releases the interpreter lock for the whole computation and
+    // takes it back when the closure returns. Two things make that safe, and
+    // both are checked when this compiles rather than trusted: nothing inside
+    // touches a Python object — the arrays became plain slices above — and
+    // `Python<'py>` is not available in there, so code that needed the lock
+    // could not be written without the compiler rejecting it.
+    //
+    // Without this, rayon's workers below would each wait for the lock and the
+    // extra threads would buy nothing. It also lets an unrelated Python thread
+    // run while a chunk is in flight, which is what keeps an application
+    // responsive while a run is going.
+    //
+    // This method was called `allow_threads` until PyO3 renamed it; examples
+    // found elsewhere still use that name, and it now compiles with a
+    // deprecation warning rather than failing outright.
+    let results = py
+        .detach(|| {
+            simulate::run_chunk(
+                length_ft,
+                customers,
+                customer_minutes_per_failure,
+                customer_minutes_per_planned,
+                outage_cost_per_failure,
+                classes,
+                age0,
+                shape,
+                scale,
+                replacement_shape,
+                replacement_scale,
+                cost_per_ft,
+                lifetime_uniforms,
+                policy_uniforms,
+                budget,
+                cost_escalation,
+                policy,
+                emergency_multiplier,
+                mobilization_per_segment,
+                emergency_charged_to_budget,
+                n_classes,
+                n_years,
+                threads,
+            )
+        })
+        .map_err(|failure| match failure {
+            simulate::ChunkError::NanScore(_) => PyValueError::new_err(failure.to_string()),
+            // The operating system refusing to start threads, rather than
+            // anything wrong with the arguments, so not a `ValueError`.
+            simulate::ChunkError::ThreadPool(_) => PyRuntimeError::new_err(failure.to_string()),
+        })?;
 
     let dimensions = (n_reps, n_years, n_classes);
     PyTuple::new(
@@ -400,10 +459,28 @@ fn run_chunk<'py>(
     )
 }
 
+/// How many threads this machine can run at once.
+///
+/// Read here rather than in Python so that the number a run records and the
+/// number rayon would pick come from one place. `available_parallelism` honours
+/// a CPU affinity mask and a container's CPU quota, which a bare processor
+/// count does not, and it is the same call rayon's own default is built on.
+///
+/// # Returns
+///
+/// The available parallelism, or 1 where the platform will not say.
+#[pyfunction]
+fn available_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+}
+
 /// Registers the extension module's contents under the name `_cablesim`.
 #[pymodule]
 fn _cablesim(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_chunk, m)?)?;
+    m.add_function(wrap_pyfunction!(available_threads, m)?)?;
     // Which profile this was compiled with, so a run records what actually ran
     // rather than what the person starting it believed. `debug_assertions` is
     // on in a debug build and off in a release one, and it is resolved at

@@ -243,6 +243,7 @@ def simulate_policy(
     class_names: list[str],
     implementation: Implementation,
     batch_size: int,
+    threads: int,
 ) -> pl.DataFrame:
     """Runs every replication under one policy, chunk by chunk.
 
@@ -253,6 +254,10 @@ def simulate_policy(
         class_names: Segment class names in class-index order.
         implementation: The annual loop to call.
         batch_size: Replications per call.
+        threads: Workers to spread each chunk's replications over. Passed to
+            every implementation rather than only to the ones that can use it,
+            so an implementation that cannot refuses the request instead of
+            leaving the caller to believe it was honoured.
 
     Returns:
         Every replication's rows for this policy.
@@ -286,6 +291,7 @@ def simulate_policy(
             emergency_charged_to_budget=settings.budget.emergency_charged_to_budget,
             n_classes=len(class_names),
             n_years=simulation.n_years,
+            threads=threads,
         )
         blocks.append(
             results.rows_from_chunk(block, spec.name, class_names, replications.start)
@@ -298,6 +304,7 @@ def run(
     root: pathlib.Path,
     implementation: str = "reference",
     batch_size: int = DEFAULT_BATCH_SIZE,
+    threads: int = 1,
     swept: dict[str, float] | None = None,
 ) -> pathlib.Path:
     """Runs one configuration for every policy and writes the result.
@@ -314,6 +321,12 @@ def run(
             kernel ran, and absent for pure Python rather than invented, since
             a timing from the kernel without one means nothing.
         batch_size: Replications per call.
+        threads: Workers to spread each chunk's replications over, recorded in
+            the manifest beside the implementation and the build profile. Only
+            the compute kernel can use more than one; every other
+            implementation refuses, so a manifest cannot claim a thread count
+            that nothing acted on. ``kernel.AVAILABLE_THREADS`` is this
+            machine's count.
         swept: Values that vary between the runs of a sweep, written into the
             saved rows as columns. A frame carrying its own parameters is
             readable without the directory layout that produced it.
@@ -344,16 +357,17 @@ def run(
     class_names = [segment_class.name for segment_class in settings.population.classes]
     segments = segment_arrays(segments_frame)
     log.info(
-        "run %s: %d segments, %d policies, %d replications",
+        "run %s: %d segments, %d policies, %d replications, %d thread(s)",
         run_id,
         segments["age0"].size,
         len(settings.policies),
         settings.simulation.n_reps,
+        threads,
     )
 
     frame = pl.concat(
         simulate_policy(
-            spec, settings, segments, class_names, annual_loop, batch_size
+            spec, settings, segments, class_names, annual_loop, batch_size, threads
         )
         for spec in settings.policies
     )
@@ -373,7 +387,7 @@ def run(
             git_dirty=dirty,
             implementation=implementation,
             build_profile=build_profile,
-            threads=1,
+            threads=threads,
             batch_size=batch_size,
             wall_seconds=time.perf_counter() - started,
         ),

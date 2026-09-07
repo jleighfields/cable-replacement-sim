@@ -507,3 +507,39 @@ def test_both_implementations_refuse_a_tag_that_is_not_an_integer() -> None:
         kernel.run_chunk(**arguments, policy=policy)
     with pytest.raises(TypeError):
         simulate.run_chunk(**arguments, policy=policy)
+
+
+def test_the_kernel_refuses_no_threads_at_all() -> None:
+    """Zero workers would run no replication and return zeros.
+
+    That is the shape the caller asked for, filled with the value a run of no
+    replications legitimately produces, so nothing downstream could tell it
+    from a real result. Rejecting it at the boundary is the only place the
+    distinction still exists.
+    """
+    arguments = minimal_arguments(4)
+
+    with pytest.raises(ValueError, match="threads is 0"):
+        kernel.run_chunk(
+            **arguments, policy=helpers.resolved("run_to_failure"), threads=0
+        )
+
+
+def test_the_reference_refuses_a_thread_count_it_cannot_honour() -> None:
+    """Asking the scalar reference for two workers is refused, not ignored.
+
+    Both implementations take a thread count so that a caller choosing between
+    them passes the same arguments to either. Only one can act on it. Silently
+    ignoring the request would let a benchmark row or a run manifest record a
+    thread count that nothing ran with, which is provenance that reads as fact
+    and is not.
+
+    The kernel accepts the same value, and that difference is the point rather
+    than a divergence: it is what the two implementations are for.
+    """
+    arguments = minimal_arguments(4)
+    policy = helpers.resolved("run_to_failure")
+
+    with pytest.raises(ValueError, match="threads is 2"):
+        simulate.run_chunk(**arguments, policy=policy, threads=2)
+    kernel.run_chunk(**arguments, policy=policy, threads=2)

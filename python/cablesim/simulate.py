@@ -143,6 +143,7 @@ def run_chunk(
     emergency_charged_to_budget: bool,
     n_classes: int,
     n_years: int,
+    threads: int = 1,
 ) -> Results:
     """Runs one chunk of replications under one policy.
 
@@ -179,6 +180,12 @@ def run_chunk(
             the planned budget before scoring planned work.
         n_classes: Number of segment classes, sizing the third result axis.
         n_years: Horizon, in years.
+        threads: Workers to spread the replications over. This implementation
+            has one and refuses any other value. The argument exists so that
+            every annual loop takes the same one and a caller choosing between
+            them does not have to know which it holds; refusing rather than
+            ignoring is what stops a benchmark row recording a thread count the
+            run did not use.
 
     Returns:
         The seven per-year, per-class arrays for this chunk.
@@ -188,8 +195,9 @@ def run_chunk(
             empty, if there is no class axis to accumulate into, if the draw
             array's shape is not ``(replications, segments, n_years + 1)``, if
             a per-segment or per-year array is the wrong length, if a class
-            index is past the end of the class axis, or if a candidate scores
-            a rank key that is not a number. The draw array's year axis is why
+            index is past the end of the class axis, if ``threads`` is not 1,
+            or if a candidate scores a rank key that is not a number. The draw
+            array's year axis is why
             that check exists: a short one raises on its own only when a
             replacement happens to fall in the final year, so a run can
             complete against a wrong array and be wrong nowhere visible. The
@@ -304,6 +312,16 @@ def run_chunk(
             f"class_index holds {int(past_the_axis[0])}, which is past the "
             f"{n_classes} classes the results have an axis for; the index is a "
             f"position in the class list, not a name"
+        )
+    # Last, which is where the binding checks its own thread count, so the two
+    # sides ask their questions in the same order. What they ask differs, and
+    # that is the difference between them: the binding refuses only 0, because
+    # it can spread replications over any number above that.
+    if threads != 1:
+        raise ValueError(
+            f"threads is {threads}; this implementation runs one replication "
+            f"at a time and cannot use more than 1. cablesim.kernel is the "
+            f"implementation that can"
         )
 
     results = Results(

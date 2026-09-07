@@ -36,11 +36,28 @@ rewritten by this work beyond being made callable in parallel.
    and the reduced size unchanged. The default sweep gets faster without
    redrawing every figure at a different size, and the reference stays one flag
    away for anyone arbitrating a result.
-5. **Whether a polars implementation is written in Rust as well as in Python.**
-   Open pending the dependency research; the standing plan says to first time
-   the same polars expressions from both languages on the grouping step alone,
-   and only then decide whether a sixth mirror of the annual loop is worth
-   maintaining.
+5. **A polars implementation is written in Rust as well as in Python**, so the
+   two frame implementations can be compared directly rather than through the
+   cheaper proxy of timing the same expressions from both languages. This is a
+   sixth mirror of the annual loop and carries the cost every mirror carries —
+   another place divergence can hide, another implementation every parity test
+   has to cover — and it answers a question the Python pair alone cannot: the
+   Python polars package binds the Rust polars crate, so a loss there could be
+   the engine being wrong for this shape of work or could be the cost of
+   crossing into it, and only having both separates them.
+
+   It needs no frame to cross the boundary. It takes the same arrays every
+   other implementation takes, builds its frames on the Rust side, and returns
+   the same seven arrays, so nothing about passing a DataFrame through the FFI
+   layer arises.
+6. **The comparison table lives in the notebook that Phase 5 owns**, which is
+   the parity-and-benchmark notebook rather than the policy explorer. Its rows
+   are the implementations — the scalar Python reference, the Rust kernel, the
+   Python polars loop and the Rust polars loop, with the Rust kernel appearing
+   at more than one thread count — and its columns are how long each took and
+   whether it reproduced the scalar Python reference's numbers exactly. The
+   policy explorer stays about the reliability-against-budget curve; a
+   benchmark table there would be a second place the same claim is made.
 
 ## Steps
 
@@ -66,9 +83,13 @@ rewritten by this work beyond being made callable in parallel.
 - [ ] 7. `scripts/run_benchmarks.py`: the timing harness, writing a table with
       each row's replication count, chunk size, build profile and thread count
       beside its time.
-- [ ] 8. `notebooks/05_parity_and_bench.py`: the agreement plots and the
-      benchmark table.
-- [ ] 9. `scripts/budget_sweep.py` default, and a `--threads` argument.
-- [ ] 10. Update the plan document with the measured figures, which it
+- [ ] 8. The Rust polars annual loop, taking the same arrays as every other
+      implementation and returning the same seven, so it is held to the same
+      parity tests.
+- [ ] 9. `notebooks/05_parity_and_bench.py`: the agreement plots, and the table
+      whose rows are the implementations and whose columns are the wall time
+      and whether the result matched the scalar Python reference exactly.
+- [ ] 10. `scripts/budget_sweep.py` default, and a `--threads` argument.
+- [ ] 11. Update the plan document with the measured figures, which it
       currently leaves blank, and record what the polars comparison found.
-- [ ] 11. Review passes until no Must Fix or Should Fix remains.
+- [ ] 12. Review passes until no Must Fix or Should Fix remains.

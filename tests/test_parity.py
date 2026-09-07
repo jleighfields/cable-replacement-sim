@@ -403,9 +403,12 @@ def test_a_saved_kernel_run_records_the_profile_it_was_built_with(
     # a default of "release" on the lookup would have every pure-Python run
     # claiming a Rust build, and nothing would report it.
     pure_python = run.run(settings, tmp_path / "reference", implementation="reference")
-    assert results.Manifest.model_validate_json(
-        (pure_python / results.MANIFEST_NAME).read_text(encoding="utf-8")
-    ).build_profile is None
+    assert (
+        results.Manifest.model_validate_json(
+            (pure_python / results.MANIFEST_NAME).read_text(encoding="utf-8")
+        ).build_profile
+        is None
+    )
 
 
 def test_charging_an_empty_year_of_failures_leaves_the_budget_whole(
@@ -514,3 +517,65 @@ def test_the_parity_fixture_refuses_a_single_replication() -> None:
 
     with pytest.raises(ValueError, match="at least 2 replications"):
         conftest.simulation_arguments(settings)
+
+
+@pytest.mark.parametrize("policy", POLICIES, ids=lambda spec: str(spec.kind))
+def test_every_thread_count_gives_the_reference_answer(
+    deterministic_arguments: dict[str, object],
+    policy: policies.Resolved,
+) -> None:
+    """Spreading replications over workers changes nothing, not even a last bit.
+
+    Order independence is a property of how the work is split rather than of
+    how well the arithmetic behaves, so this asserts exact equality rather than
+    a tolerance. Each replication reads its own slice of the draw arrays and
+    writes its own block of the results, sharing nothing with any other, and
+    the blocks are concatenated in replication order rather than in the order
+    they finished. A kernel that accumulated into one shared buffer instead
+    would still pass a tolerance-based check most of the time and would give a
+    different answer run to run.
+
+    Two counts are load-bearing beyond the plain many-threads case. Two is the
+    smallest that splits at all. And this fixture has three replications, so
+    the machine's full count is almost always more workers than there is work,
+    which is where an implementation that assumed each worker gets at least one
+    replication comes apart.
+    """
+    expected = simulate.run_chunk(**deterministic_arguments, policy=policy)
+    for threads in (1, 2, 3, kernel.AVAILABLE_THREADS):
+        produced = kernel.run_chunk(
+            **deterministic_arguments, policy=policy, threads=threads
+        )
+        for name, wanted, actual in zip(
+            simulate.Results._fields, expected, produced, strict=True
+        ):
+            assert np.array_equal(wanted, actual), (
+                f"{name}: {threads} threads disagrees with the reference"
+            )
+
+
+def test_threading_a_real_population_changes_no_value(
+    statistical_arguments: dict[str, object],
+) -> None:
+    """The same, on drawn lifetimes rather than forced ones.
+
+    The deterministic tests give every replication the same work to do, so a
+    scheduler has nothing to decide. Here the replications differ, workers
+    finish out of order, and the greedy fill's running total is where a shared
+    accumulator would show up first — it decides which candidate is the last
+    one funded, which is a discrete outcome rather than a rounding difference.
+
+    Run under the policy that scores every segment in the population, since a
+    policy funding nothing exercises none of the allocation this is about.
+    """
+    ranked = next(
+        spec for spec in POLICIES if spec.kind == policies.KIND["risk_ranked"]
+    )
+    one = kernel.run_chunk(**statistical_arguments, policy=ranked, threads=1)
+    many = kernel.run_chunk(
+        **statistical_arguments, policy=ranked, threads=kernel.AVAILABLE_THREADS
+    )
+    for name, wanted, actual in zip(simulate.Results._fields, one, many, strict=True):
+        assert np.array_equal(wanted, actual), (
+            f"{name}: {kernel.AVAILABLE_THREADS} threads disagrees with 1"
+        )
