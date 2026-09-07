@@ -2013,7 +2013,6 @@ it is the only implementation there is.
 |---|---|---|
 | Scalar reference | `simulate.py` | Plainly correct and slow. One replication at a time, vectorized over segments within a year, readable end to end |
 | Batched NumPy | `batched.py` | The honest baseline. State is a `(n_reps_chunk, n_segments)` array, so the year loop runs 30 times rather than 30,000 |
-| Batched polars | `batched.py` | Whether a frame-based implementation is competitive. Ranking and the greedy fill are `sort` plus `cum_sum().over("rep")`; metrics are a `group_by` |
 | Rust kernel | `src/simulate.rs` | Reported single-threaded and rayon-parallel separately, so the language win and the parallelism win are not conflated |
 
 Two polars implementations were built here and retired; `deprecated/README.md`
@@ -2064,18 +2063,17 @@ a candidate.
 
 | Implementation | `run_to_failure` | `age_threshold` | `risk_ranked` |
 |---|---|---|---|
-| Scalar reference | 0.00393 | **0.01700** | **0.04101** |
-| Batched NumPy | **0.00376** | 0.02304 | 0.04387 |
-| Rust kernel, 1 thread | 0.00258 | 0.00340 | 0.04134 |
-| **Rust kernel, 48 threads** | **0.00027** | **0.00029** | **0.00201** |
-| **Fastest Python, beaten by** | **14.1x** | **58.5x** | **20.4x** |
+| Scalar Python reference | 0.01513 | 0.02817 | 0.05191 |
+| Batched NumPy | **0.00551** | **0.02498** | **0.04496** |
+| Rust kernel, 1 thread | 0.00224 | 0.00295 | 0.04748 |
+| **Rust kernel, 48 threads** | **0.00024** | **0.00030** | **0.00222** |
+| **Fastest Python, beaten by** | **23.0x** | **83.3x** | **20.3x** |
 
-**These predate the move to computed draws** and are the last figures measured
-with generation outside the timed region. They are kept because the conclusions
-below rest on the *ratios*, which the change moves in the kernel's favour
-rather than against it — at 48 threads it improved 58% to 93% once generation
-stopped being a serial cost feeding a parallel one. Re-measure before quoting an
-absolute number.
+**Draw generation is inside the timed region**, because a run pays for it once
+per chunk and an implementation producing only what it reads deserves the
+credit. Moving that boundary was done *before* the generator changed, so the
+same work is counted on both sides of the change and the improvement is a
+measurement rather than an artefact of where the clock went.
 
 Bold marks the fastest Python implementation in each column, which is the
 denominator of the last row. It is not always the same one, which is the reason
@@ -2084,13 +2082,13 @@ that row exists — see below.
 Five findings, and only the second is the one this project set out to make:
 
 - **Single-threaded, the compiled kernel is not reliably faster than Python.**
-  It is level under `risk_ranked` — 0.0413 against 0.0410 — and 5.0x under
+  It is level under `risk_ranked` — 0.0475 against 0.0450 — and 8.5x under
   `age_threshold`. The gap tracks the candidate set exactly: the kernel scores
   only the candidates, the array implementations score the whole population
   because that is what vectorizes, and when every segment is a candidate the
   advantage is gone. A claim that this model is faster in Rust, single
   threaded, would be false for the policy that is the actual proposal.
-- **The win is the replication axis: 14x to 58x.** Replications are
+- **The win is the replication axis: 20x to 83x.** Replications are
   independent, each reads its own slice of the draws and writes its own block,
   and the interpreter lock is released for the whole computation. Nothing on
   the Python side follows without multiprocessing. This holds for reasons that

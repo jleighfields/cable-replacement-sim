@@ -49,24 +49,27 @@ addition is not associative and the year's emergency bill decides which segment
 the budget reaches last.
 
 What the timings say, at 12,000 segments over 30 years, on a release build with
-48 cores available. Seconds per replication, mean of 2 runs:
+48 cores available. Seconds per replication, mean of 3 runs, and **including the
+cost of producing each run's random draws**, which is work a run actually does:
 
 | Implementation | `run_to_failure` | `age_threshold` | `risk_ranked` |
 |---|---|---|---|
-| Scalar Python reference | 0.00393 | 0.01700 | 0.04101 |
-| Batched NumPy | 0.00376 | 0.02304 | 0.04387 |
-| Rust kernel, 1 thread | 0.00258 | 0.00340 | 0.04134 |
-| **Rust kernel, 48 threads** | **0.00027** | **0.00029** | **0.00201** |
-| **Fastest Python, beaten by** | **14.1x** | **58.5x** | **20.4x** |
+| Scalar Python reference | 0.01513 | 0.02817 | 0.05191 |
+| Batched NumPy | **0.00551** | **0.02498** | **0.04496** |
+| Rust kernel, 1 thread | 0.00224 | 0.00295 | 0.04748 |
+| **Rust kernel, 48 threads** | **0.00024** | **0.00030** | **0.00222** |
+| **Fastest Python, beaten by** | **23.0x** | **83.3x** | **20.3x** |
 
 The three policies differ in how much of the population they make eligible each
 year — none, 655 of 12,000, and all of it — and that turns out to matter more
 than anything else here.
 
 **On one thread the kernel is not reliably faster than Python.** It is level
-under `risk_ranked`, where every segment is a candidate and the reference's
-array expressions are already compiled loops over the same data. It pulls ahead
-where the candidate set is small, because it scores only the candidates.
+under `risk_ranked`, where every segment is a candidate and the array
+expressions it competes with are already compiled loops over the same data. It
+pulls ahead where the candidate set is small — 8.5x under `age_threshold` —
+because it scores only the candidates, and because it produces only the random
+draws it reads rather than all of them.
 
 **The win is the replication axis.** They are independent, the interpreter lock
 is released for the whole computation, and no Python implementation follows
