@@ -15,7 +15,8 @@ figure an end-to-end check on the whole stack.
 
 The default size is reduced, because a full-size sweep through the pure-Python
 reference takes tens of minutes. Pass ``--full`` for the configured replication
-count and population.
+count and population, and ``--implementation kernel`` to run the same sweep
+through the Rust kernel, which computes the same numbers from the same draws.
 """
 
 import argparse
@@ -47,6 +48,12 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "--full",
         action="store_true",
         help="use the configured replication count and population size",
+    )
+    parser.add_argument(
+        "--implementation",
+        choices=sorted(run.RUNNABLE),
+        default="reference",
+        help="which annual loop to run; the name is recorded in the manifest",
     )
     parser.add_argument(
         "--batch-size",
@@ -84,12 +91,18 @@ def main(argv: list[str] | None = None) -> None:
         )
 
     grid = run.budget_grid(settings.budget.annual)
-    log.info("sweeping %d budget levels into %s", len(grid), arguments.out)
+    log.info(
+        "sweeping %d budget levels into %s, through the %s implementation",
+        len(grid),
+        arguments.out,
+        arguments.implementation,
+    )
     for index, level in enumerate(grid, start=1):
         point = config.with_overrides(settings, {"budget.annual": level})
         directory = run.run(
             point,
             arguments.out,
+            implementation=arguments.implementation,
             batch_size=arguments.batch_size,
             swept={"annual_budget": level},
         )

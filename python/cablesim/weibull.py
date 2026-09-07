@@ -92,12 +92,23 @@ def conditional_failure_probability(
 
     Returns:
         The annual failure probability, on [0, 1]. It reaches exactly 1 once
-        the accumulated hazard passes about 745, where ``exp`` underflows —
-        an age far beyond anything this model simulates, but the bound is
-        closed rather than half-open.
+        the hazard accumulated *within the year* — the bracketed difference
+        above, not the cumulative hazard to ``age`` — passes 37.4299, where
+        ``exp(-h)`` falls below half an ulp of 1 and the subtraction rounds
+        to 1. No segment the shipped population generates reaches that: the
+        within-year hazard crosses 37.4299 somewhere between ages 105 and 222
+        across the 12,000 shipped segments, against a maximum age of 89
+        scored inside a 30-year horizon, and the largest value this returns
+        anywhere in that horizon is 0.9999954. The closed upper bound is what
+        the interval says rather than something the loop exercises.
     """
-    accumulated = ((age + 1.0) / scale) ** shape - (age / scale) ** shape
-    return -np.expm1(-accumulated)
+    # The hazard accumulated over this one year: a difference of two
+    # cumulative hazards rather than a cumulative hazard itself. The name says
+    # "annual" because the bound documented above is a threshold on this
+    # difference and not on either of the two terms it subtracts, and the two
+    # thresholds fall at very different ages.
+    annual_hazard = ((age + 1.0) / scale) ** shape - (age / scale) ** shape
+    return -np.expm1(-annual_hazard)
 
 
 def draw_lifetime(u: np.ndarray, shape: np.ndarray, scale: np.ndarray) -> np.ndarray:

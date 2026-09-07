@@ -1038,10 +1038,10 @@ and this document has lost that argument before.
 #
 # The coupled values below — the technology scales, the install-volume curve,
 # the population size, the lateral customer mix and the annual budget — were
-# calibrated together against the target in PLAN.md §13.2, Still open, by
-# running the population generator: about 2% of segments fail in the first year
-# under run-to-failure, the budget funds roughly 60% of that, and the customers
-# on terminal laterals reconcile with the system total. The value-of-lost-load
+# calibrated together by running the population generator, against the targets
+# that follow: about 2% of segments fail in the first year under
+# run-to-failure, the budget funds roughly 60% of that, and the customers on
+# terminal laterals reconcile with the system total. The value-of-lost-load
 # figures are still placeholders needing a published source.
 
 simulation:
@@ -1420,6 +1420,7 @@ question with a different answer.
 | **Annual replication loop** | `simulate.py` | `simulate.rs` | **Mirrored** |
 | Parallelism over replications | — | `simulate.rs` (rayon) | The reference stays single-threaded and readable; it is the reference, not the fast path |
 | Reliability metrics and discounting | `metrics.py` | — | Ratios derived once from returned counts, so both implementations are compared on what they compute (7.4) |
+| Kernel wrapper | `kernel.py` | — | Rebuilds the reference's `Results` from the seven arrays the binding returns, so both implementations hand back one type (5.2) |
 | Run orchestration and writing | `run.py` | — | Owns the chunk and policy loops, the concatenation, and every write (7.1) |
 | Run directory format and sweep reading | `results.py` | — | The layout `run.py` writes through, and the reader; the kernel does no I/O |
 | Figures | `plots.py` | — | — |
@@ -1473,8 +1474,8 @@ that matters, and a handful of crossings per policy does not touch it.
     emergency_multiplier, mobilization_per_segment,
     emergency_charged_to_budget, n_classes, n_years,
 ))]
-fn simulate(
-    py: Python<'_>,
+fn run_chunk<'py>(
+    py: Python<'py>,
     // per-segment arrays, all length n_segments, ordered by segment_id
     length_ft:                    PyReadonlyArray1<f64>,
     customers:                    PyReadonlyArray1<f64>,  // count, for SAIFI
@@ -1495,18 +1496,23 @@ fn simulate(
     budget:                       PyReadonlyArray1<f64>,  // length n_years, escalated
     cost_escalation:              PyReadonlyArray1<f64>,  // length n_years, multiplier
     // scalars the returned results cannot be computed without
-    policy:                       PolicyConfig,
+    policy:                       Resolved,
     emergency_multiplier:         f64,
     mobilization_per_segment:     f64,
     emergency_charged_to_budget:  bool,
     n_classes:                    usize,   // sizes the third result axis
     n_years:                      usize,
-) -> PyResult<SimResults>                    // #[pyclass] holding numpy arrays
+) -> PyResult<Bound<'py, PyTuple>>          // seven numpy arrays
 ```
 
-`SimResults` returns seven `(chunk, n_years, n_classes)` arrays — one
-chunk's worth, which `run.py` concatenates along the replication axis into the
-frame 7.2 saves:
+The call returns seven `(chunk, n_years, n_classes)` arrays as a plain tuple,
+and `kernel.py` — the Python wrapper — rebuilds `simulate.Results` from them.
+**Both implementations then return the identical Python type**, so `run.py`,
+the metrics layer and every test drive either without knowing which they hold;
+a `#[pyclass]` of the kernel's own would be a second result type that
+unpacking, `_fields` and indexing all break on. The wrapper is also where the
+Python docstring lives that the Rust doc comment must not contradict. `run.py`
+concatenates the arrays along the replication axis into the frame 7.2 saves:
 `failures`, `customers_interrupted`, `customer_minutes`,
 `planned_customer_minutes`, `planned_replacements`, `planned_spend`,
 `emergency_spend`.
@@ -1538,16 +1544,19 @@ Implementation notes:
   `risk_ranked` score year by year; time preference belongs to the discount
   rate (7.4), not to a lopsided escalation. Neither belongs as a scalar rate the kernel re-derives — a rate
   written on the pydantic model and again in Rust diverges silently.
-- **`PolicyConfig` is built in exactly one place**, a single function in
+- **The resolved policy is built in exactly one place**, a single function in
   `policies.py` mapping a validated `PolicySpec` — one entry of the `policies:`
-  list in Section 3 — onto the Rust struct below. The Rust struct carries no
-  default values of its own; a default written on both sides is the defect the
-  parity test would have to catch, and only the deterministic case would.
+  list in Section 3 — onto the Rust struct below. **It carries the same name on
+  both sides**, `Resolved`, for the reason every mirrored pair does: finding the
+  other half of something you are about to change has to be trivial. The Rust
+  struct carries no default values of its own; a default written on both sides
+  is the defect the parity test would have to catch, and only the deterministic
+  case would.
 
   ```rust
   /// The policy, resolved to what the annual loop needs.
-  #[derive(FromPyObject)]
-  struct PolicyConfig {
+  #[derive(FromPyObject, Clone, Copy)]
+  struct Resolved {
       /// 0 run_to_failure, 1 age_threshold, 2 risk_ranked, 3 worst_first,
       /// 4 random. An integer tag rather than a string, because it is compared
       /// once per candidate per year.
@@ -1790,6 +1799,15 @@ Which comparisons share random draws, and which do not:
   implementation reads the same `lifetime_uniforms` array, generated once in
   NumPy (2.11), so there is no random-number stream to reconcile across
   languages and nothing here to verify.
+- **Measured, the two agree bit for bit.** At 2,000 segments and 50
+  replications of drawn lifetimes, every policy and every reported quantity
+  matched exactly — no replication differed at all, so the paired criterion
+  below is satisfied by its identically-zero clause rather than by its
+  three-standard-error one. The tolerances stated here are still what the tests
+  assert, because they are what makes the suite survive a compiler or a
+  standard-library change; but the expectation that `ln` and `powf` would
+  differ in their last bits between the two languages did not hold on this
+  platform, and the deterministic tests compare exactly for that reason.
 - **The lifetime draw is compared to a relative tolerance of `1e-12`**, not
   bit-exactly: `ln` and `powf` differ in their last bits between the two
   languages' standard libraries, and the transform is a handful of operations,
@@ -1837,6 +1855,37 @@ Which comparisons share random draws, and which do not:
 - **Parity is checked on saved runs**, not only in memory. Two runs written to
   disk (Section 7, Results, metrics, and reporting) can be diffed after the
   fact, which is what makes a failure diagnosable rather than merely red.
+
+**What the single-threaded kernel is worth, measured.** At 12,000 segments,
+50 replications and a 30-year horizon, release build, one thread, against the
+reference on the same draws: 1.9x with no candidates at all, 5.8x under an age
+threshold of 45 years — which leaves 655 of 12,000 eligible — and **1.0x for
+the three policies that use the neutral threshold**, where every segment is a
+candidate every year. The kernel scores only candidates while the reference
+scores the whole population every year, which is the whole of that spread.
+
+So the kernel's advantage is in the candidate set being a fraction of the
+population, and it disappears exactly where the candidate set *is* the
+population. That is not the picture 2.9, Annual simulation loop, anticipates
+when it calls the budget-constrained core the reason this workload suits Rust,
+and it is worth holding onto: the reference is a per-year-vectorized NumPy
+loop, which is already most of what the batched baseline of 6.5 will be, so the
+comparison there will be less flattering than that sentence implies rather than
+more. The case for the kernel single-threaded rests on the policies that fund a
+minority of the fleet; the case at large rests on rayon, where NumPy cannot
+follow without multiprocessing.
+
+**One exact saving is identified and deliberately not taken.** The annual
+failure probability needs `((t+1)/lambda)^k` and `(t/lambda)^k`, and this
+year's subtrahend is next year's minuend, so carrying the accumulated hazard
+forward halves the `powf` calls — from two per candidate-year to one. It is an
+identity rather than an approximation. It is deferred to Phase 5 for two
+reasons: it puts per-segment state in the year loop that has to be invalidated
+in three places, and getting that wrong yields a run that completes with
+plausible curves; and it would make `simulate.rs` stop reading line for line
+against `simulate.py`, which is what makes a parity failure diagnosable. Phase
+5 is where it can be measured against the batched baseline that is the honest
+comparison anyway.
 
 ### 6.5 Benchmarks
 
@@ -2449,8 +2498,11 @@ Each phase ends in a working, committed state.
 
 **Phase 0 — scaffold**
 `pyproject.toml` (maturin backend), `Cargo.toml`, config schema + loader,
-`configs/base.yaml`, `.gitignore`, README. Confirm `maturin develop` builds a
-trivial `add(a, b)` and imports in Python. *Do not skip this smoke test.*
+`configs/base.yaml`, `.gitignore`, README. Confirm `maturin develop` builds
+the crate and that the extension module imports in Python. *Do not skip this
+smoke test.* It began as a trivial `add(a, b)`; Phase 4 replaced it with a
+two-segment run through the real boundary, which checks the same thing and one
+more — that an array survives the crossing in both directions.
 
 `main` was already protected against direct pushes and merges without a pull
 request, so this phase landed through one. The remaining half of Section 10.4,
@@ -2783,9 +2835,17 @@ the argument belongs beside the model it constrains.
 
 ## 14. First actions in the next session
 
-1. Phase 3, the Python reference and the annual loop. Section 11, Phased
-   roadmap, has what it owes, and 2.9, Annual simulation loop, is the
-   specification it implements.
+1. Phase 5, the parallel kernel, the batched baselines and the benchmarks.
+   Section 11, Phased roadmap, has what it owes. The single-threaded kernel it
+   measures against is in place and unchanged by that work, which is what makes
+   the parallel speedup a number rather than an impression.
+
+   Two things it inherits. The batched implementations are two more mirrors of
+   the annual loop, so the deterministic parity tests have to cover them as
+   they cover the kernel; and the budget sweep script's reduced default was
+   chosen when the reference was the only implementation, so it is worth
+   revisiting once the kernel makes full size affordable rather than inheriting
+   it silently.
 2. Confirm branch protection refuses what it claims to. Both rulesets in
    Section 10.4, Branch protection on `main`, are applied and match their
    checked-in files, and every change since continuous integration existed has

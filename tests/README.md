@@ -29,6 +29,8 @@ covers how tests are laid out here and why.
 | `test_mle_recovery.py` | the recovery ladder, and the fit's reported likelihood, interval widths and starting values |
 | `test_policies.py` | eligibility, the rank key per policy, the tie-break, and the greedy fill |
 | `test_simulate.py` | the annual loop, against cases whose answers are known by hand |
+| `test_parity.py` | the Rust kernel against the Python reference, exactly where the lifetimes are forced and paired where they are drawn |
+| `test_kernel.py` | the kernel's boundary: the input it must refuse rather than run |
 | `test_results.py` | the run directory format, the saved schema, and the sweep reader |
 | `test_run.py` | the chunk and policy loops, and that chunk size changes no number |
 | `test_metrics.py` | the reliability indices, discounting, and the baseline comparison |

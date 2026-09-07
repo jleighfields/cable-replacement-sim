@@ -10,7 +10,7 @@ policies evaluated against customer reliability (SAIFI / SAIDI / CMI) over a
 30-year horizon. All inputs are parameterized via config; the cable population
 is fully synthetic.
 
-**Status: the simulation runs end to end in Python.**
+**Status: the simulation runs end to end in Python and in Rust.**
 The configuration schema and its validators, the purpose-spawned sources of
 randomness, the Weibull forms and the synthetic population generator exist,
 along with the synthetic failure history and the censored, left-truncated
@@ -25,17 +25,25 @@ The annual simulation loop, the five replacement policies, the budget-constraine
 allocation, the reliability metrics and the shared figures all exist, and a
 budget sweep draws the reliability-against-budget curve — at zero budget every
 policy lands on the same point as run-to-failure, which is the end-to-end check
-that costs nothing to run. The continuous integration workflows run and the
-extension module builds and imports under Python; the Rust kernel that will
-replace the reference in the inner loop is not written yet. See [PLAN.md](PLAN.md) for the model, the decisions behind it, and the
-phased roadmap.
+that costs nothing to run.
+
+The Rust kernel computes the same loop from the same draws and returns the same
+result type, so either implementation can be named at the call. It is
+single-threaded so far: rayon, the batched baselines and the benchmark numbers
+come next, and the kernel is deliberately unchanged by that work so the
+parallel speedup has a fixed thing to be measured against. The two are compared
+by a set of tests that force the lifetimes and compare every cell exactly, by a
+paired test over drawn lifetimes, and by two runs written to disk and diffed
+row for row; on this platform they agree bit for bit. See
+[PLAN.md](PLAN.md) for the model, the decisions behind it, and the phased
+roadmap.
 
 ## Layout
 
 | Path | What it holds |
 |---|---|
 | `src/` | the Rust crate: the compute kernel, built as a Python extension module |
-| `python/cablesim/` | the Python package: configuration, the sources of randomness, the Weibull forms, the population generator, the synthetic failure history and its censored maximum-likelihood fit, the replacement policies, the annual loop that is the correctness reference for the kernel, and the run, metrics and figure layers above it |
+| `python/cablesim/` | the Python package: configuration, the sources of randomness, the Weibull forms, the population generator, the synthetic failure history and its censored maximum-likelihood fit, the replacement policies, the annual loop that is the correctness reference for the kernel, the wrapper that puts the kernel behind that same call, and the run, metrics and figure layers above it |
 | `scripts/` | driver scripts that build configuration overrides and call the package in a loop; they hold no modelling logic |
 | `configs/base.yaml` | the documented default run configuration |
 | `notebooks/` | marimo notebooks that walk the package interface layer by layer |
@@ -72,7 +80,17 @@ notebooks`, which uninstalls plotly.
 `--release` is not optional for anything timed: the parity tests run many
 replications, and a debug build is slow enough to dominate the run. Rebuild
 after any change under `src/`, or the suite reports on the extension module
-that is currently installed rather than the one you just edited.
+that is currently installed rather than the one you just edited. A run through
+the kernel records which profile it was compiled with, read from the binary
+rather than assumed, so a debug build shows up in the saved manifest instead of
+being discovered later.
+
+The sweep script runs either implementation:
+
+```bash
+uv run python scripts/budget_sweep.py                          # the Python reference
+uv run python scripts/budget_sweep.py --implementation kernel  # the Rust kernel
+```
 
 ## Testing
 

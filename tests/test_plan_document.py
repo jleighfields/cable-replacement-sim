@@ -7,6 +7,7 @@ it wrapped across a line break.
 """
 
 import pathlib
+import subprocess
 
 from cablesim import constants
 
@@ -30,7 +31,7 @@ def test_every_section_citation_resolves() -> None:
 
 
 def test_the_plan_quotes_the_configuration_verbatim() -> None:
-    """Section 3's YAML block is `configs/base.yaml`, not a copy of it.
+    """The plan's embedded configuration is `configs/base.yaml`, not a copy.
 
     A schema restated in prose drifts from the file it describes, and the drift
     is silent: both look right in isolation. Embedding the file and checking it
@@ -45,7 +46,8 @@ def test_the_plan_quotes_the_configuration_verbatim() -> None:
     ]
 
     assert config_text in fenced, (
-        "PLAN.md section 3 is out of step with configs/base.yaml"
+        "the configuration block embedded in PLAN.md is out of step with "
+        "configs/base.yaml"
     )
 
 
@@ -67,6 +69,24 @@ def test_a_citation_written_without_a_prefix_is_still_found() -> None:
 
 
 
+def readable(path: pathlib.Path) -> str:
+    """Reads a tracked file as text, tolerating one that is not.
+
+    The scan walks everything git tracks rather than a list of suffixes, so it
+    meets whatever is added — and a tracked image or font would otherwise stop
+    it with a decode error that has nothing to do with citations. A replacement
+    character cannot spell the literal the citation pattern needs, so nothing
+    is skipped silently by this.
+
+    Args:
+        path: The file to read.
+
+    Returns:
+        Its text, with undecodable bytes replaced.
+    """
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
 def test_nothing_outside_the_plan_cites_a_section_of_it() -> None:
     """An outward citation into the plan rots with nothing reporting it.
 
@@ -83,14 +103,35 @@ def test_nothing_outside_the_plan_cites_a_section_of_it() -> None:
     falsify the record rather than repair it. So are the two files that define
     this rule, which have to quote the form they forbid to show it.
     """
-    roots = ["python", "tests", "scripts", "notebooks", ".claude", ".github"]
+    # `src` is in this list because the Rust crate is half the codebase and was
+    # unscanned until it had files in it worth scanning.
+    # Every tracked text file, rather than a hand-kept list of directories and
+    # suffixes. That list had missed two files for two different reasons — the
+    # configuration directory was not in it, and `.yaml` was not beside `.yml`
+    # although the repository's only `.yaml` was the file breaking the rule —
+    # and each repair covered the instance rather than the class. Asking git
+    # what is tracked means a new directory, a new suffix and a new top-level
+    # file are all covered the day they are added.
+    root = helpers.PLAN_PATH.parent
+    tracked = subprocess.run(  # noqa: S603
+        # Resolved from PATH, the same way `results.git_provenance` invokes it.
+        ["git", "ls-files", "-z"],  # noqa: S607
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split("\0")
+    # `tasks/` holds finished plans: dated records of what was done, which
+    # editing to track a document they described would falsify rather than
+    # repair. The plan's own cross-references are checked by the test above.
     files = [
-        path
-        for root in roots
-        for path in (helpers.PLAN_PATH.parent / root).rglob("*")
-        if path.suffix in {".py", ".md", ".yml", ".toml"} and path.is_file()
+        root / name
+        for name in tracked
+        if name
+        and not name.startswith("tasks/")
+        and name != "PLAN.md"
+        and (root / name).is_file()
     ]
-    files += [helpers.PLAN_PATH.parent / name for name in ("CLAUDE.md", "README.md")]
 
     # Named exactly, not by basename: exempting every SKILL.md would let any
     # skill cite freely, and one of them did until this test was written.
@@ -101,11 +142,15 @@ def test_nothing_outside_the_plan_cites_a_section_of_it() -> None:
     offenders = {
         str(relative): found
         for path in files
-        if (relative := path.relative_to(helpers.PLAN_PATH.parent))
+        if (relative := path.relative_to(root))
         not in defines_the_rule
-        and (found := helpers.plan_citations(path.read_text(encoding="utf-8")))
+        and (found := helpers.plan_citations(readable(path)))
     }
 
+    assert len(files) > 50, (
+        f"the citation scan found only {len(files)} files, which means it is "
+        f"not looking at the repository; a scan of nothing passes"
+    )
     assert not offenders, (
         f"these files cite a section of PLAN.md, which renumbers without "
         f"warning: {offenders}. State the fact where it is needed, or name the "

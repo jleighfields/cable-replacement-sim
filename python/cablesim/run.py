@@ -22,14 +22,23 @@ configured parameter.
 import datetime
 import logging
 import pathlib
+import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 import numpy as np
 import polars as pl
 
 from cablesim import config as config_module
-from cablesim import constants, policies, population, random_draws, results, simulate
+from cablesim import (
+    constants,
+    kernel,
+    policies,
+    population,
+    random_draws,
+    results,
+    simulate,
+)
 
 log = logging.getLogger(__name__)
 
@@ -84,6 +93,50 @@ twenty-odd argument names would be the contract worth having, and that contract
 is already written as ``simulate.run_chunk``'s signature — the argument names
 the kernel's binding has to mirror, since every call here is by keyword.
 """
+
+
+RUNNABLE: dict[str, Implementation] = {
+    "reference": simulate.run_chunk,
+    "kernel": kernel.run_chunk,
+}
+"""The annual loops that exist, by the name a manifest records them under.
+
+Named for what it holds rather than for the set it draws from: ``results``
+carries the closed set of names a saved run may claim, and this is the subset
+with something behind it. Two of those four — the batched baselines — have no
+implementation yet and so are absent here rather than mapped to something that
+would run.
+
+The keys must all be names ``results`` accepts, which is checked below rather
+than left to the manifest validator. Left there, a misspelling would be taken
+on the command line, accepted through a whole budget level's computation, and
+refused only at the write.
+"""
+
+
+def unknown_implementations(names: Iterable[str]) -> set[str]:
+    """Names among these that no saved result may claim.
+
+    A function rather than an expression evaluated once at import, because an
+    import-time check cannot be watched failing: breaking it stops the whole
+    suite at collection rather than reddening a test. This can be called with
+    a bad name and asserted on.
+
+    Args:
+        names: Implementation names to check.
+
+    Returns:
+        Those that are not in the closed set a manifest accepts.
+    """
+    return set(names) - set(results.IMPLEMENTATIONS)
+
+
+UNRUNNABLE = unknown_implementations(RUNNABLE)
+if UNRUNNABLE:
+    raise ValueError(
+        f"{sorted(UNRUNNABLE)} name no implementation a result may claim; "
+        f"the closed set is {list(results.IMPLEMENTATIONS)}"
+    )
 
 
 REDUCED_SEGMENTS = 2_000
@@ -243,9 +296,7 @@ def simulate_policy(
 def run(
     settings: config_module.Config,
     root: pathlib.Path,
-    implementation: Implementation = simulate.run_chunk,
-    implementation_name: str = "reference",
-    build_profile: str | None = None,
+    implementation: str = "reference",
     batch_size: int = DEFAULT_BATCH_SIZE,
     swept: dict[str, float] | None = None,
 ) -> pathlib.Path:
@@ -254,11 +305,14 @@ def run(
     Args:
         settings: The effective configuration, already validated.
         root: Where run directories are written.
-        implementation: The annual loop to call.
-        implementation_name: Which implementation that is, for the manifest.
-        build_profile: The Rust build profile, where the kernel ran. Pure
-            Python has none, so it stays absent rather than being invented; a
-            timing from the kernel without one means nothing.
+        implementation: Which annual loop to run, keyed into ``RUNNABLE``.
+            A name rather than the callable, because the manifest records this
+            as provenance: passing the two separately let a caller run one
+            implementation and record another, and a manifest that can be
+            wrong is worse than no manifest. The Rust build profile follows
+            from the same name — read from the compiled extension where the
+            kernel ran, and absent for pure Python rather than invented, since
+            a timing from the kernel without one means nothing.
         batch_size: Replications per call.
         swept: Values that vary between the runs of a sweep, written into the
             saved rows as columns. A frame carrying its own parameters is
@@ -266,7 +320,24 @@ def run(
 
     Returns:
         The directory written.
+
+    Raises:
+        KeyError: If no implementation goes by that name.
     """
+    if implementation not in RUNNABLE:
+        raise KeyError(
+            f"no implementation named {implementation!r}; "
+            f"{sorted(RUNNABLE)} are the ones that exist"
+        )
+    annual_loop = RUNNABLE[implementation]
+    # The profile belongs to whichever module the loop came from: a pure-Python
+    # one defines none, and the kernel's wrapper reads it from the compiled
+    # extension. Asking the module rather than testing the name for "kernel"
+    # keeps that name out of a second place, so a later Rust-backed
+    # implementation records its profile instead of silently recording none.
+    build_profile = getattr(
+        sys.modules[annual_loop.__module__], "BUILD_PROFILE", None
+    )
     started = time.perf_counter()
     run_id = results.new_run_id()
     segments_frame = population.generate(settings)
@@ -282,7 +353,7 @@ def run(
 
     frame = pl.concat(
         simulate_policy(
-            spec, settings, segments, class_names, implementation, batch_size
+            spec, settings, segments, class_names, annual_loop, batch_size
         )
         for spec in settings.policies
     )
@@ -300,7 +371,7 @@ def run(
             package_version=results.package_version(),
             git_commit=commit,
             git_dirty=dirty,
-            implementation=implementation_name,
+            implementation=implementation,
             build_profile=build_profile,
             threads=1,
             batch_size=batch_size,

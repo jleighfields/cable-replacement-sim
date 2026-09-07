@@ -216,19 +216,26 @@ def test_the_run_directory_records_how_it_was_produced(
     assert manifest.wall_seconds > 0.0
 
 
-def test_the_reference_is_swappable_for_another_implementation(
-    tmp_path: pathlib.Path,
+def test_the_named_implementation_is_the_one_that_runs(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A parity test drives both through this path, so it must take either."""
+    """The loop that ran and the name recorded cannot come apart.
+
+    They were once two arguments, so a caller could run one implementation and
+    record another, and a manifest that can be wrong is worse than no manifest.
+    The name now selects the loop, and this drives that end to end: a counting
+    stand-in registered under one name is what runs, and that name is what the
+    saved manifest says.
+    """
     calls = []
 
     def counting(**arguments: object) -> simulate.Results:
         calls.append(arguments["policy"])
         return simulate.run_chunk(**arguments)
 
-    directory = run.run(
-        small_config(), tmp_path, implementation=counting, implementation_name="kernel"
-    )
+    monkeypatch.setitem(run.RUNNABLE, "kernel", counting)
+
+    directory = run.run(small_config(), tmp_path, implementation="kernel")
 
     assert len(calls) == 2, "one call per policy, at one chunk"
     manifest = results.Manifest.model_validate_json(
@@ -237,8 +244,39 @@ def test_the_reference_is_swappable_for_another_implementation(
     assert manifest.implementation == "kernel"
 
 
-def test_the_run_takes_policy_priorities_from_the_policy_stream(
+def test_an_implementation_that_does_not_exist_is_refused_before_any_work(
     tmp_path: pathlib.Path,
+) -> None:
+    """A misspelled name fails at the call, not after the first run computed.
+
+    The manifest validator would refuse it too, but only at the write, which on
+    a sweep is one budget level's computation later.
+    """
+    # Matched on the guard's own wording, not on the name. The lookup a line
+    # below raises `KeyError` carrying the same name, so a test matching only
+    # that cannot tell the guard from its absence — and the guard exists for
+    # the message, which names what would have worked.
+    with pytest.raises(KeyError, match="are the ones that exist"):
+        run.run(small_config(), tmp_path, implementation="batched_numpy")
+
+
+def test_a_name_no_result_may_claim_is_reported_as_unknown() -> None:
+    """The check behind the import-time guard, driven with a bad name.
+
+    Asserting the invariant directly — that what is runnable is a subset of
+    what a result may claim — would be a test that cannot fail: breaking it
+    raises at import and stops the suite at collection, so the assertion never
+    runs. Calling the check is what can report.
+    """
+    assert run.unknown_implementations(["batched_pandas"]) == {"batched_pandas"}
+    # And nothing else: asserting that `RUNNABLE` itself comes back empty would
+    # be the invariant again, which breaking stops the suite at collection, and
+    # asserting it of the closed set is a set minus itself.
+    assert run.unknown_implementations([]) == set()
+
+
+def test_the_run_takes_policy_priorities_from_the_policy_stream(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Checked at the wiring, not only at the helper that builds the draws.
 
@@ -259,7 +297,8 @@ def test_the_run_takes_policy_priorities_from_the_policy_stream(
         )
         return simulate.run_chunk(**arguments)
 
-    run.run(settings, tmp_path, implementation=capturing, batch_size=6)
+    monkeypatch.setitem(run.RUNNABLE, "reference", capturing)
+    run.run(settings, tmp_path, batch_size=6)
 
     sources = random_draws.spawn_sources(settings.simulation.seed)
     n_segments = settings.population.n_segments
@@ -275,7 +314,7 @@ def test_the_run_takes_policy_priorities_from_the_policy_stream(
 
 
 def test_the_budget_series_uses_the_budget_rate_and_not_the_cost_rate(
-    tmp_path: pathlib.Path,
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Two rates that happen to be equal in the shipped file are not one rate.
 
@@ -296,7 +335,8 @@ def test_the_budget_series_uses_the_budget_rate_and_not_the_cost_rate(
         )
         return simulate.run_chunk(**arguments)
 
-    run.run(settings, tmp_path, implementation=capturing)
+    monkeypatch.setitem(run.RUNNABLE, "reference", capturing)
+    run.run(settings, tmp_path)
 
     assert captured["budget"].tolist() == pytest.approx(
         [settings.budget.annual] * settings.simulation.n_years
