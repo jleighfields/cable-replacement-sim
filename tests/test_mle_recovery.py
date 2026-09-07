@@ -378,28 +378,27 @@ def test_a_common_shape_fit_is_biased_when_the_shape_varies() -> None:
     assert varying.log_likelihood > common.log_likelihood
 
 
-CROSS_CHECK_SEGMENTS: int = 15_000
-"""Sized so the cross-checks compare well-determined parameters.
+WELL_DETERMINED_SEGMENTS: int = 15_000
+"""Sized so every parameter comes back tightly enough to reason about.
 
-An estimate that is barely identified agrees with anything, so a cross-check on
-a loose fit passes whatever the other implementation computes. This is larger
-than the ladder's own sample for that reason alone.
+An estimate that is barely identified agrees with almost anything, so a check
+made against a loose fit passes whatever it is compared with. Larger than the
+ladder's own sample for that reason alone.
 """
 
 
-def cross_check_data(
+def well_determined_data(
     settings: config.Config,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[str]]:
-    """Build one lifetime table for an outside implementation to refit.
+    """Build one lifetime table with every parameter tightly determined.
 
-    One technology and both conductor counts, so the fit has a shape, a
+    One technology and both conductor counts, so a fit of it has a shape, a
     reference scale and two geometry coefficients to recover at once.
 
     Args:
         settings: Supplies the technology, the reference length and the study
-            window. Whether episodes are truncated is decided by its
-            `records.monitoring_start`, which is what separates the two
-            cross-checks that call this.
+            window. Whether episodes are truncated follows from its
+            `records.monitoring_start`.
 
     Returns:
         Age at the end of observation, age at entry, whether that end was a
@@ -409,172 +408,13 @@ def cross_check_data(
         settings,
         technologies=[settings.population.technologies[0]],
         n_conductors=[1, 3],
-        n_segments=CROSS_CHECK_SEGMENTS,
+        n_segments=WELL_DETERMINED_SEGMENTS,
     )
     end, entry, observed = records.lifetimes(table, settings.records.study_end)
     design, names = records.geometry_covariates(
         table, settings.population.length_ref_ft
     )
     return end, entry, observed, design, names
-
-
-def truncating_config() -> config.Config:
-    """The checked-in configuration, whose monitoring window truncates.
-
-    The companion to `one_technology_config`, which moves monitoring back to
-    the first install year so nothing is truncated. Here monitoring starts long
-    after installation began, so a share of episodes enter partway through life
-    and the truncation term of the likelihood carries weight.
-
-    Returns:
-        The configuration as checked in.
-    """
-    return config.load_config()
-
-
-def standard_error(interval: tuple[float, float]) -> float:
-    """Recover the standard error a 95% confidence interval was built from.
-
-    The cross-checks compare against a fraction of this rather than a fixed
-    epsilon, so the tolerance tracks how well the data determines each
-    parameter instead of being tuned to one dataset.
-
-    Args:
-        interval: Lower and upper bound of a 95% interval.
-
-    Returns:
-        The half-width divided by the normal quantile it was scaled by.
-    """
-    low, high = interval
-    return (high - low) / (2.0 * stats.norm.ppf(0.975))
-
-
-def assert_agrees(
-    mine: weibull.RegressionFit, theirs: dict[str, float], names: list[str]
-) -> None:
-    """Require an outside fit to match every parameter of `mine`.
-
-    To a tenth of a standard error, on point estimates. Comparing intervals
-    would test the two implementations' standard-error machinery rather than
-    the likelihood they both claim to maximise, and comparing every parameter
-    at once is stricter than comparing them one at a time.
-
-    Args:
-        mine: The fit from this package.
-        theirs: Parameter name to estimate, using the names `cross_check.R`
-            prints -- `shape`, `log_scale`, and one per covariate.
-        names: The covariate names, in the order they were fitted.
-
-    Raises:
-        AssertionError: If any parameter differs by more than the tolerance.
-    """
-
-    def close(
-        mine_value: float, theirs_value: float, interval: tuple[float, float]
-    ) -> bool:
-        """Whether two estimates agree to within a tenth of a standard error."""
-        return abs(mine_value - theirs_value) < 0.1 * standard_error(interval)
-
-    assert close(mine.shape, theirs["shape"], mine.shape_interval)
-    assert close(
-        np.log(mine.reference_scale),
-        theirs["log_scale"],
-        tuple(np.log(mine.reference_scale_interval)),
-    )
-    for name in names:
-        assert close(
-            mine.coefficients[name], theirs[name], mine.coefficient_intervals[name]
-        )
-
-
-def lifelines_estimates(
-    end: np.ndarray,
-    entry: np.ndarray,
-    observed: np.ndarray,
-    design: np.ndarray,
-    names: list[str],
-) -> dict[str, float]:
-    """Fit the same table with `lifelines` and return comparable estimates.
-
-    The parameterisation bridge is applied here rather than recalled.
-    `lifelines` names the scale `lambda_` and the shape `rho_`, regresses the
-    log of the first on the covariates and holds the second constant, which is
-    this model exactly -- but it reports both as logs, so the shape is
-    exponentiated and the scale is not.
-
-    Args:
-        end: Age when observation of each episode ended.
-        entry: Age when each episode came under observation. `lifelines` takes
-            this as `entry_col`, which is how it is told about truncation.
-        observed: Whether each end was a failure rather than the study closing.
-        design: Covariate matrix, one row per episode.
-        names: Covariate names, in column order.
-
-    Returns:
-        Estimates keyed `shape`, `log_scale`, and one entry per covariate --
-        the naming `assert_agrees` compares against.
-    """
-    pandas = pytest.importorskip("pandas")
-    fitters = pytest.importorskip("lifelines")
-
-    frame = pandas.DataFrame(
-        {
-            "T": end,
-            "E": observed,
-            "entry": entry,
-            **dict(zip(names, design.T, strict=True)),
-        }
-    )
-    fitted = fitters.WeibullAFTFitter().fit(
-        frame, duration_col="T", event_col="E", entry_col="entry"
-    )
-    return {
-        "shape": float(np.exp(fitted.params_["rho_"]["Intercept"])),
-        "log_scale": float(fitted.params_["lambda_"]["Intercept"]),
-        **{name: float(fitted.params_["lambda_"][name]) for name in names},
-    }
-
-
-def test_lifelines_agrees_without_truncation() -> None:
-    """`lifelines` fits the same data and must reach the same answer.
-
-    Every rung above uses one likelihood on both sides, so a parameterisation
-    transposed between the accelerated-failure-time form and the hazard form
-    would pass all of them: the generator and the fit would agree with each
-    other while both differed from what the configuration means. A second
-    implementation is the only thing that catches it, and the cost of that
-    correspondence being false is every number in the project being quietly
-    wrong.
-    """
-    settings = one_technology_config()
-    end, entry, observed, design, names = cross_check_data(settings)
-    assert not entry.any(), "this cross-check is the untruncated one"
-
-    mine = weibull.fit_regression(end, entry, observed, design, names)
-    assert_agrees(mine, lifelines_estimates(end, entry, observed, design, names), names)
-
-
-def test_lifelines_agrees_under_truncation() -> None:
-    """The same agreement where a quarter of the episodes enter partway through.
-
-    The other cross-checks all run on data watched from installation, which
-    leaves the entry term of the likelihood multiplied by nothing -- an error in
-    it would not show. Here monitoring starts long after installation began, so
-    the term carries weight and an outside implementation has to reproduce its
-    effect.
-
-    Not every survival implementation can be used for this: some express
-    right censoring but have no way to state a delayed entry age, and given
-    this table they would quietly fit the untruncated model instead. The
-    measured cost of that mistake on this data is a shape biased upward by
-    about one percent.
-    """
-    settings = truncating_config()
-    end, entry, observed, design, names = cross_check_data(settings)
-    assert entry.any(), "this cross-check requires truncated data"
-
-    mine = weibull.fit_regression(end, entry, observed, design, names)
-    assert_agrees(mine, lifelines_estimates(end, entry, observed, design, names), names)
 
 
 def test_the_fit_does_not_depend_on_where_the_search_starts() -> None:
@@ -594,7 +434,7 @@ def test_the_fit_does_not_depend_on_where_the_search_starts() -> None:
     surface.
     """
     settings = one_technology_config()
-    end, entry, observed, _, _ = cross_check_data(settings)
+    end, entry, observed, _, _ = well_determined_data(settings)
     reference = weibull.fit_censored(end, entry, observed)
 
     def negative(logged: np.ndarray) -> float:
@@ -681,7 +521,7 @@ def test_the_reported_likelihood_is_the_summed_one() -> None:
     has to stay the sum.
     """
     settings = one_technology_config()
-    end, entry, observed, _, _ = cross_check_data(settings)
+    end, entry, observed, _, _ = well_determined_data(settings)
     fitted = weibull.fit_censored(end, entry, observed)
 
     assert fitted.log_likelihood == pytest.approx(
@@ -722,7 +562,7 @@ def test_the_regression_likelihood_is_the_summed_one() -> None:
     shape varies too, and that path is exercised by less than the other.
     """
     settings = one_technology_config()
-    end, entry, observed, design, names = cross_check_data(settings)
+    end, entry, observed, design, names = well_determined_data(settings)
 
     common = weibull.fit_regression(end, entry, observed, design, names)
     scales = common.reference_scale * np.exp(
@@ -772,7 +612,7 @@ def test_the_reported_intervals_match_the_curvature_they_claim_to_measure() -> N
     above.
     """
     settings = one_technology_config()
-    end, entry, observed, _, _ = cross_check_data(settings)
+    end, entry, observed, _, _ = well_determined_data(settings)
     fitted = weibull.fit_censored(end, entry, observed)
 
     optimum = np.log([fitted.shape, fitted.scale])

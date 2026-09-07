@@ -378,10 +378,9 @@ segments. Notebook 03, section 45, is where this is run.
 **`survreg` names the form, not a route to reproducing this.** It does not
 accept left-truncated data, so a reader reaching for it in R to check this fit
 would find the model unsupported rather than merely awkward. `flexsurv::flexsurvreg` is the R
-package that takes delayed entry, and `lifelines` is what the test suite
-actually cross-checks against, through an entry column. Naming all three is
-worth the sentence: the first is the vocabulary, the second is the R
-equivalent, and only the third is a check that runs here.
+package that takes delayed entry. Naming both is worth the sentence: the first
+is the vocabulary this model is described in, the second is what a reader would
+actually need to reproduce it outside Python.
 
 `survreg` was nonetheless run against this fit during development, on
 untruncated data, where it agreed to ten decimals on every parameter and on the
@@ -457,15 +456,21 @@ keeps the parameterization identical to the simulator's, which is where this
 kind of code actually goes wrong — an AFT library's `(mu, sigma)` and this
 model's `(k, lambda)` are easy to transpose and the error is silent.
 
-The cross-check is `lifelines.WeibullAFTFitter`, in the test suite only. It
-parameterizes as `lambda(x) = exp(beta_0 + beta_1 x_1 + ...)` with shape `rho`
-constant unless given ancillary covariates, supports entry times for left
-truncation, and reports standard errors and confidence intervals. Fitting the
-same synthetic data both ways and requiring agreement is the same validation
-idea as the Python/Rust mirror, applied to the fit: two independent
-implementations disagree loudly where one implementation is silently wrong.
-It also supplies the confidence interval the recovery test needs, which
-otherwise means hand-rolling a Hessian inversion.
+No outside library is carried to check this. One was, briefly, and measurement
+is why it went: mutating the likelihood to transpose shape and scale, to read
+the scale as a rate, and to do so consistently in the generator *and* the fit
+each reddened fifteen to twenty-one tests without it. The recovery ladder
+already catches that class, because it compares a fit against the parameters
+the configuration states rather than against the generator agreeing with the
+fit, and those are different numbers.
+
+What an outside library uniquely covers is narrower than it first appears: a
+convention wrong in the same way across every function here, so that the whole
+module is self-consistent, matches its own tests, and still means something
+different by "scale" than the literature does. That is worth knowing about and
+was not worth a dependency tree pulled in to guard it. R's `survreg` was run
+against this fit during development and settled the question once; the note
+below records what it found.
 
 `statsmodels` has no parametric AFT — its survival support is Cox proportional
 hazards and nonparametric estimators — so it is not an alternative here. It is
@@ -1717,15 +1722,15 @@ technology, and heavy censoring means most cable never fails inside the study
 window. The synthetic record table is therefore sized by what the fit needs
 (4, Repo layout, on why `records.py` is separate from `population.py`).
 
-**An independent implementation cross-checks the fit.**
-`lifelines.WeibullAFTFitter` fits the same data in the test suite and must
-agree on **point estimates to within a tenth of the fitted standard error**,
-after the conversion in 2.4. Point estimates rather than intervals, because
-comparing intervals would test the two libraries' interval machinery instead of
-the likelihood they both claim to maximize. This is the same idea as the Python/Rust mirror applied to the
-estimator: two implementations disagree loudly where one is silently wrong, and
-the failure it is aimed at is a parameterization transposed between an AFT
-library's `(mu, sigma)` and this model's `(k, lambda)`.
+**The ladder is what guards the parameterization**, rather than a second
+library. The failure worth fearing is a transposition between an
+accelerated-failure-time library's `(mu, sigma)` and this model's
+`(k, lambda)`, and the reason the ladder catches it is that each rung compares
+a fit against the parameters the configuration states — not against the
+generator and the fit agreeing with one another, which they would continue to
+do while both were wrong. Mutating the likelihood to transpose the two, and
+again to read the scale as a rate in the generator and the fit alike, reddens
+fifteen to twenty-one tests.
 
 ### 6.3 Where a parity test's inputs come from
 
@@ -2456,7 +2461,7 @@ its reduction and draw functions landed in Phase 1.
 `records.py`: the synthetic record table, one row per installation episode.
 Tests: the analytical
 checks and every rung of the MLE recovery ladder (Section 6, Validation
-strategy), including the `lifelines` cross-check. Notebook 03.
+strategy). Notebook 03.
 
 This phase is where the length claim is either confirmed or abandoned, so it
 comes before anything depends on it.
