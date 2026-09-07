@@ -417,6 +417,29 @@ def run_chunk_numpy(
     return results
 
 
+# Column names the polars year loop reads and writes. Named once here rather
+# than spelled at every use, because a typo in a string is a lookup failure at
+# run time where a typo in a name is caught before anything runs. `batched.rs`
+# keeps the same list for the same reason, and the two must agree: they are the
+# same loop over the same frame in two languages.
+REP = "rep"
+SEGMENT_ID = "segment_id"
+CLASS = "class_index"
+CUSTOMERS = "customers"
+MINUTES_FAILURE = "customer_minutes_per_failure"
+MINUTES_PLANNED = "customer_minutes_per_planned"
+OUTAGE_COST = "outage_cost_per_failure"
+PLANNED_AT_PAR = "planned_at_par"
+REPLACEMENT_SHAPE = "replacement_shape"
+REPLACEMENT_SCALE = "replacement_scale"
+AGE = "age"
+CURRENT_SHAPE = "current_shape"
+CURRENT_SCALE = "current_scale"
+FAILURE_TIME = "failure_time"
+PRIORITY = "priority"
+PLANNED_NOW = "planned_now"
+FAILED = "failed"
+
 QUANTITIES: tuple[str, ...] = simulate.Results._fields
 """The seven reported quantities, in the order a result holds them."""
 
@@ -505,6 +528,10 @@ def totals_per_class(
     totalled over a frame in segment order and the funded ones over a frame in
     rank order, matching what the reference adds and in what sequence.
 
+    The caller supplies each reduction rather than having one imposed, because
+    the right one differs: a total has to accumulate in a stated order and a
+    count does not. ``summed`` and ``counted`` are the two.
+
     **A cumulative sum's last element rather than a grouped sum**, because a
     grouped sum is free to add in whatever order suits the engine and does:
     with `sum`, the reported planned and emergency spend differ from the
@@ -547,12 +574,36 @@ def totals_per_class(
     Returns:
         One row per replication and class, with a column per quantity.
     """
-    return frame.group_by(["rep", "class_index"], maintain_order=True).agg(
-        [
-            expression.cum_sum().last().alias(name)
-            for name, expression in quantities.items()
-        ]
+    return frame.group_by([REP, CLASS], maintain_order=True).agg(
+        [expression.alias(name) for name, expression in quantities.items()]
     )
+
+
+def summed(column: str) -> pl.Expr:
+    """Totals a column within a group, one row at a time in the frame's order.
+
+    Args:
+        column: The column to total.
+
+    Returns:
+        The expression giving that group's total.
+    """
+    return pl.col(column).cum_sum().last()
+
+
+def counted() -> pl.Expr:
+    """Counts the rows in a group.
+
+    A count needs no ordering argument: a sum of ones is exact whatever order it
+    is taken in, which is why this is the group's length rather than a running
+    total of a literal. Writing it as one would also be wrong rather than merely
+    unnecessary — a bare literal is a scalar, and a cumulative sum of a scalar
+    is that scalar, so every group would count as one.
+
+    Returns:
+        The expression giving that group's row count as a float.
+    """
+    return pl.len().cast(pl.Float64)
 
 
 def as_result_arrays(
@@ -695,6 +746,11 @@ def run_chunk_polars(
         policy_uniforms,
         lifetime_uniforms[:, :, 0],
     )
+    # The replacement parameters as flat arrays in the frame's own row order,
+    # for the renewal draw. That draw runs over the replaced rows alone, and a
+    # gather wants an array rather than a column.
+    replacement_shape_all = np.tile(replacement_shape, n_reps)
+    replacement_scale_all = np.tile(replacement_scale, n_reps)
 
     yearly: list[pl.DataFrame] = []
     for year in range(n_years):
@@ -703,144 +759,149 @@ def run_chunk_polars(
         # 1. Failures, resolved before planned work so that a segment failing
         #    this year is not also a candidate this year.
         state = state.with_columns(
-            planned_now=pl.col("planned_at_par") * escalation,
+            planned_now=pl.col(PLANNED_AT_PAR) * escalation,
         ).with_columns(
-            failed=(pl.col("failure_time") >= year)
-            & (pl.col("failure_time") < year + 1),
+            failed=(pl.col(FAILURE_TIME) >= year) & (pl.col(FAILURE_TIME) < year + 1),
         )
-        contribution = pl.when("failed")
+        # Compacted before anything is totalled over it. A few percent of
+        # segments fail in a year, so a grouped total over the whole frame does
+        # twenty times the work for the same numbers — and it is the same
+        # numbers exactly, because a running total over the contributing rows
+        # ends where one over those rows with zeros interleaved ends.
+        failing = state.filter(FAILED)
         failures = totals_per_class(
-            state,
+            failing,
             {
-                "failures": contribution.then(1.0).otherwise(0.0),
-                "customers_interrupted": contribution.then("customers").otherwise(0.0),
-                "customer_minutes": contribution.then(
-                    "customer_minutes_per_failure"
-                ).otherwise(0.0),
-                "emergency_spend": contribution.then(
-                    pl.col("planned_now") * emergency_multiplier
-                ).otherwise(0.0),
+                "failures": counted(),
+                "customers_interrupted": summed(CUSTOMERS),
+                "customer_minutes": summed(MINUTES_FAILURE),
+                "emergency_spend": (pl.col(PLANNED_NOW) * emergency_multiplier)
+                .cum_sum()
+                .last(),
             },
         )
 
         # 2. Planned replacement, funded greedily down the ranked order.
-        available = pl.DataFrame(
-            {"rep": np.arange(n_reps, dtype=np.int32), "available": budget[year]}
-        )
+        available = np.full(n_reps, budget[year])
         if emergency_charged_to_budget:
             # Accumulated one row at a time within a replication, in segment
             # order, which is the order the reference adds it in. A grouped sum
-            # is free to add in whatever order suits the engine, and this total
-            # is subtracted from the budget the greedy fill then compares a
-            # cumulative cost against — so a last-bit difference here decides
-            # which segment is funded last, a discrete outcome rather than a
-            # rounding difference.
+            # would add in whatever order suits the engine, and this total is
+            # subtracted from the budget the greedy fill then compares a
+            # cumulative cost against, so a last-bit difference here decides
+            # which segment is funded last.
+            #
+            # A year whose failures cost more than the budget leaves this
+            # negative, and it is left negative: every planned cost is
+            # positive, so nothing is funded at or below zero and nothing
+            # carries into the next year.
             charged = (
-                state.with_columns(
-                    running_emergency=pl.when("failed")
-                    .then(pl.col("planned_now") * emergency_multiplier)
-                    .otherwise(0.0)
+                failing.lazy()
+                .with_columns(
+                    running=(pl.col(PLANNED_NOW) * emergency_multiplier)
                     .cum_sum()
-                    .over("rep")
+                    .over(REP)
                 )
-                .group_by("rep", maintain_order=True)
-                .agg(charge=pl.col("running_emergency").last())
+                .group_by(REP)
+                .agg(charge=pl.col("running").last())
+                .collect()
             )
-            available = available.join(charged, on="rep").select(
-                "rep",
-                # Left negative where a year's failures cost more than the
-                # budget, for the reason the reference leaves it negative:
-                # every planned cost is positive, so nothing is funded at or
-                # below zero and nothing carries into the next year.
-                available=pl.col("available") - pl.col("charge"),
-            )
+            available[charged[REP].to_numpy()] -= charged["charge"].to_numpy()
 
-        eligible = policies.eligible(policy, state["age"], state["failed"])
-        planned = totals_per_class(
-            state.clear(), dict.fromkeys(PLANNED_QUANTITIES, pl.lit(0.0))
-        )
+        eligible = policies.eligible(policy, state[AGE], state[FAILED])
+        funded = state.clear()
         if eligible.any():
             rank = policies.rank_key(
                 policy,
-                age=state["age"],
+                age=state[AGE],
                 failure_probability=weibull.conditional_failure_probability(
-                    state["age"], state["current_shape"], state["current_scale"]
+                    state[AGE], state[CURRENT_SHAPE], state[CURRENT_SCALE]
                 ),
-                outage_cost_per_failure=state["outage_cost_per_failure"] * escalation,
-                planned=state["planned_now"],
+                outage_cost_per_failure=state[OUTAGE_COST] * escalation,
+                planned=state[PLANNED_NOW],
                 emergency_multiplier=emergency_multiplier,
-                priority=state["priority"],
+                priority=state[PRIORITY],
             )
-            # Ineligible segments are demoted below every real rank key and
-            # given an infinite cost, so the sort puts them behind the
-            # candidates and the cumulative cost cannot run past the last real
-            # one however much budget is left.
-            ranked = (
-                state.with_columns(
-                    eligible=pl.Series(eligible),
-                    rank=pl.Series(rank),
-                )
-                .with_columns(
-                    demoted=pl.when("eligible").then(pl.col("rank")).otherwise(-np.inf),
-                    step=pl.when("eligible")
-                    .then(pl.col("planned_now"))
-                    .otherwise(np.inf),
-                )
-                .sort(["rep", "demoted", "segment_id"], descending=[False, True, False])
-                .with_columns(running=pl.col("step").cum_sum().over("rep"))
-                .join(available, on="rep")
-                .with_columns(funded=pl.col("running") <= pl.col("available"))
+            # **Only the candidates are carried, and only the columns the fill
+            # and the totals read.** This is where a long frame beats a
+            # rectangular one rather than merely matching it: candidate sets
+            # differ between replications, which is exactly what makes the
+            # batched NumPy form sort every segment of every replication, and
+            # what a frame handles by simply having fewer rows.
+            candidates = (
+                state.lazy()
+                .select(REP, SEGMENT_ID, CLASS, MINUTES_PLANNED, PLANNED_NOW)
+                .with_columns(eligible=pl.Series(eligible), rank=pl.Series(rank))
+                .filter("eligible")
+                .sort([REP, "rank", SEGMENT_ID], descending=[False, True, False])
+                # The cumulative cost down each replication's ranked order,
+                # which is the greedy fill: one partial sum at a time, in the
+                # order the reference spends the money.
+                .with_columns(running=pl.col(PLANNED_NOW).cum_sum().over(REP))
+                .collect()
             )
-            # Totalled here, while the rows are still in rank order, because
-            # that is the order the reference adds the funded segments in.
-            contribution = pl.when("funded")
-            planned = totals_per_class(
-                ranked,
-                {
-                    "planned_replacements": contribution.then(1.0).otherwise(0.0),
-                    "planned_customer_minutes": contribution.then(
-                        "customer_minutes_per_planned"
-                    ).otherwise(0.0),
-                    "planned_spend": contribution.then("planned_now").otherwise(0.0),
-                },
+            # A candidate costing exactly what remains is funded: the rule is
+            # that spending may not exceed the budget, not that it must fall
+            # short. Every planned cost is positive, so the running total only
+            # rises and this cut is a prefix of the ranked order.
+            funded = candidates.filter(
+                pl.col("running") <= available[candidates[REP].to_numpy()]
             )
-            # Back to the canonical order, which every later year's uniforms
-            # are attached by position.
-            state = ranked.sort(["rep", "segment_id"]).drop(
-                "eligible", "rank", "demoted", "step", "running", "available"
-            )
-        else:
-            state = state.with_columns(funded=pl.lit(False))
 
+        # Still in rank order, which is the order the reference adds the funded
+        # segments in and therefore the order these have to accumulate in.
+        planned = totals_per_class(
+            funded,
+            {
+                "planned_customer_minutes": summed(MINUTES_PLANNED),
+                "planned_replacements": counted(),
+                "planned_spend": summed(PLANNED_NOW),
+            },
+        )
         yearly.append(
-            failures.join(planned, on=["rep", "class_index"], how="left")
-            # Only the funded columns: a class that funded nothing this year
-            # has no row on that side, and reads back as the zero the
-            # reference reports. Filling the whole frame would widen the two
-            # integer key columns to floats along with it.
-            .with_columns(pl.col(PLANNED_QUANTITIES).fill_null(0.0))
+            failures.join(planned, on=[REP, CLASS], how="full", coalesce=True)
+            .with_columns(pl.col(QUANTITIES).fill_null(0.0))
             .with_columns(year=pl.lit(year, dtype=pl.Int32))
         )
 
         # 3. Everything replaced this year enters service next year, as new
         #    cable of the replacement technology.
-        state = state.with_columns(replaced=pl.col("failed") | pl.col("funded"))
-        renewed = (year + 1) + weibull.draw_lifetime(
-            pl.Series(lifetime_uniforms[:, :, year + 1].ravel()),
-            state["replacement_shape"],
-            state["replacement_scale"],
+        #
+        # The state frame is never permuted — nothing above sorted it, only the
+        # candidate projection — so a row's position is still
+        # `replication * segments + segment_id`, and that is what lets the
+        # funded rows be marked without a join back.
+        replaced = state[FAILED].to_numpy().copy()
+        replaced[
+            funded[REP].to_numpy() * n_segments + funded[SEGMENT_ID].to_numpy()
+        ] = True
+        renewing = np.flatnonzero(replaced)
+        failure_time = state[FAILURE_TIME].to_numpy().copy()
+        if renewing.size > 0:
+            # Drawn at the replaced cells alone. Computing it for every row and
+            # selecting afterwards draws a lifetime for the ninety-seven percent
+            # that keep the one they have, which is the same waste the batched
+            # NumPy loop was written with and had to have taken out of it.
+            failure_time[renewing] = (year + 1) + weibull.draw_lifetime(
+                lifetime_uniforms[:, :, year + 1].ravel()[renewing],
+                replacement_shape_all[renewing],
+                replacement_scale_all[renewing],
+            )
+        state = (
+            state.with_columns(
+                replaced=pl.Series(replaced),
+                failure_time=pl.Series(failure_time),
+            )
+            .with_columns(
+                current_shape=pl.when("replaced")
+                .then(REPLACEMENT_SHAPE)
+                .otherwise(pl.col(CURRENT_SHAPE)),
+                current_scale=pl.when("replaced")
+                .then(REPLACEMENT_SCALE)
+                .otherwise(pl.col(CURRENT_SCALE)),
+                age=pl.when("replaced").then(0.0).otherwise(pl.col(AGE) + 1.0),
+            )
+            .drop(FAILED, "replaced", PLANNED_NOW)
         )
-        state = state.with_columns(
-            current_shape=pl.when("replaced")
-            .then("replacement_shape")
-            .otherwise(pl.col("current_shape")),
-            current_scale=pl.when("replaced")
-            .then("replacement_scale")
-            .otherwise(pl.col("current_scale")),
-            failure_time=pl.when("replaced")
-            .then(pl.lit(renewed))
-            .otherwise(pl.col("failure_time")),
-            age=pl.when("replaced").then(0.0).otherwise(pl.col("age") + 1.0),
-        ).drop("failed", "funded", "replaced", "planned_now")
 
     return as_result_arrays(yearly, n_reps, n_years, n_classes)
