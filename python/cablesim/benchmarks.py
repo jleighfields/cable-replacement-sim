@@ -315,11 +315,18 @@ def provenance() -> dict[str, object]:
         The last two are here because two of the five implementations are that
         engine, and neither is recorded anywhere else in a result. **The pool
         size matters as much as the kernel's thread count and is not chosen
-        here**: polars sizes it from available parallelism, and on a frame this
-        small that is not its best setting — measured on this workload, sixteen
-        threads beat the machine's forty-eight. A row timed against a pool
-        nobody chose has to at least say what the pool was, the same way a Rust
-        timing has to say how many workers it had.
+        here**: polars sizes it from available parallelism, so a row timed
+        against a pool nobody chose has to at least say what the pool was, the
+        same way a Rust timing has to say how many workers it had.
+
+        What the best size is depends on the policy, and it moved once the
+        frame implementations stopped doing full-width work. Measured after
+        that: ``risk_ranked`` wants every thread — 44.8 ms per replication at
+        forty-eight against 62.1 at eight — while the cheaper policies, whose
+        operations are small enough to be dispatch-bound, gain 7% to 18% from a
+        smaller pool. Before those fixes the dispatch-bound case dominated
+        everything and sixteen threads beat forty-eight across the board, which
+        is no longer true of any policy that ranks.
     """
     return {
         "build_profile": kernel.BUILD_PROFILE,
