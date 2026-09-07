@@ -100,13 +100,12 @@ def episode_table(
 ) -> pl.DataFrame:
     """Builds the failure history, one row per installation episode.
 
-    Each segment is installed once, and is replaced by new cable of the
-    configured replacement technology every time it fails inside the study
-    window. Every installation is one row: a segment installed in 1972, failed
-    in 2006 and still in service at a 2026 study end contributes an uncensored
-    lifetime of 34 years and a censored one of 20. Collapsing that to one row
-    per segment would discard the failure or mismeasure the age at which it
-    happened, and both bias the fit toward longer life.
+    Each segment is installed once, and is replaced every time it fails inside
+    the study window. Every installation is one row: a segment installed in
+    1972, failed in 2006 and still in service at a 2026 study end contributes
+    an uncensored lifetime of 34 years and a censored one of 20. Collapsing
+    that to one row per segment would discard the failure or mismeasure the age
+    at which it happened, and both bias the fit toward longer life.
 
     Args:
         config: The validated run configuration. Supplies the study window, the
@@ -114,7 +113,11 @@ def episode_table(
             replacement technology.
         technologies: Technologies to draw from, defaulting to the configured
             list. A single-element list gives the one-technology data the first
-            three rungs of the recovery ladder need.
+            three rungs of the recovery ladder need. A replacement installs
+            `population.replacement_technology` where that name is among the
+            technologies supplied, and the last one supplied where it is not —
+            so a one-technology table replaces like with like rather than
+            reaching for a technology it does not contain.
         length_ft: Length distribution, or a fixed length in feet. Defaults to
             the configured mix. A fixed value removes length as a source of
             variation, which is what isolates the earlier rungs.
@@ -165,12 +168,16 @@ def episode_table(
     technology_index = np.zeros(total, dtype=np.int64)
     # A single technology is the documented fallback: its vintage need not
     # cover the range, and every segment takes it. Two or more have to cover
-    # every year that can be drawn, because an uncovered year keeps the index
-    # the array was initialised with and the segment is then labelled with one
-    # technology's name while its lifetime is drawn from that technology's
-    # Weibull pair -- silently, and only for the years in the gap.
+    # every year that can be drawn, because an uncovered year keeps the zero
+    # the array was initialised with, so a segment installed in the gap is
+    # generated from the first supplied technology's Weibull pair and labelled
+    # with its name -- silently, and only for the years in the gap, which is
+    # what makes it hard to see in the output.
     # `PopulationConfig.cross_checks` refuses this for the configured list;
-    # passing a list here goes around that check, so it is repeated.
+    # passing a list here goes around that check, so it is repeated. Only the
+    # gap half is repeated: overlapping vintages, which `cross_checks` also
+    # refuses, assign the later technology to the overlap and label it with
+    # that same technology, so nothing is misattributed.
     if len(technologies) > 1:
         covered = np.zeros(len(years), dtype=bool)
         for technology in technologies:
@@ -285,6 +292,13 @@ def episode_table(
     # leaves no trace at all. The comparison is inclusive so nothing is kept
     # with zero exposure after entry, which would contribute nothing to the
     # likelihood while inflating the apparent sample size.
+    #
+    # The second filter drops cable installed at or after the study end, which
+    # nothing observed. Replacements cannot reach it -- one is installed at the
+    # moment its predecessor failed, and a failure only counts as one when it
+    # lands inside the window -- so it fires only where `study_end` precedes
+    # the last install year the configuration allows, a window nothing
+    # cross-checks the install range against.
     return (
         frame.with_columns(
             pl.max_horizontal(

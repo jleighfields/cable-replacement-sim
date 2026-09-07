@@ -588,8 +588,10 @@ def test_the_fit_does_not_depend_on_where_the_search_starts() -> None:
     around nine rows in ten are censored, and settles at roughly twice the true
     shape.
 
-    The search here takes no derivatives, so a correct gradient cannot be what
-    rescues it.
+    Nelder-Mead is used rather than the fit's own BFGS, so nothing about how
+    the optimizer steps -- its finite differences, its curvature estimate --
+    can be what carries every start to the same place. What is left is the
+    surface.
     """
     settings = one_technology_config()
     end, entry, observed, _, _ = cross_check_data(settings)
@@ -611,37 +613,63 @@ def test_the_fit_does_not_depend_on_where_the_search_starts() -> None:
             assert np.allclose(np.exp(found.x), [reference.shape, reference.scale])
 
 
-def test_the_fit_converges_where_the_summed_objective_stalled() -> None:
-    """A pinned draw that the fit used to reject at the right answer.
+def test_a_late_record_start_is_fitted_rather_than_refused() -> None:
+    """A pinned draw the fit refuses while a finite optimum exists.
 
-    `scipy`'s BFGS stops when the gradient norm falls below an absolute
-    tolerance. The gradient of a summed log-likelihood grows with the number of
-    episodes, so a summed objective quietly asks the line search for more
-    precision the larger the sample gets: on this draw it stalled at a gradient
-    norm of 1.1e-5 against a tolerance of 1e-5, standing on the same parameters
-    a derivative-free search finds, and raised. Averaging over episodes makes
-    the stopping rule mean one thing at every sample size.
+    The objective is `nan` wherever the log-likelihood is, which happens as
+    soon as the search steps somewhere the accumulated hazard overflows -- a
+    tiny scale against a large shape. `nan` compares false against every
+    bound, so the line search cannot reject the step; it walks out to an
+    infinite shape and a zero scale, and `fit_censored` raises `the fit did
+    not converge`. The message points at the data, and the data is fine.
 
-    The seed is pinned because the stall needs a particular line-search path
-    rather than a particular size -- most draws of this size converged either
-    way, and duplicating a table to inflate its gradient does not reproduce it.
+    Returning positive infinity instead of `nan` for a non-finite objective
+    makes the step rejectable, and the same search then lands on the optimum
+    below. It changes nothing where the fit already converges, because the
+    substitution only applies outside the region the likelihood is defined on.
+
+    A late record start is what makes the region reachable: entry ages
+    approach the scale, so the surface near the start is flat enough for the
+    first steps to be long. Measured over sixty consecutive seeds at this
+    size, two fail at a 2018 record start and five at 2020, against none at
+    the configured 1998 -- so the pinned seed here is one of a class, not a
+    curiosity.
     """
-    settings = one_technology_config()
-    settings.simulation.seed = 20260938
+    settings = config.load_config()
+    settings.simulation.seed = 20260908
+    settings.records.monitoring_start = 2018
     table = records.episode_table(
         settings,
         technologies=[settings.population.technologies[0]],
-        n_conductors=[1],
         length_ft=settings.population.length_ref_ft,
-        n_segments=4000,
+        n_conductors=[1],
+        n_segments=6000,
     )
     end, entry, observed = records.lifetimes(table, settings.records.study_end)
+    assert observed.sum() > 100, "too few failures for this draw to mean anything"
+
+    # The answer the fit should reach, found without derivatives so that no
+    # property of the line search under test can be what produced it.
+    def negative(logged: np.ndarray) -> float:
+        shape, scale = np.exp(logged)
+        return -weibull.log_likelihood(shape, scale, end, entry, observed)
+
+    reference = optimize.minimize(
+        negative,
+        np.log([1.0, float(np.mean(end))]),
+        method="Nelder-Mead",
+        options={"xatol": 1e-10, "fatol": 1e-10, "maxiter": 20_000},
+    )
+    assert reference.success
 
     fitted = weibull.fit_censored(end, entry, observed)
 
-    # The value the search stalled at, which was never the problem.
-    assert fitted.shape == pytest.approx(6.0390, abs=1e-3)
-    assert fitted.scale == pytest.approx(50.2345, abs=1e-3)
+    # Loose against the two searches' own stopping rules and tight against the
+    # question: the fitted shape's 95% interval is about 0.4 wide here, so a
+    # thousandth is well inside the noise the fit is entitled to and nowhere
+    # near the infinite shape the unguarded search walks out to.
+    assert fitted.shape == pytest.approx(float(np.exp(reference.x[0])), rel=1e-3)
+    assert fitted.scale == pytest.approx(float(np.exp(reference.x[1])), rel=1e-3)
 
 
 def test_the_reported_likelihood_is_the_summed_one() -> None:
@@ -719,3 +747,70 @@ def test_the_regression_likelihood_is_the_summed_one() -> None:
     assert varying.log_likelihood == pytest.approx(
         weibull.log_likelihood(shapes, scales, end, entry, observed)
     )
+
+
+def test_the_reported_intervals_match_the_curvature_they_claim_to_measure() -> None:
+    """A confidence interval must be the width its level implies.
+
+    Every rung asserts that the truth falls inside a fitted 95% interval, and
+    widening an interval only makes that easier: a fit reporting intervals
+    twice as wide as they should be passes all of them more comfortably than
+    the honest one. So nothing in the suite that gates a merge notices if the
+    widths are wrong, and the intervals now come from the inverse Hessian a
+    derivative-free BFGS accumulates, which is an approximation rather than a
+    derivation.
+
+    Checked against the curvature directly, with no Monte Carlo: the observed
+    information is the second derivative of the summed log-likelihood at the
+    optimum, built here by central differences on the parameters the fit works
+    in, and its inverse gives the standard errors an interval of a stated level
+    must be built from. Five percent of tolerance covers what the optimizer's
+    approximation costs, measured at one to three percent.
+
+    The level itself is checked by refitting at another one, because a fit that
+    ignored `level` and always reported 95% would satisfy every assertion
+    above.
+    """
+    settings = one_technology_config()
+    end, entry, observed, _, _ = cross_check_data(settings)
+    fitted = weibull.fit_censored(end, entry, observed)
+
+    optimum = np.log([fitted.shape, fitted.scale])
+
+    def summed(logged: np.ndarray) -> float:
+        """The log-likelihood the intervals describe, in the fitted parameters."""
+        return weibull.log_likelihood(*np.exp(logged), end, entry, observed)
+
+    step = 1e-5
+    information = np.empty((2, 2))
+    for row in range(2):
+        for column in range(2):
+            forward, back = np.zeros(2), np.zeros(2)
+            forward[row] = back[column] = step
+            information[row, column] = -(
+                summed(optimum + forward + back)
+                - summed(optimum + forward - back)
+                - summed(optimum - forward + back)
+                + summed(optimum - forward - back)
+            ) / (4.0 * step * step)
+    errors = np.sqrt(np.diag(np.linalg.inv(information)))
+
+    # The intervals are exponentiated from the log scale, so their half-widths
+    # are recovered there rather than on the parameter itself.
+    for index, interval in enumerate((fitted.shape_interval, fitted.scale_interval)):
+        low, high = np.log(interval)
+        expected = stats.norm.ppf(0.975) * errors[index]
+        assert (high - low) / 2.0 == pytest.approx(expected, rel=0.05)
+
+    # A fit ignoring `level` would report the same width whatever it was asked
+    # for, so the ratio of two levels' half-widths is what pins it.
+    narrower = weibull.fit_censored(end, entry, observed, level=0.5)
+    for wide, narrow in (
+        (fitted.shape_interval, narrower.shape_interval),
+        (fitted.scale_interval, narrower.scale_interval),
+    ):
+        wide_low, wide_high = np.log(wide)
+        narrow_low, narrow_high = np.log(narrow)
+        assert (wide_high - wide_low) / (narrow_high - narrow_low) == pytest.approx(
+            stats.norm.ppf(0.975) / stats.norm.ppf(0.75), rel=0.01
+        )

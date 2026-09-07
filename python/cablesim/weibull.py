@@ -223,9 +223,11 @@ def log_likelihood(
     # than zero -- which would poison the whole sum and make the fit fail
     # naming nothing. Substituting a ratio of one where there is no failure
     # leaves the term multiplied by zero, as intended. An *observed* failure at
-    # age zero still gives negative infinity, which is right: that is a
-    # degenerate lifetime rather than a rounding artefact, and it should stop
-    # the fit rather than be smoothed away.
+    # age zero is deliberately not smoothed over: it is a degenerate lifetime
+    # rather than a rounding artefact, and it should stop the fit. Which
+    # non-finite value it produces depends on the shape -- negative infinity
+    # above 1, `nan` at exactly 1, positive infinity below -- so a caller
+    # testing for it must check `np.isfinite` rather than the sign.
     end_ratio = np.where(observed > 0.0, age_at_end / scale, 1.0)
     log_hazard = np.log(shape / scale) + (shape - 1.0) * np.log(end_ratio)
     return float(
@@ -269,9 +271,8 @@ def fit_censored(
     """
     # Delegates rather than repeating the model. This is `fit_regression` with
     # no covariates: one shape, one scale, the same censored and left-truncated
-    # likelihood and the same rescaling of the objective. Keeping a second copy
-    # meant the averaging that made large samples converge had to be written
-    # into both.
+    # likelihood and the same averaging of the objective. A second copy would
+    # be a second place every one of those has to be changed.
     #
     # The separate entry point is worth keeping even so. Rungs 1 and 2 and the
     # notebook fit lifetimes with no covariates at all, and asking them to
@@ -314,7 +315,8 @@ class RegressionFit(NamedTuple):
         coefficient_intervals: Confidence interval per covariate.
         log_likelihood: Value at the optimum.
         ancillary_coefficients: Fitted coefficient per ancillary covariate,
-            empty where the shape is common. These are on the log scale, so
+            empty where the shape is common. These are logarithms — not the
+            Weibull scale, which is a different quantity in this module — so
             `shape * exp(coefficient)` is the shape where that covariate is 1.
         ancillary_intervals: Confidence interval per ancillary covariate.
     """
@@ -400,9 +402,13 @@ def fit_regression(
 
     ancillary_names = list(ancillary_names or [])
     width_shape = 1 + len(ancillary_names)
-    # Averaged over episodes for the reason given in `fit_censored`: BFGS stops
-    # on an absolute gradient tolerance, so a summed objective changes what
-    # convergence means as the sample grows.
+    # Averaged over episodes rather than summed. BFGS stops on an absolute
+    # tolerance for the gradient norm, and the gradient of a sum grows with the
+    # number of rows, so a summed objective asks the line search for more
+    # precision the larger the sample gets while the tolerance stays fixed.
+    # Averaging makes the stopping rule mean the same thing at every sample
+    # size. It rescales the curvature by the same factor, which `hess_inv`
+    # below undoes.
     episodes = float(age_at_end.size)
 
     def unpack(parameters: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -417,7 +423,18 @@ def fit_regression(
 
     def negative(parameters: np.ndarray) -> float:
         shape, scale = unpack(parameters)
-        return -log_likelihood(shape, scale, age_at_end, entry_age, observed) / episodes
+        value = (
+            -log_likelihood(shape, scale, age_at_end, entry_age, observed) / episodes
+        )
+        # Outside the region the likelihood is defined on -- a small scale
+        # against a large shape overflows the accumulated hazard -- this is not
+        # a number, and `nan` compares false against every bound. The line
+        # search cannot reject a step it has no way to order, so it walks out
+        # to an infinite shape and the fit raises, blaming data that is fine.
+        # Reporting the point as infinitely bad is a step the search can
+        # refuse. It changes no fit that already converges, because the
+        # substitution applies only where the objective was never a number.
+        return value if np.isfinite(value) else np.inf
 
     start = np.concatenate(
         [
@@ -427,25 +444,23 @@ def fit_regression(
             np.zeros(len(names)),
         ]
     )
-    # No analytic gradient. One was carried here until the averaging above
-    # existed, on the reasoning that finite differences lost precision near the
-    # optimum and made BFGS report failure at the right answer. That diagnosis
-    # was wrong: the stall came from summing the objective, so the gradient
-    # norm grew with the sample while the tolerance stayed fixed. With the
-    # objective averaged, finite differences converge on every draw at every
-    # size tried, up to 240,000 episodes.
-    #
-    # What the derivative cost was a second encoding of the model -- thirty-odd
-    # lines of calculus that had to mirror `log_likelihood` exactly, with
-    # nothing checking that it did. It bought about a factor of two in a fit
-    # that runs in well under a second, on the reference path rather than the
-    # measured one, which is not worth a copy of the model that can drift.
+    # No `jac=`: BFGS takes finite differences. Against the averaged objective
+    # that converges on every draw tried, at every size from a few thousand
+    # episodes to 244,000. A hand-derived gradient here would be a second
+    # encoding of the same model -- thirty-odd lines of calculus that have to
+    # agree with `log_likelihood` exactly, with nothing able to check that they
+    # do, since the two would be compared only through the fit they produce.
+    # Timed against one, finite differences cost 1.5x at 4,000 episodes, 1.4x
+    # at 21,000 and nothing at 106,000, on fits of 11 ms, 37 ms and 190 ms --
+    # so the whole saving is a fraction of a second on a path nothing
+    # benchmarks.
     result = optimize.minimize(negative, start, method="BFGS")
     if not result.success:
         raise ValueError(f"the fit did not converge: {result.message}")
 
     # hess_inv inverts the curvature of the averaged objective; dividing by the
-    # episode count returns it to the scale of the likelihood itself.
+    # episode count undoes that averaging and returns the covariance to the
+    # units of the log-likelihood itself.
     errors = np.sqrt(np.diag(result.hess_inv) / episodes)
     width = stats.norm.ppf(0.5 + level / 2.0)
     low, high = result.x - width * errors, result.x + width * errors

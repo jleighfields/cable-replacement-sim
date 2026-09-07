@@ -356,14 +356,15 @@ covariates scale `lambda`.
 **How much the truncation term is worth, measured rather than asserted.**
 `H(a) = (a/lambda)^k`, so at a sharp shape an early entry age contributes
 almost nothing, and the rows the record window deletes are few: at the shipped
-parameters and a 1998 record start, 0.11% of episodes.
+parameters and a 1998 record start, 0.05% of episodes on the one-technology
+table Notebook 03 builds, and 0.12% across the full configured technology mix.
 
 An episode count is the wrong denominator, and reading the term as negligible
 from it is the mistake this paragraph exists to prevent. Shape is estimated
 from the spread of the ages cables failed at, so the rows that carry it are the
-**failures**, of which 1.61% are deleted — and not a random 1.61%, since a row
-is deleted only if the cable failed early enough to be gone before the records
-open. Every deleted row comes from the young end.
+**failures**, of which 0.84% are deleted on that same table — and not a random
+0.84%, since a row is deleted only if the cable failed early enough to be gone
+before the records open. Every deleted row comes from the young end.
 
 So the term is worth more than its row count suggests. Dropping it biases the
 fitted shape by about +0.06, roughly 1%, and leaves the scale alone; the sign
@@ -945,7 +946,7 @@ avoids that, and passing an array is the simplest way to be indexed.
   distribution method**, and the conversion is written down here:
 
   ```python
-  children = numpy.random.SeedSequence(seed).spawn(n_reps)   # one per replication
+  children = numpy.random.SeedSequence(seed).spawn(n_reps)  # one per replication
   raw = numpy.random.PCG64(children[r]).random_raw(n_segments * (n_years + 1))
   block = ((raw >> numpy.uint64(11)) * 2.0**-53).reshape(n_segments, n_years + 1)
   ```
@@ -962,7 +963,7 @@ avoids that, and passing an array is the simplest way to be indexed.
 
   ```python
   lifetimes, policies, population, records = SeedSequence(seed).spawn(4)
-  children = lifetimes.spawn(n_reps)          # and policies.spawn(n_reps)
+  children = lifetimes.spawn(n_reps)  # and policies.spawn(n_reps)
   ```
 
   **One child per replication per stream is what makes a chunk addressable.**
@@ -1214,9 +1215,6 @@ policies:
 reporting:
   baseline_policy: run_to_failure   # what "avoided" is measured against
 ```
-
-
-
 
 
 
