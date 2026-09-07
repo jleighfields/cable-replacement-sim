@@ -254,12 +254,12 @@ def test_different_purposes_do_not_share_draws() -> None:
 def test_both_draw_paths_refuse_position_arrays_of_different_lengths() -> None:
     """A draw is named by a replication *and* a segment, so the two must pair up.
 
-    The binding refuses a mismatch outright. NumPy does not: a one-element
-    replication array broadcasts against a longer segment array, so the Python
-    path returns a full-length result computed at positions the caller never
-    asked for. The two are documented as computing the same thing at the same
-    positions, and a caller who gets an answer from one and an error from the
-    other cannot use them interchangeably.
+    Both paths refuse a mismatch, in the same words, because the two are
+    documented as computing the same thing at the same positions and a caller
+    who got an answer from one and an error from the other could not use them
+    interchangeably. The Python side has to say so itself: left to NumPy, a
+    one-element replication array broadcasts against a longer segment array and
+    returns a full-length result computed at positions nobody asked for.
     """
     key = random_draws.draw_key(1)
     purpose = random_draws.PURPOSE["lifetimes"]
@@ -277,12 +277,10 @@ def test_both_draw_paths_refuse_position_arrays_of_different_lengths() -> None:
 def test_both_dense_paths_refuse_a_chunk_covering_no_replications() -> None:
     """The same empty chunk must come back as the same complaint from each.
 
-    The binding names the argument and says why a chunk covering none of them
-    is a caller's arithmetic gone wrong. The Python path reaches ``np.stack``
-    with an empty list and reports ``need at least one array to stack``, which
-    is the same exception class naming nothing the caller passed. Every other
-    refusal these two share is worded identically on purpose, and this is the
-    one that is not.
+    Both name the argument and say why a chunk covering none of them is a
+    caller's arithmetic gone wrong. The Python side has to refuse before it
+    builds anything: left to ``np.stack`` it reports ``need at least one array
+    to stack``, the same exception class naming nothing the caller passed.
     """
     key = random_draws.draw_key(1)
     purpose = random_draws.PURPOSE["lifetimes"]
@@ -295,25 +293,43 @@ def test_both_dense_paths_refuse_a_chunk_covering_no_replications() -> None:
     assert str(from_reference.value) == str(from_kernel.value)
 
 
-def test_a_purpose_too_large_for_its_field_is_refused_rather_than_aliased() -> None:
-    """The purpose field is six bits, and nothing checks that a purpose fits it.
+def test_neither_dense_path_answers_a_negative_segment_count_with_an_empty_array() -> (
+    None
+):
+    """A count below zero is arithmetic gone wrong, not a population of none.
 
-    The replication, segment and year fields are each guarded, because a
-    position past one of them would share a draw with another position and the
-    correlation would be undetectable downstream. The purpose field has the
-    same property and no guard: it sits in the top six bits, so purpose 64
-    shifts clean off the word and lands on purpose 0's draws — on both sides
-    identically, which is why no parity test can see it.
+    The binding cannot take one at all: ``n_segments`` crosses as a ``usize``,
+    so the conversion is refused before the body runs. The Python path has no
+    such barrier — ``check_positions`` is handed ``n_segments - 1``, which is
+    below every limit, and the run of consecutive positions that follows is
+    empty — so it answers with an ``(n_reps, 0)`` array and the caller reads a
+    chunk holding no segment. That is the same divergence the empty-chunk and
+    mismatched-length cases above already refuse, in the one spelling left
+    uncovered.
+    """
+    key = random_draws.draw_key(1)
+    purpose = random_draws.PURPOSE["lifetimes"]
+
+    with pytest.raises((ValueError, OverflowError)):
+        _cablesim.uniforms_dense(key[0], key[1], purpose, 0, 2, -1, 0)
+    with pytest.raises((ValueError, OverflowError)):
+        random_draws.uniforms_dense(key, purpose, 0, 2, -1, 0)
+
+
+def test_a_purpose_too_large_for_its_field_is_refused_rather_than_aliased() -> None:
+    """The purpose is bounded like the other three fields, on both sides.
+
+    A position past a field's width shares a draw with another position, and
+    the correlation is undetectable downstream. The purpose field has the same
+    property and is the one easiest to leave unguarded: it sits in the top six
+    bits, so one past the limit shifts clean off the word and lands on a
+    purpose that fits — identically on both sides, which is why no comparison
+    between the implementations could see it.
 
     That is the field keeping the replacement-policy priorities away from the
     same segments' lifetime draws, and a larger uniform gives a shorter
     lifetime, so an aliased purpose turns the random policy into a ranking by
     imminence of failure while the run still completes.
-
-    The bound is derived here rather than read from the crate because the crate
-    does not export it. Fixing this should add it beside the other three in
-    ``DRAW_INDEX_LIMITS`` and check it in ``check_positions`` and
-    ``within_the_index``, so that this test can read it the way the others do.
     """
     key = random_draws.draw_key(1)
     replications = np.array([0], dtype=np.uint32)

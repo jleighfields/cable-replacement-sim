@@ -68,8 +68,8 @@ than anything else here.
 under `risk_ranked`, where every segment is a candidate and the array
 expressions it competes with are already compiled loops over the same data. It
 pulls ahead where the candidate set is small — 8.5x under `age_threshold` —
-because it scores only the candidates, and because it produces only the random
-draws it reads rather than all of them.
+because it scores only the candidates. All three produce only the draws they
+read, so that part of the work is the same in every row.
 
 **The win is the replication axis.** They are independent, the interpreter lock
 is released for the whole computation, and no Python implementation follows

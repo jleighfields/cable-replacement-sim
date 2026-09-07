@@ -212,6 +212,11 @@ def check_arguments(arguments: dict[str, object]) -> int:
     # Past a field's width two positions would share a draw, which is a
     # correlation nothing downstream could detect. Checked once here rather than
     # per draw: the largest position is known from the shape.
+    # No purpose is passed: this loop draws only at the purposes the crate
+    # names, and those are read from it rather than written here, so none of
+    # them can be past the field it sits in. Only a caller naming a purpose of
+    # its own can get that wrong, and `uniforms_at` and `uniforms_dense` bound
+    # it there.
     random_draws.check_positions(
         arguments["first_replication"] + n_reps - 1, n_segments - 1, n_years
     )

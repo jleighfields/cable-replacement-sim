@@ -381,7 +381,7 @@ MISMATCHED_ARGUMENTS: dict[str, dict[str, object]] = {
         "budget": np.ones(5),
     },
 }
-"""The three length and shape guards the degenerate cases above do not reach."""
+"""The six position, length and shape guards the degenerate cases do not reach."""
 
 
 @pytest.mark.parametrize("wrong", sorted(MISMATCHED_ARGUMENTS), ids=str)
@@ -392,9 +392,9 @@ def test_both_implementations_word_a_mismatch_refusal_the_same_way(
 
     ``test_both_implementations_refuse_the_same_degenerate_population``
     compares the messages for the empty population, the absent class axis and
-    the class index past its end. The remaining three are otherwise checked
-    only for raising *something* that names the argument, which cannot see two
-    sides describing the same mismatch differently. Every one of these messages
+    the class index past its end. The six above are otherwise checked only for
+    raising *something* that names the argument, which cannot see two sides
+    describing the same mismatch differently. Every one of these messages
     is built from a format string written out in each language, so two sides
     can agree on every word while differing on a bracket, a plural or the
     rendering of a number — differences a match on a substring does not see.
