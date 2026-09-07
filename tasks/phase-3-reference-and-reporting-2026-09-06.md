@@ -18,7 +18,7 @@ works.
 | Step | What | Why here |
 |---|---|---|
 | 1 | `policies.py` — eligibility, scoring, rank key, and the one function that builds the kernel's policy struct | Pure functions over arrays; testable before any loop exists |
-| 2 | `reference.py` — the annual loop and the greedy budget fill | Needs step 1; everything else consumes what it returns |
+| 2 | `simulate.py` — the annual loop and the greedy budget fill | Needs step 1; everything else consumes what it returns |
 | 3 | `results.py` — the run directory, the manifest, the writer, the sweep reader | Needs a result shape to write, and Phase 4 diagnoses parity against saved runs |
 | 4 | `run.py` — chunk and policy loops, draw generation, concatenation, the only writes | Needs 2 and 3 |
 | 5 | `metrics.py` — the indices, the bands, the discounting, the avoided-minutes comparison | Reduces the saved frame, so it needs a frame to reduce |
@@ -54,7 +54,7 @@ Tests: each policy's eligible set and rank key against hand-worked arrays; that
 what the term is for; that `worst_first` ignores consequence; that the struct
 builder produces the stated neutral values.
 
-## Step 2 — `reference.py`
+## Step 2 — `simulate.py`
 
 The annual loop of §2.9, Annual simulation loop, one replication at a time.
 Returns the seven `(chunk, n_years, n_classes)` arrays §5.2 names, so `run.py`
@@ -177,7 +177,7 @@ The answer goes in `PLAN.md`, not only in a notebook.
 
 ## Questions that were open, and how they were settled
 
-1. **How scalar is `reference.py`?** Settled: **unbatched over replications,
+1. **How scalar is `simulate.py`?** Settled: **unbatched over replications,
    vectorized over segments within a year.** One replication at a time, with
    NumPy for the scoring, the sort and the cumulative-cost cut. The distinction
    from the batched implementations of Phase 5 is the replication axis, which
