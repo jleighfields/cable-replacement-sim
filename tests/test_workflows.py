@@ -30,13 +30,15 @@ def workflows() -> list[pathlib.Path]:
     """Every workflow file, as paths.
 
     Returns:
-        The `.yml` files under `.github/workflows`, sorted by name.
+        The workflow files under `.github/workflows`, sorted by name. Both
+        extensions, because GitHub runs `.yaml` and `.yml` alike and a guard
+        that reads one of them reports a clean pass on a file it never opened.
 
     Raises:
         AssertionError: If the directory holds none, which would make every
             check below pass over an empty list.
     """
-    found = sorted(WORKFLOW_DIR.glob("*.yml"))
+    found = sorted(p for p in WORKFLOW_DIR.iterdir() if p.suffix in (".yml", ".yaml"))
     assert found, f"no workflow files under {WORKFLOW_DIR}"
     return found
 
