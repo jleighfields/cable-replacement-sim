@@ -550,10 +550,10 @@ fn uniforms_dense<'py>(
     n_segments: usize,
     year: u64,
 ) -> PyResult<Bound<'py, PyArray1<f64>>> {
-    // The largest position this call reaches, not one past it, which is what
-    // `run_chunk` and the Python mirror both check — and computed with the same
-    // care, because adding before comparing lets a large offset wrap back
-    // inside the limit.
+    // Refused rather than answered with an empty array: this entry point is
+    // reached from a chunk loop, and a chunk covering no replications is a
+    // caller's arithmetic gone wrong. `n_reps - 1` below also needs it, since
+    // that subtraction is on an unsigned word.
     if n_reps == 0 {
         return Err(PyValueError::new_err(
             "n_reps is 0, so there are no positions to draw at",

@@ -13,8 +13,7 @@ is fully synthetic.
 **Status: the simulation runs end to end in Python and in Rust.**
 The configuration schema and its validators, the counter-based generator every
 uniform is drawn from, the Weibull forms and the synthetic population generator
-exist,
-along with the synthetic failure history and the censored, left-truncated
+exist, along with the synthetic failure history and the censored, left-truncated
 maximum-likelihood fit that recovers the parameters it was generated from.
 Four marimo notebooks walk them. Every rung of the recovery ladder fits data
 generated at parameters the configuration states, and checks the estimates come
@@ -140,8 +139,9 @@ Only the Rust kernel uses more than one thread. Every other implementation
 refuses a larger count rather than ignoring it, so a saved run cannot record a
 thread count that nothing acted on.
 
-The benchmark script times all five and checks each against the reference in
-the same pass, because timing an implementation that has drifted measures
+The benchmark script times all three — with the kernel appearing twice, at one
+thread and at the machine's full count — and checks each against the reference
+in the same pass, because timing an implementation that has drifted measures
 something else being computed:
 
 ```bash

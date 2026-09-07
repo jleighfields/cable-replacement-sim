@@ -249,3 +249,80 @@ def test_different_purposes_do_not_share_draws() -> None:
     assert not np.array_equal(lifetimes, priorities)
     # Not merely unequal somewhere: no position may coincide by construction.
     assert not np.any(lifetimes == priorities)
+
+
+def test_both_draw_paths_refuse_position_arrays_of_different_lengths() -> None:
+    """A draw is named by a replication *and* a segment, so the two must pair up.
+
+    The binding refuses a mismatch outright. NumPy does not: a one-element
+    replication array broadcasts against a longer segment array, so the Python
+    path returns a full-length result computed at positions the caller never
+    asked for. The two are documented as computing the same thing at the same
+    positions, and a caller who gets an answer from one and an error from the
+    other cannot use them interchangeably.
+    """
+    key = random_draws.draw_key(1)
+    purpose = random_draws.PURPOSE["lifetimes"]
+    replications = np.array([1], dtype=np.uint32)
+    segments = np.array([0, 1, 2, 3, 4], dtype=np.uint32)
+
+    with pytest.raises(ValueError, match="pair up one for one") as from_kernel:
+        _cablesim.uniforms_at(key[0], key[1], purpose, replications, segments, 0)
+    with pytest.raises(ValueError, match="pair up one for one") as from_reference:
+        random_draws.uniforms_at(key, purpose, replications, segments, 0)
+
+    assert str(from_reference.value) == str(from_kernel.value)
+
+
+def test_both_dense_paths_refuse_a_chunk_covering_no_replications() -> None:
+    """The same empty chunk must come back as the same complaint from each.
+
+    The binding names the argument and says why a chunk covering none of them
+    is a caller's arithmetic gone wrong. The Python path reaches ``np.stack``
+    with an empty list and reports ``need at least one array to stack``, which
+    is the same exception class naming nothing the caller passed. Every other
+    refusal these two share is worded identically on purpose, and this is the
+    one that is not.
+    """
+    key = random_draws.draw_key(1)
+    purpose = random_draws.PURPOSE["lifetimes"]
+
+    with pytest.raises(ValueError) as from_kernel:
+        _cablesim.uniforms_dense(key[0], key[1], purpose, 0, 0, 4, 0)
+    with pytest.raises(ValueError) as from_reference:
+        random_draws.uniforms_dense(key, purpose, 0, 0, 4, 0)
+
+    assert str(from_reference.value) == str(from_kernel.value)
+
+
+def test_a_purpose_too_large_for_its_field_is_refused_rather_than_aliased() -> None:
+    """The purpose field is six bits, and nothing checks that a purpose fits it.
+
+    The replication, segment and year fields are each guarded, because a
+    position past one of them would share a draw with another position and the
+    correlation would be undetectable downstream. The purpose field has the
+    same property and no guard: it sits in the top six bits, so purpose 64
+    shifts clean off the word and lands on purpose 0's draws — on both sides
+    identically, which is why no parity test can see it.
+
+    That is the field keeping the replacement-policy priorities away from the
+    same segments' lifetime draws, and a larger uniform gives a shorter
+    lifetime, so an aliased purpose turns the random policy into a ranking by
+    imminence of failure while the run still completes.
+
+    The bound is derived here rather than read from the crate because the crate
+    does not export it. Fixing this should add it beside the other three in
+    ``DRAW_INDEX_LIMITS`` and check it in ``check_positions`` and
+    ``within_the_index``, so that this test can read it the way the others do.
+    """
+    key = random_draws.draw_key(1)
+    replications = np.array([0], dtype=np.uint32)
+    segments = np.array([0], dtype=np.uint32)
+    past_the_field = 1 << (64 - random_draws.PURPOSE_SHIFT)
+
+    with pytest.raises(ValueError, match="purpose"):
+        _cablesim.uniforms_at(
+            key[0], key[1], past_the_field, replications, segments, 0
+        )
+    with pytest.raises(ValueError, match="purpose"):
+        random_draws.uniforms_at(key, past_the_field, replications, segments, 0)

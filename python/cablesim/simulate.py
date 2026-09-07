@@ -121,11 +121,12 @@ def running_total(values: np.ndarray) -> float:
     return float(np.cumsum(values)[-1])
 
 
-def check_arguments(arguments: dict[str, object]) -> tuple[int, int]:
+def check_arguments(arguments: dict[str, object]) -> int:
     """Refuses an argument set no implementation of this loop should accept.
 
-    Authored once and called by every Python implementation, so that the four
-    of them cannot drift into refusing different things. The Rust binding makes
+    Authored once and called by every Python implementation of the loop — this
+    module's and ``batched.run_chunk_numpy`` — so that the two cannot drift
+    into refusing different things. The Rust binding makes
     the same checks in the same order and with the same wording; that copy is
     the deliberate one, because a rule written in two languages is the only way
     a caller gets the same answer from either side of the boundary.

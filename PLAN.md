@@ -1069,10 +1069,12 @@ simulation:
                         # makes both Weibull forms return NaN.
 
   # How many replications are computed per batch is deliberately NOT here. It
-  # sizes the pre-generated draw array and so trades memory against time, but
-  # every replication reads the same draws whatever the batch size, so it
-  # changes no number. It is a driver-script argument, recorded in each run's
-  # manifest beside the thread count and the build profile.
+  # bounds the result arrays and whatever state an implementation holds in
+  # flight, and so trades memory against time, but every draw is a function of
+  # the key and of a position carrying the replication's index in the whole
+  # run, so the batch size changes no number. It is a driver-script argument,
+  # recorded in each run's manifest beside the thread count and the build
+  # profile.
 
 population:
   n_segments: 12_000

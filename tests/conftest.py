@@ -50,8 +50,11 @@ STATISTICAL_SEGMENTS = 2_000
 STATISTICAL_REPS = 50
 """Replications for that comparison.
 
-The scalar reference is what makes this the binding cost, which is why it is
-fifty rather than the thousand the batched baseline will carry once it exists.
+The scalar reference is run here alongside every other implementation and is
+the slowest of them by a wide margin, so it is what sets this number: fifty
+rather than the thousand a shipped run uses. The comparison is paired, so it
+does not need the replication count a confidence interval on a single run
+would.
 """
 
 

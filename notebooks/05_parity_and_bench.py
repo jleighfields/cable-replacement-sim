@@ -153,10 +153,11 @@ def _(mo):
       there decides which segment is funded last, which is a whole segment's
       worth of spend and reliability. Every implementation accumulates that
       total one element at a time.
-    * **The reported totals are accumulated in the same order too**, which
-      costs the polars implementations about 2% and buys a test with no
-      threshold in it. A tolerance is what lets a real divergence pass
-      unnoticed.
+    * **The reported totals are accumulated in the same order too.** Each
+      implementation adds a class's contributions in the order the reference
+      adds them — segment order for failures, rank order for funded work — so
+      the totals match to the last bit and the check needs no threshold. A
+      tolerance is what lets a real divergence pass unnoticed.
     """
     )
     return

@@ -520,15 +520,15 @@ def test_the_reference_refuses_a_thread_count_it_cannot_honour() -> None:
 
 
 def test_both_sides_accept_the_largest_replication_an_index_carries() -> None:
-    """The limit is inclusive on one side and exclusive on the other.
+    """Both sides treat the limit as inclusive, and draw the same number there.
 
     ``random_draws.MAX_REPLICATION`` is documented as the largest replication a
     draw index can carry, so a chunk ending on it is representable and must
-    run. The reference agrees; the binding's dense-draw entry point compares
-    the chunk's *count* against the limit rather than its last index, so it
-    refuses the final representable replication. Nothing downstream would ever
-    reach it — but the two sides disagreeing about where the boundary sits is
-    how a later widening of the field gets applied to one of them only.
+    run. Each side has to compare the chunk's *last index* against the limit,
+    not its replication *count*: comparing the count is off by one and refuses
+    the final representable replication. Nothing downstream would ever reach
+    it — but the two sides disagreeing about where the boundary sits is how a
+    later widening of the field gets applied to one of them only.
     """
     last = random_draws.MAX_REPLICATION
     key = random_draws.draw_key(1)
@@ -546,13 +546,15 @@ def test_both_sides_accept_the_largest_replication_an_index_carries() -> None:
 def test_a_chunk_offset_that_overflows_a_word_is_refused_not_wrapped() -> None:
     """The position guard must not be steppable over by its own arithmetic.
 
-    The binding adds the chunk's replication count to its offset before
-    comparing the total against the limit, and that addition is on a 64-bit
-    unsigned integer in a release build, where overflow wraps rather than
-    panicking. An offset near the top of the word therefore produces a small
-    total, the comparison passes, and the run proceeds at replication indices
-    that alias onto other positions' draws — which is exactly the correlation
-    the guard exists to prevent, arrived at through the guard.
+    The binding combines the chunk's offset with its replication count before
+    comparing against the limit, and that addition is on a 64-bit unsigned
+    integer in a release build, where plain `+` wraps rather than panicking. An
+    offset near the top of the word would then produce a small total, the
+    comparison would pass, and the run would proceed at replication indices
+    that alias onto other positions' draws — the correlation the guard exists
+    to prevent, arrived at through the guard. Saturating instead makes an
+    addition that would overflow name a replication past every limit, which is
+    what it is.
 
     The reference refuses both of these, because Python integers do not wrap.
     """
@@ -572,11 +574,12 @@ def test_both_implementations_report_the_same_first_complaint() -> None:
 
     ``check_arguments`` documents its checks as being in the order the binding
     makes them and word for word, because the two are interchangeable behind
-    one call and a caller must not get a different answer from each. The
-    replication-count check is the one that breaks it: the reference asks it
-    before the policy tag and the binding asks it after, so an argument set
-    that is wrong in both ways is reported differently depending on which
-    implementation was named.
+    one call and a caller must not get a different answer from each. Matching
+    wording is not enough on its own: an argument set wrong in more than one
+    way is reported by whichever check speaks first, so the two sides have to
+    agree on the order as well. The arguments below are wrong in two ways at
+    once — an unrankable policy tag and a replication count of zero — which is
+    what makes the order observable.
     """
     arguments = {**minimal_arguments(4), "n_reps": 0}
     unrankable = policies.Resolved(

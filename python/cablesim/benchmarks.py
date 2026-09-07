@@ -54,8 +54,9 @@ PYTHON_IMPLEMENTATIONS: frozenset[str] = frozenset({"reference", "batched_numpy"
 """The implementations that run in Python, whatever they call underneath.
 
 Named here rather than derived from the runnable registry, because what makes a
-row belong is that no compiled kernel of this project's own runs it — NumPy and
-polars are compiled, and that is the point of comparing against them. The
+row belong is that no compiled kernel of this project's own runs it. NumPy is
+itself compiled, and that is the point of comparing against it: the claim being
+tested is about this project's Rust, not about compiled code in general. The
 fastest of these is the denominator any claim about the Rust kernel should use.
 """
 
@@ -352,21 +353,14 @@ def provenance() -> dict[str, object]:
         The Rust build profile, the machine's thread count, the polars version
         and the size of polars' own thread pool.
 
-        The last two are here because two of the five implementations are that
-        engine, and neither is recorded anywhere else in a result. **The pool
-        size matters as much as the kernel's thread count and is not chosen
-        here**: polars sizes it from available parallelism, so a row timed
-        against a pool nobody chose has to at least say what the pool was, the
-        same way a Rust timing has to say how many workers it had.
-
-        What the best size is depends on the policy, and it moved once the
-        frame implementations stopped doing full-width work. Measured after
-        that: ``risk_ranked`` wants every thread — 44.8 ms per replication at
-        forty-eight against 62.1 at eight — while the cheaper policies, whose
-        operations are small enough to be dispatch-bound, gain 7% to 18% from a
-        smaller pool. Before those fixes the dispatch-bound case dominated
-        everything and sixteen threads beat forty-eight across the board, which
-        is no longer true of any policy that ranks.
+        **No implementation timed here runs on polars.** The three are the
+        scalar reference, the batched NumPy loop and the Rust kernel, so the
+        last two entries describe the environment the table was assembled in
+        rather than a property of any row in it. They are recorded because
+        polars sizes its thread pool from available parallelism and nothing
+        else in a result says what that pool was — which is what the retired
+        frame implementations in ``deprecated/`` need stated if their
+        measurements are ever reproduced against these rows.
     """
     return {
         "build_profile": kernel.BUILD_PROFILE,
