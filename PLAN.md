@@ -2888,21 +2888,42 @@ the argument belongs beside the model it constrains.
 
    So the waste is real, measured, and accepted. Anything reconsidering it has
    to start by saying what it does about draw parity.
-6. **Settled: rung 5 stays in the suite.** Fitting per-technology shape was
+6. **Whether a run should stream its rows to disk rather than accumulate
+   them.** Measured, it should not, at this size. A complete run is five
+   policies by a thousand replications by thirty years by three classes —
+   450,000 rows, **39 MB in memory**. The draw array for one fifty-replication
+   chunk is 149 MB, nearly four times that, and it is freed each iteration. So
+   the peak is roughly the accumulated rows plus one chunk's draws, and
+   streaming the rows out would take that from about 188 MB to about 149 MB: a
+   fifth, bought by changing the run directory from one `results.parquet` into a
+   multi-file dataset that the reader, the sweep loader and the application's
+   cached sweep all depend on.
+
+   The threshold is worth writing down, because the answer is "not at this
+   size" rather than "never". Rows scale as policies by replications by years by
+   classes, so ten thousand replications is 390 MB and the argument reverses.
+   `LazyFrame.sink_parquet` streams a frame to disk without materializing it,
+   so the mechanism is there when it is wanted.
+
+   The cheaper half-measure to reach for first: the per-policy loop could write
+   each policy's rows as it finishes, capping accumulation at one policy's worth
+   rather than five, and concatenate lazily at write time — which changes no
+   file format.
+7. **Settled: rung 5 stays in the suite.** Fitting per-technology shape was
    expected to need a record table large enough to be slow. Timed, the whole
    suite runs in about five seconds, so the rung is nowhere near the cost that
    would justify moving it to a notebook.
-7. **Switchability as a class average.** Restoration time per class (2.5)
+8. **Switchability as a class average.** Restoration time per class (2.5)
    averages over the segments in that class that can be switched around and
    those that cannot. Modeling it as a per-segment probability of having an
    alternate feed would be more faithful and would widen the outage
    distribution rather than only shifting its mean. Whether that is worth a
    second random draw per failure is a v2 question.
-8. **Splice-driven failure.** 2.3, Effective scale, notes that a length
+9. **Splice-driven failure.** 2.3, Effective scale, notes that a length
    coefficient shrunk toward zero would indicate failures concentrating at
    splices and terminations. Whether that becomes a modeled term or stays a
    documented diagnostic is a v2 question.
-9. **Settled: there is a polars implementation on the Rust side, and the
+10. **Settled: there is a polars implementation on the Rust side, and the
    answer it gave is that there was nothing to find.** The question was whether
    the frame form's cost is the engine being wrong for this shape of work or
    the cost of reaching it from Python, and the Python pair could not tell
