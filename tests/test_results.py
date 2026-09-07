@@ -320,9 +320,9 @@ def test_the_dirty_flag_tracks_whether_the_tree_was_clean(
     run_git(["git", "add", "a.txt"])
     run_git(["git", "commit", "-q", "-m", "first"])
 
-    _, clean = results.git_provenance(tmp_path)
+    _, dirty_after_commit = results.git_provenance(tmp_path)
     (tmp_path / "a.txt").write_text("two")
-    _, modified = results.git_provenance(tmp_path)
+    _, dirty_after_edit = results.git_provenance(tmp_path)
 
-    assert clean is False
-    assert modified is True
+    assert dirty_after_commit is False
+    assert dirty_after_edit is True

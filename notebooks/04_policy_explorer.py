@@ -233,9 +233,12 @@ def _(pl, results, run, settings):
     import pathlib
     import tempfile
 
-    _root = pathlib.Path(tempfile.mkdtemp(prefix="cablesim_04_"))
-    _directory = run.run(settings, _root)
-    saved = pl.read_parquet(_directory / results.RESULTS_NAME)
+    # Read back into memory and then discarded. A notebook that runs headless
+    # in a test as well as by hand should not leave a directory behind for
+    # every execution.
+    with tempfile.TemporaryDirectory(prefix="cablesim_04_") as _root:
+        _directory = run.run(settings, pathlib.Path(_root))
+        saved = pl.read_parquet(_directory / results.RESULTS_NAME)
     saved.head()
     return pathlib, saved, tempfile
 
@@ -332,7 +335,10 @@ def _(config, metrics, pathlib, results, run, settings, tempfile):
     # package reads it back. Reading each run by hand instead would skip the
     # check that refuses a sweep missing a level, and a curve short one point
     # still draws.
-    _root = pathlib.Path(tempfile.mkdtemp(prefix="cablesim_04_sweep_"))
+    # Kept for the life of the cell only. This notebook runs headless in a test
+    # as well as by hand, so a directory left behind is one per run forever.
+    _sweep_dir = tempfile.TemporaryDirectory(prefix="cablesim_04_sweep_")
+    _root = pathlib.Path(_sweep_dir.name)
     for _level in run.budget_grid(settings.budget.annual):
         run.run(
             config.overridden(settings, {"budget.annual": _level}),
@@ -355,6 +361,7 @@ def _(config, metrics, pathlib, results, run, settings, tempfile):
         ),
         by=_keys,
     ).collect()
+    _sweep_dir.cleanup()
     sweep.select("annual_budget", "policy", "customer_minutes", "failures").head(10)
     return (sweep,)
 
@@ -409,20 +416,26 @@ def _(mo):
     dollar the others do and buys far less, which is what makes it the control
     for the value of the ranking rather than of the spending.
 
-    **An age threshold saturates.** Past a certain budget it has no eligible
-    segments left to fund, so more money buys nothing — the curve goes flat
-    while the whole-population policies keep improving.
+    **An age threshold flattens.** The segments it may fund are a fixed subset,
+    and it works through them, so its return falls away while the
+    whole-population policies keep improving. Over the last step of this grid
+    it buys under a fifth of what ranking by risk buys.
 
     And one the figure does not show, which falls out of the cost comparison:
-    **the first tranche of preventive replacement pays for itself.** Replacing
-    a segment before it fails costs the planned price; letting it fail costs
-    the emergency price, which is a multiple of it. At low budgets the premium
-    avoided is larger than the planned work bought, so the policy is both
-    cheaper and more reliable than run-to-failure and the cost per
-    customer-minute avoided is *negative*. It turns positive once the cheap
-    opportunities are used up, and from there each further minute avoided costs
-    real money — which is the point where the question stops being "should we
-    do this at all" and starts being "how much is a customer-minute worth".
+    **preventive replacement pays for itself across this whole budget range.**
+    Replacing a segment before it fails costs the planned price; letting it
+    fail costs the emergency price, which is a multiple of it. Over every level
+    from nothing to twice the configured budget, the premium avoided is larger
+    than the planned work bought — so the policy is both cheaper and more
+    reliable than run-to-failure, and the cost per customer-minute avoided is
+    *negative* throughout.
+
+    That does not make it free forever. The figure deepens and then turns back
+    toward zero as the cheap opportunities are used up, so the break-even point
+    exists; it simply sits above the range a budget of this size brackets.
+    Beyond it the question stops being "should we do this at all" and starts
+    being "how much is a customer-minute worth" — which is the question the
+    placeholder value-of-lost-load figures below cannot yet answer.
     """
     )
     return
@@ -449,30 +462,30 @@ def _(metrics, settings, sweep):
 
 @app.cell
 def _(avoided, pl):
-    # Cost per customer-minute avoided rises with the budget, and it starts
-    # negative: below a certain level, preventive replacement costs less in
-    # total than running to failure, because the emergency premium it avoids is
-    # larger than the planned work it pays for. Past that level the cheap
-    # opportunities are exhausted and each further minute avoided costs real
-    # money.
-    _priced = (
-        avoided.filter(
-            (pl.col("policy") == "risk_ranked")
-            & pl.col("cost_per_customer_minute_avoided").is_not_null()
-        )
-        .sort("annual_budget")
-    )
+    # Cost per customer-minute avoided is negative at every level in this grid:
+    # across the whole range the configured budget brackets, preventive
+    # replacement costs less in total than running to failure, because the
+    # emergency premium it avoids exceeds the planned work it pays for. The
+    # figure deepens and then turns back toward zero, so the diminishing return
+    # is visible even though the break-even point sits above the top of the
+    # grid.
+    _priced = avoided.filter(
+        (pl.col("policy") == "risk_ranked")
+        & pl.col("cost_per_customer_minute_avoided").is_not_null()
+    ).sort("annual_budget")
     _cost = _priced["cost_per_customer_minute_avoided"].to_list()
 
     assert len(_cost) >= 4, "too few priced levels to read a trend from"
-    assert _cost[0] < 0, (
-        "at the smallest non-zero budget, prevention should more than pay for "
-        "itself against the emergency spend it avoids"
+    assert all(value < 0 for value in _cost), (
+        "prevention should pay for itself at every level this grid covers, "
+        f"against the emergency spend it avoids: {_cost}"
     )
-    assert _cost[-1] > 0, "at the largest budget it should have stopped paying"
-    assert _cost == sorted(_cost), (
-        "cost per customer-minute avoided should rise with the budget as the "
-        "cheap opportunities are used up"
+    assert _cost[-1] > min(_cost), (
+        "the return should be diminishing by the top of the grid, so the "
+        f"cheapest level is not the last one: {_cost}"
+    )
+    assert (_priced["customer_minutes_avoided"].diff().drop_nulls() > 0).all(), (
+        "more budget should avoid more customer-minutes"
     )
     _priced.select(
         "annual_budget",
@@ -500,10 +513,17 @@ def _(pl, sweep):
         "even random replacement should beat replacing nothing"
     )
 
-    # The age threshold stops responding once it runs out of eligible segments.
-    _threshold = _wide["age_threshold"].to_list()
-    assert _threshold[-1] == _threshold[-2], (
-        "the age threshold should have saturated by the top of the grid"
+    # The age threshold's return falls away long before the whole-population
+    # policies' do, because the segments it may fund are a fixed subset and it
+    # works through them. It has not run out entirely at the top of this grid,
+    # so the claim asserted is the flattening rather than a flat line.
+    _last_step = {
+        _name: _wide[_name].to_list()[-2] - _wide[_name].to_list()[-1]
+        for _name in ("age_threshold", "risk_ranked")
+    }
+    assert _last_step["age_threshold"] < _last_step["risk_ranked"] / 5, (
+        "the age threshold's last budget step should buy far less than the "
+        f"risk-ranked policy's: {_last_step}"
     )
     _wide
     return

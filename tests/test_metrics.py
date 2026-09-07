@@ -241,7 +241,7 @@ def test_a_baseline_that_is_not_in_the_results_is_refused() -> None:
         metrics.discount(metrics.per_replication(rows(), TOTAL_CUSTOMERS), rate=0.06)
     )
 
-    with pytest.raises(ValueError, match="should appear"):
+    with pytest.raises(ValueError, match="is not in these results"):
         metrics.against_baseline(totals, "no_such_policy")
 
 
@@ -306,11 +306,16 @@ def test_each_budget_level_is_measured_against_its_own_baseline() -> None:
     the difference between two policies, which is the whole quantity the figure
     is meant to show.
     """
+    # The two levels' baselines must differ, or which one gets attached makes
+    # no difference and a join that ignores the level entirely still passes.
     levels = []
-    for budget, lost in ((0.0, 10_000.0), (1e6, 10_000.0)):
+    for budget, baseline_minutes, ranked_minutes in (
+        (0.0, 10_000.0, 10_000.0),
+        (1e6, 5_000.0, 2_000.0),
+    ):
         for policy, minutes in (
-            ("run_to_failure", lost),
-            ("risk_ranked", lost / 2 if budget else lost),
+            ("run_to_failure", baseline_minutes),
+            ("risk_ranked", ranked_minutes),
         ):
             levels.append(
                 rows(policy=policy, customer_minutes=minutes).with_columns(
@@ -331,12 +336,19 @@ def test_each_budget_level_is_measured_against_its_own_baseline() -> None:
         by=keys,
     ).collect()
 
+    # Four rows in, four rows out. A join that attaches every baseline to every
+    # row duplicates them, and reading the result into a dictionary keyed on
+    # policy and level would quietly collapse the duplicates again.
+    assert compared.height == 4, "one row in, one row out"
     avoided = {
         (row["policy"], row["annual_budget"]): row["customer_minutes_avoided"]
         for row in compared.iter_rows(named=True)
     }
+    assert avoided[("run_to_failure", 0.0)] == pytest.approx(0.0)
+    assert avoided[("run_to_failure", 1e6)] == pytest.approx(0.0)
     assert avoided[("risk_ranked", 0.0)] == pytest.approx(0.0)
-    assert avoided[("risk_ranked", 1e6)] == pytest.approx(5_000.0)
+    # 5,000 against this level's own baseline; 8,000 against the other one.
+    assert avoided[("risk_ranked", 1e6)] == pytest.approx(3_000.0)
 
 
 def test_extra_spend_is_measured_in_the_direction_it_is_named() -> None:
@@ -377,3 +389,116 @@ def test_extra_spend_is_measured_in_the_direction_it_is_named() -> None:
     assert ranked["additional_spend_discounted"] == pytest.approx(2_500.0)
     assert ranked["customer_minutes_avoided"] == pytest.approx(4_000.0)
     assert ranked["cost_per_customer_minute_avoided"] == pytest.approx(0.625)
+
+
+def test_a_baseline_missing_at_one_level_is_refused() -> None:
+    """Otherwise that level is dropped from the comparison without a word.
+
+    Counting rows cannot see this: a baseline present twice at one level and
+    absent at another counts correctly, duplicates the level it is present at,
+    and loses the other.
+    """
+    frame = pl.concat(
+        [
+            rows(policy="run_to_failure").with_columns(annual_budget=pl.lit(0.0)),
+            rows(policy="run_to_failure").with_columns(annual_budget=pl.lit(0.0)),
+            rows(policy="risk_ranked").with_columns(annual_budget=pl.lit(1e6)),
+        ]
+    )
+    keys = ("annual_budget",)
+    totals = metrics.horizon_totals(
+        metrics.discount(
+            metrics.per_replication(frame, TOTAL_CUSTOMERS, by=keys), rate=0.0
+        ),
+        by=keys,
+    )
+
+    with pytest.raises(ValueError, match="missing at"):
+        metrics.against_baseline(totals, "run_to_failure", by=keys)
+
+
+def test_an_empty_set_of_totals_is_refused_rather_than_returned_empty() -> None:
+    """An empty frame coming back looks exactly like a computed comparison."""
+    # The column has to exist for the grouping to be valid; what is empty is
+    # the set of rows, which is the state this refuses.
+    no_rows = rows().with_columns(annual_budget=pl.lit(0.0)).filter(
+        pl.col("policy") == "no such policy"
+    )
+    empty = metrics.horizon_totals(
+        metrics.discount(
+            metrics.per_replication(no_rows, TOTAL_CUSTOMERS, by=("annual_budget",)),
+            rate=0.0,
+        ),
+        by=("annual_budget",),
+    )
+
+    with pytest.raises(ValueError, match="is not in these results"):
+        metrics.against_baseline(empty, "run_to_failure", by=("annual_budget",))
+
+
+def totals_row(policy: str, budget: float, minutes: float) -> dict[str, object]:
+    """One row in the shape horizon totals produce.
+
+    Built directly rather than through the reductions, because the grouping in
+    ``horizon_totals`` collapses a duplicated baseline before it can reach the
+    comparison — so the duplicate case is unreachable from that direction and
+    would go untested.
+
+    Args:
+        policy: The policy name.
+        budget: The swept budget level.
+        minutes: Customer-minutes over the horizon.
+
+    Returns:
+        The row.
+    """
+    return {
+        "policy": policy,
+        "annual_budget": budget,
+        "customer_minutes": minutes,
+        "failures": 1.0,
+        "total_spend_discounted": 100.0,
+    }
+
+
+def test_a_level_carrying_two_baseline_rows_is_refused() -> None:
+    """Joining on it would duplicate every row at that level.
+
+    Unreachable through the reductions, which group it away, and reachable by
+    anyone calling the comparison with a frame of their own — which is what a
+    public function has to survive.
+    """
+    totals = pl.LazyFrame(
+        [
+            totals_row("run_to_failure", 0.0, 10_000.0),
+            totals_row("run_to_failure", 0.0, 9_000.0),
+            totals_row("risk_ranked", 0.0, 4_000.0),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="more than once"):
+        metrics.against_baseline(totals, "run_to_failure", by=("annual_budget",))
+
+
+def test_one_baseline_a_level_is_accepted() -> None:
+    """The same shape without the duplicate goes through, one row per row in."""
+    totals = pl.LazyFrame(
+        [
+            totals_row("run_to_failure", 0.0, 10_000.0),
+            totals_row("risk_ranked", 0.0, 4_000.0),
+            totals_row("run_to_failure", 1e6, 8_000.0),
+            totals_row("risk_ranked", 1e6, 3_000.0),
+        ]
+    )
+
+    compared = metrics.against_baseline(
+        totals, "run_to_failure", by=("annual_budget",)
+    ).collect()
+
+    assert compared.height == 4
+    avoided = {
+        (row["policy"], row["annual_budget"]): row["customer_minutes_avoided"]
+        for row in compared.iter_rows(named=True)
+    }
+    assert avoided[("risk_ranked", 0.0)] == pytest.approx(6_000.0)
+    assert avoided[("risk_ranked", 1e6)] == pytest.approx(5_000.0)

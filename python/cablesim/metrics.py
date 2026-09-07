@@ -17,7 +17,7 @@ instead of being dropped — a customer out for four hours does not care that th
 work was scheduled — so aggressive replacement shows as a customer-minute cost
 now against a reliability gain later, with neither distorting the other.
 
-The four index columns carry their standard utility names, spelled out here
+The three index columns carry their standard utility names, spelled out here
 once because the column names are the abbreviations alone::
 
     saifi  System Average Interruption Frequency Index
@@ -26,7 +26,10 @@ once because the column names are the abbreviations alone::
            customer-minutes interrupted per customer served in the year
     caidi  Customer Average Interruption Duration Index
            SAIDI / SAIFI: minutes per customer actually interrupted
-    cmi    Customer Minutes Interrupted, the undivided total
+
+Customer minutes interrupted (CMI) — the undivided total the duration index
+divides — is not a fourth column. It is the saved ``customer_minutes`` column
+unchanged, so it is read under that name rather than copied under another one.
 
 ``PLAN.md`` section 2.6, Reliability metrics, argues the definitions and why
 the denominator is a configured system total rather than a sum over segments.
@@ -77,8 +80,9 @@ def per_replication(
 
     Returns:
         One row per policy, replication and year, carrying the seven saved
-        quantities summed over classes plus ``saifi``, ``saidi``, ``cmi``,
-        ``caidi`` and ``total_spend``.
+        quantities summed over classes plus ``saifi``, ``saidi``, ``caidi``
+        and ``total_spend``. Customer minutes interrupted stays under its
+        saved name, ``customer_minutes``.
 
     Examples:
         The input is the saved frame, one row per class::
@@ -110,9 +114,8 @@ def per_replication(
     return totals.with_columns(
         saifi=pl.col("customers_interrupted") / total_customers,
         saidi=pl.col("customer_minutes") / total_customers,
-        # Customer-minutes interrupted is the saved `customer_minutes` column
-        # unchanged, so it is read under that name rather than copied under
-        # another one.
+        # No `cmi` column: customer minutes interrupted is `customer_minutes`
+        # unchanged, and the module docstring says so once.
         total_spend=pl.col("planned_spend") + pl.col("emergency_spend"),
     ).with_columns(
         # Average duration per customer interrupted. Undefined rather than zero
@@ -166,10 +169,10 @@ def bands(
         by: Extra columns to keep as grouping keys, as in ``per_replication``.
 
     Returns:
-        One row per policy and year. Each name in ``columns`` becomes three:
-        ``<name>_mean``, and ``<name>_p<lower>`` / ``<name>_p<upper>`` named
-        for the quantiles as whole percents, so the default pair yields
-        ``_p10`` and ``_p90`` — which is what ``plots.trajectory`` looks for.
+        One row per policy and year, plus one per extra grouping key. Each
+        name in ``columns`` becomes three: ``<name>_mean``, and a pair named
+        for ``QUANTILES`` as whole percents — ``<name>_p10`` and
+        ``<name>_p90``, which is what ``plots.trajectory`` looks for.
     """
     lower, upper = QUANTILES
     return (
@@ -236,7 +239,8 @@ def against_baseline(
     keep their replication axis.
 
     Args:
-        totals: Horizon totals, one row per policy.
+        totals: Horizon totals, one row per policy and, where ``by`` is given,
+            one per policy and level.
         baseline_policy: What "avoided" is measured against.
         by: Extra grouping keys the totals carry. Each level gets its own
             baseline row, because a policy at one budget level is not measured
@@ -249,23 +253,50 @@ def against_baseline(
         **Cost per customer-minute avoided is negative where prevention pays
         for itself**, and that is a result rather than an error: replacing a
         segment before it fails costs the planned price where letting it fail
-        costs a multiple of it, so a modest programme can avoid more emergency
-        spend than the planned work it buys. It turns positive once the cheap
-        opportunities are used up.
+        costs a multiple of it, so a programme can avoid more emergency spend
+        than the planned work it buys. It turns positive once the cheap
+        opportunities are used up — which need not happen inside any particular
+        budget range, and does not inside the one the shipped configuration
+        brackets.
 
     Raises:
-        ValueError: If the baseline policy is not among the rows, which would
-            otherwise silently produce nulls in every avoided column.
+        ValueError: If the baseline policy does not appear once per level of
+            ``by`` — not at all, or at only some of them. Either would leave
+            rows whose avoided columns are null or attached to the wrong
+            level, and both look computed.
     """
     collected = totals.collect()
     matching = collected.filter(pl.col("policy") == baseline_policy)
-    expected = collected.select(by).unique().height if by else 1
-    if matching.height != expected:
+    # Counting rows is not enough: a baseline present twice at one level and
+    # absent at another counts correctly and still attaches the wrong row to
+    # one level while dropping the other from the comparison entirely. The
+    # question is whether every level has exactly one baseline, so the keys are
+    # compared as sets and the baseline's own keys checked for duplicates.
+    levels = collected.select(by).unique() if by else collected.select(pl.lit(0))
+    baseline_levels = matching.select(by).unique() if by else matching
+    if matching.is_empty() or collected.is_empty():
+        present = (
+            collected["policy"].unique().to_list()
+            if not collected.is_empty()
+            else "no rows at all"
+        )
         raise ValueError(
-            f"baseline policy {baseline_policy!r} appears {matching.height} "
-            f"times in these results and should appear {expected} "
-            f"({collected['policy'].unique().to_list()}); every avoided "
-            f"quantity would be null"
+            f"baseline policy {baseline_policy!r} is not in these results "
+            f"({present}); every avoided quantity would be null"
+        )
+    if baseline_levels.height != matching.height:
+        raise ValueError(
+            f"baseline policy {baseline_policy!r} appears more than once at "
+            f"some level of {list(by)}; each level needs exactly one baseline "
+            f"row or its rows would be duplicated"
+        )
+    if by and baseline_levels.height != levels.height:
+        missing = levels.join(baseline_levels, on=list(by), how="anti")
+        raise ValueError(
+            f"baseline policy {baseline_policy!r} is missing at "
+            f"{missing.height} level(s) of {list(by)}: "
+            f"{missing.head(5).to_dicts()}; those levels would be dropped from "
+            f"the comparison rather than reported as incomparable"
         )
 
     # Joined on the extra keys rather than read as scalars, so each swept level

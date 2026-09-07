@@ -8,18 +8,29 @@ no result.
 """
 
 import pathlib
+import tempfile
 
 import numpy as np
 import polars as pl
 import pytest
-from cablesim import config, constants, random_draws, results, run, simulate
+from cablesim import (
+    config,
+    constants,
+    metrics,
+    random_draws,
+    results,
+    run,
+    simulate,
+)
 
 
-def small(**overrides: object) -> config.Config:
+def small() -> config.Config:
     """A configuration small enough to run in a test, in seconds.
 
-    Args:
-        **overrides: Dotted configuration paths to replace.
+    Takes no overrides: the one case that needs one wraps this in
+    ``config.overridden``, which keeps the dotted-path spelling readable — a
+    dotted name is not a valid keyword argument, so an override parameter here
+    could only be reached by unpacking a dictionary.
 
     Returns:
         The validated configuration.
@@ -32,7 +43,6 @@ def small(**overrides: object) -> config.Config:
         {
             "simulation.n_years": 4,
             "policies": [{"name": "run_to_failure"}, {"name": "risk_ranked"}],
-            **overrides,
         },
     )
 
@@ -304,4 +314,47 @@ def test_the_swept_budget_grid_starts_at_zero() -> None:
     assert grid[0] == 0.0
     assert len(grid) == 4
     assert grid[1:] == pytest.approx([125.0, 500.0, 2_000.0])
-    assert grid == sorted(grid), "a geometric grid should already be ascending"
+
+
+def test_a_reliability_index_at_reduced_size_matches_one_at_full_size() -> None:
+    """The behavioural check behind resizing, for a policy that spends.
+
+    Both system figures have to scale together, and a policy that never spends
+    cannot tell whether the budget did: run-to-failure agrees whatever happens
+    to the capital. So this compares a policy whose whole behaviour is what the
+    budget buys.
+
+    A statistical comparison at a tolerance this wide is a floor rather than a
+    proof — the bias it exists to catch was a factor of five, not a few
+    percent.
+    """
+    full = config.overridden(
+        config.load_config(constants.DEFAULT_CONFIG_PATH),
+        {
+            "simulation.n_reps": 8,
+            "simulation.n_years": 10,
+            "population.n_segments": 6_000,
+            "policies": [{"name": "risk_ranked"}],
+            "reporting": {"baseline_policy": "risk_ranked"},
+        },
+    )
+    reduced = config.resized(full, 1_000)
+
+    def mean_saidi(settings: config.Config) -> float:
+        """Mean duration index across replications and years.
+
+        Args:
+            settings: The configuration to run.
+
+        Returns:
+            The mean index.
+        """
+        with tempfile.TemporaryDirectory() as root:
+            directory = run.run(settings, pathlib.Path(root), batch_size=8)
+            frame = pl.read_parquet(directory / results.RESULTS_NAME)
+        per = metrics.per_replication(
+            frame.lazy(), settings.population.total_customers
+        ).collect()
+        return per["saidi"].mean()
+
+    assert mean_saidi(reduced) == pytest.approx(mean_saidi(full), rel=0.35)

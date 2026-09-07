@@ -37,15 +37,19 @@ DEFAULT_BATCH_SIZE = 50
 """Replications per call, which trades memory against time and nothing else."""
 
 GRID_LOW = 0.125
-GRID_HIGH = 2.0
-GRID_LEVELS = 7
-"""The default budget sweep: zero, then this many levels from this fraction of
-the configured budget to this multiple of it.
+"""The lowest swept budget, as a fraction of the configured one."""
 
-Geometric rather than linear, so the region near a binding constraint is
-sampled more densely than the flat region beyond it. In the package rather than
-in a driver script because it is the sweep's design, and a notebook and a
-script that each spell it out are two designs that drift.
+GRID_HIGH = 2.0
+"""The highest swept budget, as a multiple of the configured one."""
+
+GRID_LEVELS = 7
+"""How many non-zero levels the sweep places between those two bounds.
+
+Spaced geometrically rather than linearly, so the region near a binding
+constraint is sampled more densely than the flat region beyond it. All three
+live in the package rather than in a driver script because they are the sweep's
+design, and a notebook and a script that each spell it out are two designs that
+drift apart.
 """
 
 SEGMENT_COLUMNS: tuple[str, ...] = (

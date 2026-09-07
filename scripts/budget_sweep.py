@@ -29,7 +29,7 @@ log = logging.getLogger("budget_sweep")
 
 REDUCED_REPS = 40
 REDUCED_SEGMENTS = 2_000
-"""The default size, small enough to finish while someone watches it.
+"""The default size: the eight-level sweep takes about 15 seconds at it.
 
 Reducing the population also scales the customer denominator, which is what
 ``config.resized`` is for: leaving it at the system total would understate

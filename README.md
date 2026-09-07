@@ -91,8 +91,10 @@ uv sync --extra plots --group notebooks && uv run pytest -m notebooks  # every n
 uv sync --extra plots --group app && uv run pytest -m app              # the app, in a browser
 ```
 
-Both name `--extra plots` as well as their group: `uv sync` removes whatever it
-is not asked for, and notebook 04 imports `cablesim.plots`.
+Both name `--extra plots` as well as their group, because `uv sync` removes
+whatever it is not asked for. The notebook suite needs it because notebook 04
+imports `cablesim.plots`; the app command needs it so that a later default
+`pytest` still collects `tests/test_plots.py`, which imports the same module.
 
 Neither gates a merge. The app suite runs weekly and on pushes to `main`, so a
 break in it surfaces within a week. **Nothing runs the notebooks for you** —

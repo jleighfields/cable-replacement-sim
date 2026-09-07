@@ -2708,15 +2708,27 @@ the argument belongs beside the model it constrains.
    10-year one.
 
    One number in `configs/base.yaml` is a population-mean statement and reads
-   as a prediction. The budget funds about 141 replacements a year *at the mean
-   segment's planned cost*. `risk_ranked` ranking per dollar actually funds 68
-   in year 0, rising to a mid-horizon peak of 172 and averaging 114 over the
-   horizon, because the segments it ranks first are main feeders whose value at
-   risk dominates the score and which cost about 1.95 times the population
-   mean. The peak is the same replacement wave the paragraph above describes,
-   seen from the spending side rather than the failure side. The comment
-   already makes the mean-versus-chosen distinction for the segments that
-   *fail*; it does not yet make it for the segments a policy *chooses*.
+   as a prediction. The budget buys about 141 replacements a year *at the mean
+   segment's planned cost*, and it buys that many in every year, since budget
+   and costs escalate at the same rate. `risk_ranked` ranking per dollar
+   actually funds 68 in year 0, rises to a mid-horizon peak of 172, and
+   averages 114 over the horizon.
+
+   The gap is what the chosen segments cost, and the two ends of it differ.
+   In year 0 the policy funds main feeders whose value at risk dominates the
+   score, at about **2.06 times** the mean segment's planned cost — which is
+   what turns 141 into 68. Averaged over the horizon and measured in year-0
+   dollars it is about **1.24 times**, which is what turns 141 into 114. Both
+   ratios must be quoted in a stated year's dollars: taking total nominal spend
+   against an unescalated mean gives 1.95, which is neither figure and cannot
+   be reconciled with either count.
+
+   The rise from 68 to 172 is the replacement wave the paragraph above
+   describes, seen from the spending side rather than the failure side: as the
+   oldest feeders are replaced, the segments left to fund are cheaper, so the
+   same money buys more of them. The comment in `configs/base.yaml` already
+   makes the mean-versus-chosen distinction for the segments that *fail*; it
+   does not yet make it for the segments a policy *chooses*.
 4. **Discount rate.** A number is in the config; it needs a stated basis, since
    the present-value comparison is sensitive to it over a 30-year horizon.
 5. **Settled: rung 5 stays in the suite.** Fitting per-technology shape was

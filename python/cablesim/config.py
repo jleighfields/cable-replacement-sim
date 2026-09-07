@@ -628,9 +628,9 @@ def overridden(settings: Config, values: dict[str, object]) -> Config:
         The rebuilt, validated configuration.
 
     Raises:
-        KeyError: If a path names a section that does not exist. Silently
-            adding one would leave the override with no effect and the run
-            looking fine.
+        KeyError: If a path names a section, or a key within one, that does
+            not exist. Silently adding either would leave the override with no
+            effect and the run looking fine.
         pydantic.ValidationError: If the result does not satisfy the schema.
     """
     raw = settings.model_dump()
@@ -648,15 +648,22 @@ def overridden(settings: Config, values: dict[str, object]) -> Config:
 
 
 def resized(settings: Config, n_segments: int, n_reps: int | None = None) -> Config:
-    """Shrinks the population, keeping the reliability indices comparable.
+    """Shrinks the population, keeping every reported quantity comparable.
 
-    **The customer denominator has to move with the population or every index
-    is wrong by the ratio.** SAIFI and SAIDI divide interrupted customers by
-    ``total_customers``, which is a system-level figure rather than the sum
-    over segments. Simulating a fifth of the fleet against the whole system's
-    customers understates both indices roughly fivefold — a systematic bias
-    rather than sampling noise, and one that leaves the curves looking
-    entirely plausible.
+    **Two system-level figures have to move with the population, and missing
+    either leaves a bias that looks like a result.**
+
+    ``total_customers`` is the denominator of both reliability indices, and it
+    is a system figure rather than the sum over segments. Simulating a sixth of
+    the fleet against the whole system's customers understates both indices
+    roughly sixfold.
+
+    ``budget.annual`` is the capital the whole system has to spend. Leaving it
+    whole gives a sixth of the fleet six times the capital per segment, so
+    every policy that spends is funded far past where the constraint binds —
+    and the constraint binding is the entire subject. This one hides behind the
+    other: measured with run-to-failure, which never spends, the indices agree
+    and the budget bias is invisible.
 
     Args:
         settings: The configuration to shrink.
@@ -664,8 +671,8 @@ def resized(settings: Config, n_segments: int, n_reps: int | None = None) -> Con
         n_reps: Replications, unchanged if omitted.
 
     Returns:
-        The rebuilt configuration, with ``total_customers`` scaled by the same
-        ratio as the segment count.
+        The rebuilt configuration, with the customer count and the annual
+        budget both scaled by the same ratio as the segment count.
 
     Raises:
         ValueError: If the segment count is not positive.
@@ -673,10 +680,12 @@ def resized(settings: Config, n_segments: int, n_reps: int | None = None) -> Con
     if n_segments < 1:
         raise ValueError(f"n_segments must be at least 1, got {n_segments}")
     ratio = n_segments / settings.population.n_segments
-    scaled = max(1, round(settings.population.total_customers * ratio))
     values: dict[str, object] = {
         "population.n_segments": n_segments,
-        "population.total_customers": scaled,
+        "population.total_customers": max(
+            1, round(settings.population.total_customers * ratio)
+        ),
+        "budget.annual": settings.budget.annual * ratio,
     }
     if n_reps is not None:
         values["simulation.n_reps"] = n_reps

@@ -360,14 +360,21 @@ rather than the failure side.
 ### A result worth keeping
 
 Writing an assertion about the cost comparison turned up something the figure
-does not show: **the first tranche of preventive replacement pays for itself.**
-Below a budget somewhere under the configured one, the emergency premium a
-policy avoids is larger than the planned work it buys, so it is both cheaper
-and more reliable than run-to-failure and the cost per customer-minute avoided
-is negative. It turns positive once the cheap opportunities are used up. That
-is the point where the question stops being whether to do this at all and
-starts being what a customer-minute is worth — and it only appears because
-costs and reliability are reported against the same baseline.
+does not show: **preventive replacement pays for itself across the whole
+budget range the configuration brackets.** The emergency premium a policy
+avoids is larger than the planned work it buys at every level from nothing to
+twice the configured budget, so it is both cheaper and more reliable than
+run-to-failure and the cost per customer-minute avoided is negative throughout.
+The figure deepens and then turns back toward zero, so the break-even point
+exists; it sits above this range. That is the point where the question stops
+being whether to do this at all and starts being what a customer-minute is
+worth — and it only appears because costs and reliability are reported against
+the same baseline.
+
+The first version of this paragraph said the crossing happens *inside* the
+range, which was an artefact of a sweep run at six times the right budget per
+segment. Correcting the budget scaling moved it out of range, which is why the
+claim is stated with the range it was measured over.
 
 At placeholder parameters this is a property of the machinery rather than a
 claim about any fleet, which is exactly why the value-of-lost-load figures in

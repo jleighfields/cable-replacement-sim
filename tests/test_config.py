@@ -271,8 +271,8 @@ def test_an_override_reaches_the_value_it_names() -> None:
     changed = config.overridden(settings, {"budget.annual": 1_234.0})
 
     assert changed.budget.annual == 1_234.0
-    assert settings.budget.annual != 1_234.0, "the original must not be mutated"
     assert changed.simulation.seed == settings.simulation.seed
+    assert changed.population.n_segments == settings.population.n_segments
 
 
 def test_an_override_naming_a_section_replaces_the_whole_section() -> None:
@@ -352,3 +352,24 @@ def test_resizing_to_nothing_is_refused() -> None:
 
     with pytest.raises(ValueError, match="at least 1"):
         config.resized(settings, 0)
+
+
+def test_resizing_scales_the_annual_budget_with_the_population() -> None:
+    """The capital is a system figure, like the customer count beside it.
+
+    Left whole, a sixth of the fleet gets six times the capital per segment and
+    every policy that spends is funded far past the point where the constraint
+    binds — and the constraint binding is the subject the whole model is about.
+
+    This hides behind the customer count: measured with run-to-failure, which
+    never spends, the indices agree and the budget bias leaves no trace.
+    """
+    settings = config.load_config(constants.DEFAULT_CONFIG_PATH)
+
+    smaller = config.resized(settings, settings.population.n_segments // 6)
+
+    assert smaller.budget.annual == pytest.approx(settings.budget.annual / 6)
+    per_segment = smaller.budget.annual / smaller.population.n_segments
+    assert per_segment == pytest.approx(
+        settings.budget.annual / settings.population.n_segments
+    )
