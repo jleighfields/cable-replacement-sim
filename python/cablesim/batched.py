@@ -126,10 +126,9 @@ def fund_all(
     Returns:
         ``(replications, segments)`` mask **in rank order**, true for a
         position that is funded. Returned in that order rather than as a mask
-        over segments because the totals taken from it have to be accumulated
-        in rank order to match the reference in the last bits; ``in_rank_order``
-        puts anything else into the same order, and ``np.put_along_axis`` with
-        ``ordered`` converts it back to a mask over segments.
+        over segments because the totals taken from it have to accumulate in
+        rank order to match the reference in the last bits, and because reading
+        the funded positions out of it gives that order directly.
     """
     in_order = np.where(
         np.take_along_axis(eligible, ordered, axis=1), planned[ordered], np.inf
@@ -143,56 +142,57 @@ def fund_all(
     return np.arange(ordered.shape[1]) < funded_count[:, None]
 
 
-def in_rank_order(values: np.ndarray, ordered: np.ndarray) -> np.ndarray:
-    """Rearranges a per-segment quantity into each replication's rank order.
-
-    The reference funds a list of segment indices in rank order and totals them
-    in that order, so this is what makes a batched total add the same numbers in
-    the same sequence. Ordinary floating-point addition is not associative, and
-    the difference reaches the reported spend.
-
-    Args:
-        values: ``(segments,)`` or ``(replications, segments)`` quantity.
-        ordered: ``(replications, segments)`` segment indices, best first.
-
-    Returns:
-        ``(replications, segments)`` with each row in that row's rank order.
-    """
-    return np.take_along_axis(np.broadcast_to(values, ordered.shape), ordered, axis=1)
-
-
 def totals_by_class(
-    selected: np.ndarray,
     bins: np.ndarray,
+    n_reps: int,
     n_classes: int,
     weights: np.ndarray | None = None,
 ) -> np.ndarray:
     """Totals a quantity per replication and per class.
 
     One `bincount` over every replication at once, with each replication's
-    class bins offset by its own position. Called per replication instead, this
-    would add the same values in the same order; called as a grouping it might
-    not, and the order is what keeps this equal to the reference in the last
-    bits.
+    class bins already offset by its own position. Called per replication
+    instead, this would add the same values in the same order; called as a
+    grouping it might not, and the order is what keeps this equal to the
+    reference in the last bits.
 
     Args:
-        selected: ``(replications, segments)`` mask of what to total.
-        bins: ``(replications, segments)`` class index offset by replication.
+        bins: The offset class bin of each contributing cell, **in the order
+            the totals should accumulate**. The caller decides that order:
+            segment order for what failures contribute, rank order for what
+            funded work contributes.
+        n_reps: Replications in this chunk.
         n_classes: Number of segment classes.
-        weights: ``(replications, segments)`` value to add per segment, or None
-            to count them.
+        weights: What each contributor adds, in the same order, or None to
+            count them.
 
     Returns:
         ``(replications, n_classes)`` totals.
     """
-    n_reps = selected.shape[0]
-    chosen = bins[selected]
-    weighted = (
-        None if weights is None else np.broadcast_to(weights, bins.shape)[selected]
-    )
-    return np.bincount(chosen, weights=weighted, minlength=n_reps * n_classes).reshape(
+    return np.bincount(bins, weights=weights, minlength=n_reps * n_classes).reshape(
         n_reps, n_classes
     )
+
+
+def gathered(values: np.ndarray, rows: np.ndarray, columns: np.ndarray) -> np.ndarray:
+    """Reads a per-segment or per-cell quantity at the contributing cells only.
+
+    A few percent of segments fail or are funded in a year, so reading the whole
+    array and masking afterwards does twenty times the work for the same
+    numbers. This implementation is the baseline a speedup is claimed against,
+    so anything gratuitously slow in it flatters the claim.
+
+    Args:
+        values: ``(segments,)`` or ``(replications, segments)``.
+        rows: Replication index of each contributing cell.
+        columns: Segment index of each contributing cell.
+
+    Returns:
+        One value per contributing cell, in the order they were given.
+    """
+    if values.ndim == 1:
+        return values[columns]
+    return values[rows, columns]
 
 
 def run_chunk_numpy(
@@ -297,16 +297,29 @@ def run_chunk_numpy(
         # 1. Failures, resolved before planned work so that a segment failing
         #    this year is not also a candidate this year.
         failed = (failure_time >= year) & (failure_time < year + 1)
-        emergency_now = np.where(failed, planned_now * emergency_multiplier, 0.0)
-        results.failures[:, year] += totals_by_class(failed, bins, n_classes)
+        # `nonzero` returns the cells row by row, so these are in replication
+        # order and then segment order — which is the order the reference visits
+        # them in, and therefore the order its totals accumulate in.
+        failed_rows, failed_columns = np.nonzero(failed)
+        failed_bins = bins[failed_rows, failed_columns]
+        failed_cost = (
+            gathered(planned_now, failed_rows, failed_columns) * emergency_multiplier
+        )
+        results.failures[:, year] += totals_by_class(failed_bins, n_reps, n_classes)
         results.customers_interrupted[:, year] += totals_by_class(
-            failed, bins, n_classes, customers
+            failed_bins,
+            n_reps,
+            n_classes,
+            gathered(customers, failed_rows, failed_columns),
         )
         results.customer_minutes[:, year] += totals_by_class(
-            failed, bins, n_classes, customer_minutes_per_failure
+            failed_bins,
+            n_reps,
+            n_classes,
+            gathered(customer_minutes_per_failure, failed_rows, failed_columns),
         )
         results.emergency_spend[:, year] += totals_by_class(
-            failed, bins, n_classes, emergency_now
+            failed_bins, n_reps, n_classes, failed_cost
         )
 
         replaced = failed.copy()
@@ -319,10 +332,17 @@ def run_chunk_numpy(
             # cost is positive, so nothing is funded at or below zero and
             # nothing carries into the next year.
             #
-            # The cumulative sum runs over every segment with the survivors
-            # contributing zero, which totals the failures in the same order
-            # and to the same last bit as compacting them first would.
-            available -= np.cumsum(emergency_now, axis=1)[:, -1]
+            # Scattered back to full width first, so the cumulative sum runs
+            # over every segment with the survivors contributing zero. Adding
+            # `0.0` returns a float unchanged, so that totals the failures in
+            # the same order and to the same last bit as a running total over
+            # the failed ones alone would — and unlike a difference of two
+            # cumulative sums, which is not the same arithmetic. The full-width
+            # pass is paid only when the budget is charged, which the shipped
+            # configuration does not do.
+            charged = np.zeros((n_reps, n_segments))
+            charged[failed_rows, failed_columns] = failed_cost
+            available -= np.cumsum(charged, axis=1)[:, -1]
 
         eligible = policies.eligible(policy, age, replaced)
         if eligible.any():
@@ -343,42 +363,56 @@ def run_chunk_numpy(
             # adds them in and floating-point addition is not associative. The
             # failure totals above are taken in segment order for the same
             # reason: that is the order the reference takes those in.
-            ranked_bins = in_rank_order(bins, ordered)
+            #
+            # `nonzero` walks the funded positions row by row and, within a row,
+            # from the best-ranked position downwards — replication order and
+            # then rank order, which is exactly the sequence the reference funds
+            # in. Only the funded cells are read, rather than the whole array
+            # rearranged and then masked.
+            funded_rows, positions = np.nonzero(funded_positions)
+            funded_columns = ordered[funded_rows, positions]
+            funded_bins = bins[funded_rows, funded_columns]
             results.planned_replacements[:, year] += totals_by_class(
-                funded_positions, ranked_bins, n_classes
+                funded_bins, n_reps, n_classes
             )
             results.planned_customer_minutes[:, year] += totals_by_class(
-                funded_positions,
-                ranked_bins,
+                funded_bins,
+                n_reps,
                 n_classes,
-                in_rank_order(customer_minutes_per_planned, ordered),
+                gathered(customer_minutes_per_planned, funded_rows, funded_columns),
             )
             results.planned_spend[:, year] += totals_by_class(
-                funded_positions,
-                ranked_bins,
+                funded_bins,
+                n_reps,
                 n_classes,
-                in_rank_order(planned_now, ordered),
+                gathered(planned_now, funded_rows, funded_columns),
             )
-            funded = np.zeros(ordered.shape, dtype=bool)
-            np.put_along_axis(funded, ordered, funded_positions, axis=1)
-            replaced |= funded
+            replaced[funded_rows, funded_columns] = True
 
         # 3. Everything replaced this year enters service next year, as new
         #    cable of the replacement technology.
+        #
+        # Written to the replaced cells only, rather than computed for every
+        # cell and selected between. A few percent of segments are replaced in
+        # a year, so drawing a lifetime for all of them costs the transcendental
+        # in `draw_lifetime` about fifty times over for one time it is used. It
+        # is also what the reference does, which is the point: this
+        # implementation is the baseline a speedup is claimed against, so where
+        # it is gratuitously slower than the reference the claim is flattered.
         if replaced.any():
-            current_shape = np.where(replaced, replacement_shape, current_shape)
-            current_scale = np.where(replaced, replacement_scale, current_scale)
-            failure_time = np.where(
-                replaced,
-                (year + 1)
-                + weibull.draw_lifetime(
-                    lifetime_uniforms[:, :, year + 1],
-                    replacement_shape,
-                    replacement_scale,
-                ),
-                failure_time,
+            rows, columns = np.nonzero(replaced)
+            current_shape[rows, columns] = replacement_shape[columns]
+            current_scale[rows, columns] = replacement_scale[columns]
+            failure_time[rows, columns] = (year + 1) + weibull.draw_lifetime(
+                lifetime_uniforms[rows, columns, year + 1],
+                replacement_shape[columns],
+                replacement_scale[columns],
             )
-        age = np.where(replaced, 0.0, age + 1.0)
+        # Two passes rather than a `where`, in place: the reference does the
+        # same, and allocating a fresh array per year is the cost this
+        # implementation exists to avoid.
+        age += 1.0
+        age[replaced] = 0.0
 
     return results
 
