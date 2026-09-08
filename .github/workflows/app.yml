@@ -26,7 +26,39 @@ permissions:
   contents: read
 
 jobs:
+  # Everything the app job does before it reaches the tests is expensive: a
+  # release Rust build and a Chromium download, minutes apiece. Deciding here
+  # whether there is anything to run means a scheduled run pays for that only
+  # once the suite exists. A checkout costs seconds, and a skipped job reads as
+  # skipped rather than as a green run that tested nothing.
+  detect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      present: ${{ steps.suite.outputs.present }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Selects on the marker, not on a directory, because the job it gates
+      # runs `pytest -m app` and that collects a marked test wherever under
+      # `tests/` it sits. A glob on `tests/app/test_*.py` would miss a nested
+      # subdirectory and a marked test written outside that directory, and the
+      # symptom would be the failure this guard exists to prevent arriving
+      # through the guard itself: the suite never runs and the workflow is
+      # green. Errors are not suppressed — a missing `tests/` is worth seeing
+      # in the log rather than reading as "no app tests".
+      - id: suite
+        run: |
+          if grep -rq --include='*.py' 'pytest\.mark\.app\b' tests; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No app tests yet — the app job is skipped."
+          fi
+
   app:
+    needs: detect
+    if: needs.detect.outputs.present == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -60,17 +92,12 @@ jobs:
 
       # The app fixture starts the server and tears it down; nothing here
       # assumes a server is already listening.
-      # Same reasoning as the notebook run: `pytest -m app` exits 5 when the
-      # marker selects nothing. The guard is on the app suite existing, so
-      # this job always runs and an empty selection once it does exist is a
-      # break rather than the expected state.
+      # No guard on the suite existing: the job above this one is that guard,
+      # and it decided before any of the setup was paid for. `pytest -m app`
+      # exits 5 when the marker selects nothing, and once the files exist an
+      # empty selection is a break rather than the expected state.
       - name: App tests
-        run: |
-          if ! compgen -G 'tests/app/test_*.py' > /dev/null; then
-            echo "::notice::No app tests yet — nothing to run."
-            exit 0
-          fi
-          uv run pytest -m app --tracing=retain-on-failure --screenshot=only-on-failure
+        run: uv run pytest -m app --tracing=retain-on-failure --screenshot=only-on-failure
 
       # A failing browser test is close to unreadable without them.
       - uses: actions/upload-artifact@v4
