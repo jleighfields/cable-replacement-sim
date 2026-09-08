@@ -800,83 +800,6 @@ fn uniforms_at<'py>(
     Ok(values.into_pyarray(py))
 }
 
-/// The three single-precision columns `weibull_single_precision` returns.
-///
-/// Named because the tuple is otherwise complex enough that `clippy` asks for
-/// it, and because the order of the three is the contract its caller reads.
-type SinglePrecisionColumns<'py> = (
-    Bound<'py, PyArray1<f32>>,
-    Bound<'py, PyArray1<f32>>,
-    Bound<'py, PyArray1<f32>>,
-);
-
-/// The three Weibull forms the annual loop reads, in single precision.
-///
-/// Exists to answer one question before anything is built on the answer:
-/// **do this crate and NumPy compute the same `f32`?** The project's validation
-/// is bit-for-bit agreement between implementations with no tolerance anywhere,
-/// and that works in double precision because both sides reach the same libm
-/// routines. In single precision NumPy carries its own vectorised loops for
-/// `expm1`, `log1p` and `pow` where this calls the system `expm1f`, `log1pf`
-/// and `powf`; neither is required to be correctly rounded, so whether they
-/// agree is a fact to measure rather than assume.
-///
-/// # Arguments
-///
-/// * `age` - current age of each segment, in years.
-/// * `uniform` - one uniform on `[0, 1)` per segment, positionally paired.
-/// * `shape` - Weibull shape parameter.
-/// * `scale` - effective Weibull scale, in years.
-///
-/// # Returns
-///
-/// The annual failure probability, a lifetime draw, and a remaining-life draw,
-/// in that order, each computed entirely in `f32`.
-#[pyfunction]
-fn weibull_single_precision<'py>(
-    py: Python<'py>,
-    age: PyReadonlyArray1<'py, f32>,
-    uniform: PyReadonlyArray1<'py, f32>,
-    shape: f32,
-    scale: f32,
-) -> PyResult<SinglePrecisionColumns<'py>> {
-    let age = contiguous("age", &age)?;
-    let uniform = contiguous("uniform", &uniform)?;
-    if age.len() != uniform.len() {
-        return Err(PyValueError::new_err(format!(
-            "age has {} entries against {} uniforms; they pair up one for one",
-            age.len(),
-            uniform.len()
-        )));
-    }
-
-    let probability: Vec<f32> = age
-        .iter()
-        .map(|&years| {
-            let annual_hazard = ((years + 1.0) / scale).powf(shape) - (years / scale).powf(shape);
-            -((-annual_hazard).exp_m1())
-        })
-        .collect();
-    let lifetime: Vec<f32> = uniform
-        .iter()
-        .map(|&u| scale * (-((-u).ln_1p())).powf(1.0 / shape))
-        .collect();
-    let remaining: Vec<f32> = age
-        .iter()
-        .zip(uniform.iter())
-        .map(|(&years, &u)| {
-            let accumulated = (years / scale).powf(shape);
-            scale * (accumulated - (-u).ln_1p()).powf(1.0 / shape) - years
-        })
-        .collect();
-
-    Ok((
-        probability.into_pyarray(py),
-        lifetime.into_pyarray(py),
-        remaining.into_pyarray(py),
-    ))
-}
-
 /// Refuses a purpose the index cannot represent.
 ///
 /// Separate from the position check because only a caller supplying a purpose
@@ -936,7 +859,6 @@ fn _cablesim(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(philox_uniforms, m)?)?;
     m.add_function(wrap_pyfunction!(uniforms_dense, m)?)?;
     m.add_function(wrap_pyfunction!(uniforms_at, m)?)?;
-    m.add_function(wrap_pyfunction!(weibull_single_precision, m)?)?;
     // The engine names are authored in this crate and read on the Python side,
     // so the two cannot drift into disagreeing about what a name means.
     // The draw index's field widths, so the Python side packs a position the

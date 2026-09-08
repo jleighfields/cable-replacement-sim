@@ -99,6 +99,13 @@ that is not a speed claim — ahead-of-time compilation against Numba's
 5.4-second cold build, one wheel across Python versions, and integer semantics
 that cannot go wrong quietly.
 
+**Single precision is a run option**, set with `simulation.precision: f32` in
+the configuration. It reaches every implementation as the dtype of the arrays
+they are handed, so nothing takes a precision argument, and the two widths give
+different answers in the dollar columns.
+[docs/single-precision.md](docs/single-precision.md) has what it costs and
+saves at each population size, and where it is worth using.
+
 Run the table yourself with `uv run python scripts/run_benchmarks.py`, after
 building with `--release`. See [PLAN.md](PLAN.md) for the model, the decisions
 behind it, and the phased roadmap.

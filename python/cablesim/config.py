@@ -214,7 +214,7 @@ class SimulationConfig(pydantic.BaseModel):
     n_reps: int = pydantic.Field(ge=1)
     seed: int = pydantic.Field(ge=0)
     start_year: int
-    precision: Literal["f64", "f32"] = constants.DEFAULT_PRECISION
+    precision: Literal[*tuple(constants.PRECISIONS)] = constants.DEFAULT_PRECISION
 
 
 class PopulationConfig(pydantic.BaseModel):

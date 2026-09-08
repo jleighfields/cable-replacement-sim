@@ -28,6 +28,7 @@ loop free of any inner iteration, and what makes the deterministic parity test
 terminate when lifetimes are forced to zero.
 """
 
+import collections
 from typing import NamedTuple
 
 import numpy as np
@@ -226,6 +227,33 @@ def check_arguments(arguments: dict[str, object], concurrent: bool = False) -> i
     random_draws.check_positions(
         arguments["first_replication"] + n_reps - 1, n_segments - 1, n_years
     )
+
+    # One width per call. The precision a run computes in travels as the dtype
+    # of these arrays, so a call carrying two of them is a call at neither: an
+    # array left at the wider one silently widens everything it touches, and
+    # because every implementation widens the same way they all go on agreeing
+    # with each other in every cell. That is a defect with no symptom, and it
+    # has been shipped here twice.
+    #
+    # The binding refuses it already, with PyO3's own wording and a `TypeError`
+    # because a dtype it cannot borrow is a type error rather than a bad value.
+    # This is the same refusal on the side that would otherwise convert.
+    widths = {
+        name: arguments[name].dtype
+        for name in (*SEGMENT_ARGUMENTS, "budget", "cost_escalation")
+        if getattr(arguments[name], "dtype", None) is not None
+        and arguments[name].dtype.kind == "f"
+    }
+    if len(set(widths.values())) > 1:
+        counted = collections.Counter(widths.values())
+        common, _ = counted.most_common(1)[0]
+        odd = {name: str(kind) for name, kind in widths.items() if kind != common}
+        raise TypeError(
+            f"this call carries more than one floating width: {odd} against "
+            f"{common} everywhere else. The precision a run computes in is the "
+            f"dtype of these arrays, so a mixed call is a call at neither width"
+        )
+
     for name in SEGMENT_ARGUMENTS:
         column = arguments[name]
         if column.ndim != 1:
@@ -377,10 +405,12 @@ def run_chunk(
             get an answer from one and an error from the other.
 
             What the two report differently is whatever the binding's
-            argument types refuse before any check of ours runs: an array that
-            is not C-contiguous, one whose dtype is not ``float64`` — ``uint8``
-            for ``class_index`` — one with the wrong number of axes, and a
-            ``policy.kind`` that is not an integer. PyO3 owns those messages.
+            argument types refuse before any check of ours runs: an array
+            that is not C-contiguous, one whose dtype is not the width the
+            call is being made at — ``uint8`` for ``class_index``, and
+            ``float64`` or ``float32`` for the rest, the same one for all of
+            them — one with the wrong number of axes, and a ``policy.kind``
+            that is not an integer. PyO3 owns those messages.
             This implementation needs none of them to be true, and raises the
             same class for the last two: a non-integer tag would otherwise
             match a branch by hash equality, and a two-dimensional array of the

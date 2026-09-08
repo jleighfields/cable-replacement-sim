@@ -155,11 +155,51 @@ def test_every_implementation_matches_when_everything_fails_at_once(
     replacement enters service the following year — without which this case
     would not terminate at all.
     """
-    arguments = helpers.forced_lifetimes(deterministic_arguments, helpers.FAILS_AT_ONCE)
+    arguments = helpers.forced_lifetimes(
+        deterministic_arguments, helpers.FAILS_AT_ONCE, from_new=True
+    )
 
     assert_identical(
         simulate.run_chunk(**arguments, policy=policy),
         implementation(**arguments, policy=policy),
+    )
+
+
+def test_the_forced_scale_fails_every_segment_at_both_widths(
+    deterministic_arguments: dict[str, object],
+) -> None:
+    """`helpers.FAILS_AT_ONCE` has to force the case the tests above name.
+
+    Those tests compare implementations against each other, so they pass on any
+    scenario the fixture happens to produce — including one where half the
+    population never fails at all. What the scenario *is* has to be asserted
+    separately, and this is that assertion: at the scale documented as putting
+    every segment's remaining life inside year one, every segment fails in year
+    zero.
+
+    The remaining life is `scale * ((age / scale) ** shape - ln1p(-u)) ** (1 /
+    shape) - age`, and at a scale this far below the ages the bracket is
+    dominated by the first term, so the whole expression is a difference of two
+    numbers that agree to within a rounding step of `age`. In double that
+    leaves a positive value around 1e-14; in single the rounding step at an age
+    of 57 is about 4e-6, which is larger than the value being recovered, so the
+    result lands either side of zero. A negative remaining life is a failure
+    time no year's `[year, year + 1)` window contains, so that segment never
+    fails in any year of the horizon.
+    """
+    arguments = helpers.forced_lifetimes(
+        deterministic_arguments, helpers.FAILS_AT_ONCE, from_new=True
+    )
+    every_segment = np.size(arguments["age0"]) * arguments["n_reps"]
+
+    failures = simulate.run_chunk(
+        **arguments, policy=helpers.resolved("run_to_failure")
+    ).failures
+
+    assert failures[:, 0].sum() == every_segment, (
+        f"{failures[:, 0].sum():.0f} of {every_segment} segment-replications "
+        f"failed in year zero at {arguments['age0'].dtype}; the fixture "
+        f"documents itself as failing all of them"
     )
 
 
@@ -289,7 +329,15 @@ def test_every_implementation_charges_the_same_emergency_total(
     scales = np.where(fails, helpers.FAILS_AT_ONCE, helpers.NEVER_FAILS).astype(float)
     arguments = helpers.at_call_width(
         {
-            **helpers.first_segments(deterministic_arguments, n_segments),
+            # From new, so the half meant to fail actually does at both
+            # widths: a conditional draw on an aged segment loses the draw
+            # entirely in single precision, and the boundary this test
+            # constructs assumes every one of them fails.
+            **helpers.forced_lifetimes(
+                helpers.first_segments(deterministic_arguments, n_segments),
+                helpers.NEVER_FAILS,
+                from_new=True,
+            ),
             "length_ft": length_ft,
             "cost_per_ft": np.full(n_segments, 10.0),
             "mobilization_per_segment": 500.0,

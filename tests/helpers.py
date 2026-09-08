@@ -277,7 +277,12 @@ def first_segments(
 
 
 FAILS_AT_ONCE = 1e-3
-"""A Weibull scale that puts every segment's remaining life inside year one.
+"""A Weibull scale that puts a *new* segment's remaining life inside year one.
+
+**Pass ``from_new=True`` to ``forced_lifetimes`` with this.** On an aged
+population it forces nothing at single precision, for the reason that argument
+documents, and a test asserting that everything fails will assert it of a
+population where half of it never does.
 
 Randomness is removed through the ordinary ``scale`` and ``replacement_scale``
 arrays rather than through an argument only tests pass, so a test using this
@@ -327,7 +332,10 @@ def at_call_width(arguments: dict[str, object]) -> dict[str, object]:
 
 
 def forced_lifetimes(
-    arguments: dict[str, object], scale: float, replacement: float | None = None
+    arguments: dict[str, object],
+    scale: float,
+    replacement: float | None = None,
+    from_new: bool = False,
 ) -> dict[str, object]:
     """Copies a call's arguments with every Weibull scale replaced.
 
@@ -336,6 +344,21 @@ def forced_lifetimes(
         scale: What to put in ``scale``.
         replacement: What to put in ``replacement_scale``, or None to use
             ``scale`` for both.
+        from_new: Also start every segment at age zero. **Required for
+            ``FAILS_AT_ONCE`` to force what its name says at single
+            precision**, and harmless at double. A lifetime is drawn
+            conditional on survival to the current age, as
+            ``scale * ((age / scale) ** shape - ln1p(-u)) ** (1 / shape) -
+            age``. For a segment far past its scale the first term inside the
+            bracket is enormous — 8e30 at age 57 with a scale of a thousandth
+            — and adding the draw to it changes nothing a single-precision
+            float can hold, so the remaining life comes back as whatever the
+            round trip happens to round to rather than as something inside year
+            one. Half the population then never fails, silently, and a test
+            named for everything failing asserts against a scenario it did not
+            build. At age zero there is no accumulated hazard to swamp the
+            draw, and the same scale gives a remaining life of about a
+            thousandth of a year at both widths.
 
     Returns:
         A new argument dictionary; the original is untouched, which matters
@@ -349,7 +372,7 @@ def forced_lifetimes(
     # make a Python implementation quietly widen everything it touched.
     reference = np.asarray(arguments["age0"])
     segments = reference.shape
-    return {
+    forced = {
         **arguments,
         "scale": np.full(segments, scale, dtype=reference.dtype),
         "replacement_scale": np.full(
@@ -358,3 +381,6 @@ def forced_lifetimes(
             dtype=reference.dtype,
         ),
     }
+    if from_new:
+        forced["age0"] = np.zeros(segments, dtype=reference.dtype)
+    return forced

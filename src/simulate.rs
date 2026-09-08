@@ -426,7 +426,16 @@ pub fn run_chunk<T: Real>(
                 // from the budget the greedy fill then compares a cumulative cost
                 // against, so it has to round the way that comparison rounds.
                 // NumPy's `cumsum` preserves the width for the same reason, where
-                // its `bincount` widens the result totals to double.
+                // its `bincount` widens the result totals to double. Both of those
+                // were checked rather than assumed.
+                //
+                // **No test holds this either way.** Totalling in double here and
+                // narrowing at the subtraction leaves the whole parity suite green,
+                // so what keeps it correct is the reference's `running_total` being
+                // the canonical order and this comment saying so. A test would need
+                // a budget landing between what the two widths total to, and
+                // neither a search over budget levels nor one over cost
+                // distributions has found one.
                 let mut emergency_total = T::zero();
                 let year_start = T::from_double(year as f64);
                 for segment in 0..n_segments {
@@ -488,7 +497,7 @@ pub fn run_chunk<T: Real>(
                             ),
                             outage_cost_per_failure[segment] * escalation,
                             planned_now[segment],
-                            narrowed_multiplier,
+                            emergency_multiplier,
                             priority[segment],
                         );
                     }

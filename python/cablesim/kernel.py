@@ -85,6 +85,14 @@ def run_chunk(
     them from the same key and the same positions, which `tests/test_draws.py`
     establishes; there is no random-number stream to reconcile.
 
+    **The dtype of the float arrays is the working precision, and it selects
+    which entry point of the crate is called.** ``float32`` arrays reach the
+    single-precision one and ``float64`` arrays the double-precision one;
+    ``age0`` is what is read to decide, and every other float array has to
+    carry the same dtype or the extraction refuses it by name. Nothing is
+    converted, because converting would allocate a copy of every per-segment
+    array on every call.
+
     Args:
         length_ft: Segment length, in feet.
         customers: Customers served, counted equally for the frequency index.
@@ -147,10 +155,11 @@ def run_chunk(
             rather than anything about the arguments, so it is not a
             ``ValueError``, and it has no counterpart in the reference.
         TypeError: If an array's dtype is not the one the boundary reads —
-            ``uint8`` for ``class_index`` and ``float64`` for the rest — if an
-            array has the wrong number of axes, or if ``policy.kind`` is not an
-            integer. The binding does not convert, because converting would
-            allocate a copy of every per-segment array on every call.
+            ``uint8`` for ``class_index``, and for the rest whichever of
+            ``float64`` and ``float32`` ``age0`` carries — if an array has the
+            wrong number of axes, or if ``policy.kind`` is not an integer.
+            The binding does not convert, because converting would allocate a
+            copy of every per-segment array on every call.
             These come from PyO3's extraction rather than from any check here,
             so the messages are its wording; ``simulate.run_chunk`` raises the
             same class for the same inputs.

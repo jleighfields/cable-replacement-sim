@@ -214,20 +214,19 @@ def budget_grid(annual: float, levels: int = BUDGET_GRID_LEVELS) -> list[float]:
     return [0.0, *spaced.tolist()]
 
 
-def escalation_series(
-    rate: float, n_years: int, precision: str = constants.DEFAULT_PRECISION
-) -> np.ndarray:
-    """Compounds an annual rate into a per-year multiplier.
+def floating_for(precision: str) -> type[np.floating]:
+    """The dtype a named precision builds its arrays at.
 
     Args:
-        rate: Annual growth, as a fraction.
-        precision: The dtype to return at. Compounded in double whatever it is
-            and narrowed once, so the series does not accumulate the rounding
-            of the width it is returned at.
-        n_years: Horizon.
+        precision: A key of ``constants.PRECISIONS``.
 
     Returns:
-        One multiplier per year, starting at 1.0 in year 0.
+        The NumPy floating type.
+
+    Raises:
+        ValueError: If the name is not one of the precisions that exist. The
+            configuration model refuses one first, so only a direct caller
+            arrives here.
     """
     floating = constants.PRECISIONS.get(precision)
     if floating is None:
@@ -235,7 +234,28 @@ def escalation_series(
             f"precision is {precision!r}, which names no dtype; "
             f"the choices are {sorted(constants.PRECISIONS)}"
         )
-    return ((1.0 + rate) ** np.arange(n_years, dtype=np.float64)).astype(floating)
+    return floating
+
+
+def escalation_series(
+    rate: float, n_years: int, precision: str = constants.DEFAULT_PRECISION
+) -> np.ndarray:
+    """Compounds an annual rate into a per-year multiplier.
+
+    Args:
+        rate: Annual growth, as a fraction.
+        n_years: Horizon.
+        precision: The dtype to return at, named as ``"f64"`` or ``"f32"``.
+            Compounded in double whatever it is and narrowed once, so the
+            series does not accumulate the rounding of the width it is
+            returned at.
+
+    Returns:
+        One multiplier per year, starting at 1.0 in year 0.
+    """
+    return ((1.0 + rate) ** np.arange(n_years, dtype=np.float64)).astype(
+        floating_for(precision)
+    )
 
 
 def segment_arrays(
@@ -264,12 +284,7 @@ def segment_arrays(
         KeyError: If the population is missing a column the loop reads.
         ValueError: If the precision names no dtype.
     """
-    floating = constants.PRECISIONS.get(precision)
-    if floating is None:
-        raise ValueError(
-            f"precision is {precision!r}, which names no dtype; "
-            f"the choices are {sorted(constants.PRECISIONS)}"
-        )
+    floating = floating_for(precision)
     ordered = frame.sort("segment_id")
     missing = [name for name in SEGMENT_COLUMNS if name not in ordered.columns]
     if missing:

@@ -6,6 +6,9 @@ An analytical check is worth more than a parity check because it can be wrong
 in only one way.
 """
 
+import ctypes
+import ctypes.util
+
 import numpy as np
 import pytest
 from cablesim import random_draws, weibull
@@ -38,6 +41,52 @@ def weibull_draws(
         Ages at failure, in years.
     """
     return weibull.draw_lifetime(random_draws.uniforms(source, n), shape, scale)
+
+
+def test_numpy_and_the_system_library_agree_in_single_precision() -> None:
+    """The assumption single precision rests on, and the reason it holds.
+
+    Two implementations of a single-precision ``expm1``, ``log1p`` or ``pow``
+    may legitimately differ in the last bit — none of them is required to be
+    correctly rounded. This project compares implementations at no tolerance, so
+    a single-precision run is only possible while NumPy and the crate produce
+    the same bits, and they do because **both reach the same C library**.
+
+    The second half is what makes this a test rather than a restatement. The
+    other available explanation — that each computes in double and rounds once —
+    is ruled out, not merely unnecessary: that is a different answer for about a
+    tenth of the inputs sampled here. Without it, a NumPy that grew its own
+    vectorised single-precision loops would pass the first assertion by
+    accident only until it did not.
+
+    This is a property of the platform, so this is where a build against a
+    different C library would report rather than the parity suite failing
+    somewhere less obvious.
+    """
+    library = ctypes.CDLL(ctypes.util.find_library("m"))
+    for name in ("expm1f", "log1pf"):
+        getattr(library, name).restype = ctypes.c_float
+        getattr(library, name).argtypes = [ctypes.c_float]
+
+    generator = np.random.default_rng(0)
+    sample = generator.uniform(-3.0, 3.0, 20_000).astype(np.float32)
+
+    from_numpy = np.expm1(sample)
+    from_library = np.array(
+        [library.expm1f(value) for value in sample], dtype=np.float32
+    )
+    through_double = np.expm1(sample.astype(np.float64)).astype(np.float32)
+
+    assert np.array_equal(from_numpy, from_library), (
+        "NumPy and the system C library disagree on single-precision expm1, so "
+        "the crate and NumPy would compute different numbers and no run at that "
+        "precision could be compared against another implementation"
+    )
+    assert not np.array_equal(from_numpy, through_double), (
+        "computing in double and rounding once gives the same answer here, so "
+        "this test no longer distinguishes the two explanations and would pass "
+        "for an implementation that does not share the C library"
+    )
 
 
 def test_min_of_n_matches_the_reduced_scale() -> None:

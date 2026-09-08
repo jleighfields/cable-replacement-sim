@@ -14,7 +14,7 @@ panic message goes to stderr rather than into the traceback.
 
 import numpy as np
 import pytest
-from cablesim import _cablesim, kernel, policies, random_draws, simulate
+from cablesim import _cablesim, kernel, policies, random_draws, run, simulate
 
 from tests import helpers
 
@@ -614,3 +614,39 @@ def test_both_implementations_report_the_same_first_complaint() -> None:
         simulate.run_chunk(**arguments, policy=unrankable)
 
     assert str(from_reference.value) == str(from_kernel.value)
+
+
+@pytest.mark.parametrize("name", sorted(run.RUNNABLE), ids=str)
+def test_no_implementation_runs_a_call_that_mixes_two_widths(name: str) -> None:
+    """A call at neither precision has to be refused, not silently widened.
+
+    The working precision reaches an implementation as the dtype of the arrays
+    it is handed, so an argument set carrying two of them names no precision at
+    all. The kernel refuses it already: PyO3 extracts a concrete element type
+    and rejects the array that does not match, by name. The Python
+    implementations widen instead — NumPy promotes the narrow arrays wherever
+    they meet the wide one — and return a result computed at a width nobody
+    asked for, which no comparison between implementations can see because they
+    all widen the same way.
+
+    That is the failure this project has already shipped twice, and both times
+    the argument left at double was a per-year series exactly like the one
+    here. ``check_arguments`` is where it belongs: it exists so that the
+    implementations cannot drift into refusing different things, and this is a
+    case where they do.
+
+    Args:
+        name: The implementation to check, from the runnable registry.
+    """
+    single = {
+        argument: (
+            value.astype(np.float32)
+            if isinstance(value, np.ndarray) and value.dtype.kind == "f"
+            else value
+        )
+        for argument, value in minimal_arguments(n_segments=2, n_years=2).items()
+    }
+    mixed = {**single, "budget": single["budget"].astype(np.float64)}
+
+    with pytest.raises((TypeError, ValueError)):
+        run.RUNNABLE[name](**mixed, policy=helpers.resolved("worst_first"))

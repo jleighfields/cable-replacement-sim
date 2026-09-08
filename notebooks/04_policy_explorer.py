@@ -305,7 +305,9 @@ def _(plots, saved):
 @app.cell
 def _(banded, plots, run, settings):
     _budget = settings.budget.annual * run.escalation_series(
-        settings.budget.escalation, settings.simulation.n_years
+        settings.budget.escalation,
+        settings.simulation.n_years,
+        settings.simulation.precision,
     )
     plots.spend_against_budget(banded, _budget.tolist(), "risk_ranked")
     return

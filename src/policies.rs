@@ -199,7 +199,7 @@ pub fn rank_key<T: Real>(
     failure_probability: T,
     outage_cost_per_failure: T,
     planned: T,
-    emergency_multiplier: T,
+    emergency_multiplier: f64,
     priority: T,
 ) -> T {
     let key = match policy.kind {
@@ -208,7 +208,23 @@ pub fn rank_key<T: Real>(
             // The cost avoided by acting first, which is the emergency premium
             // rather than the whole emergency cost: the planned work is paid
             // either way.
-            let avoided = planned * (emergency_multiplier - T::one());
+            // Narrowed *after* the subtraction, not before. The reference
+            // computes `emergency_multiplier - 1.0` in Python's own double
+            // arithmetic and NumPy narrows the result to meet the array, so
+            // subtracting a narrowed one here gives a different premium for any
+            // multiplier not exactly representable at this width — about two
+            // fifths of them at single precision, moving 9,537 of 12,000 rank
+            // keys on the shipped population.
+            //
+            // **No test holds this**, and the reason is worth writing down
+            // rather than leaving for the next person to rediscover: the
+            // divergence is in an intermediate the ranking reads, and neither
+            // a search over counterexample multipliers nor one over budget
+            // levels drove it as far as a different funded set. The shipped
+            // multiplier of 2.5 is exactly representable, so it cannot show it
+            // at all. What keeps the two sides together here is this comment
+            // and the reference being the canonical order.
+            let avoided = planned * T::from_double(emergency_multiplier - 1.0);
             failure_probability * (outage_cost_per_failure + avoided)
         }
         kind::WORST_FIRST => failure_probability,
