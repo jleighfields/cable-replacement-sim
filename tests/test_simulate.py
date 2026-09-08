@@ -8,6 +8,9 @@ every run's scales arrive, so these exercise the shipped path rather than a
 branch only tests reach.
 """
 
+import importlib.util
+import re
+
 import numpy as np
 import pytest
 from cablesim import policies, random_draws, run, simulate, weibull
@@ -492,3 +495,27 @@ def test_the_per_segment_arguments_match_the_population_columns() -> None:
     assert set(simulate.SEGMENT_ARGUMENTS) == (set(run.SEGMENT_COLUMNS) - {"age"}) | {
         "age0"
     }
+
+
+def test_the_thread_refusal_names_only_modules_that_exist() -> None:
+    """The message telling a caller where to go points at something importable.
+
+    ``check_arguments`` refuses a thread count the caller cannot honour and
+    names the implementations that can, which is the only place a caller is
+    told where to go. Retiring an implementation without editing that sentence
+    sends whoever hits it to a module that cannot be imported, and no test
+    reads the message closely enough to notice — the existing refusal tests
+    match on the thread count alone.
+    """
+    with pytest.raises(ValueError) as raised:
+        simulate.run_chunk(**inputs(), threads=2)
+
+    named = set(re.findall(r"cablesim\.[a-z_]+", str(raised.value)))
+    assert named, "the refusal names no module; has the sentence moved?"
+    missing = sorted(
+        name for name in named if importlib.util.find_spec(name) is None
+    )
+    assert not missing, (
+        f"the thread refusal sends the caller to {missing}, which this "
+        f"package does not carry"
+    )

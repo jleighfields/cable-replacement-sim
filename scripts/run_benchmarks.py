@@ -35,20 +35,36 @@ scale rather than compared against. Its per-replication time is what the table
 reports, so a smaller count costs nothing but precision.
 """
 
-BENCHMARK_REPS = 50
-"""Replications for every other row."""
+BENCHMARK_REPS = 96
+"""Replications for every other row.
+
+Two per thread on a 48-core machine, so that a threaded row is not measuring
+how many workers sat idle. Replications are the axis being parallelised, so a
+count below the thread count caps the speedup at the count rather than at the
+threads — ten replications cap it at ten however many cores exist.
+
+This is the count the table published in the README was taken at. A machine
+with a different core count will want a different number here, and the table
+carries the count it was measured with for that reason.
+"""
 
 
 def configurations(threads: int) -> list[benchmarks.Configuration]:
     """The rows of the table, in the order they should appear.
 
-    The Rust kernel appears twice, at one thread and at the machine's full
-    count, so the language and the parallelism are not conflated into one
-    number — which matters here, because single-threaded it is level with
-    Python on the policy that scores every segment.
+    Both threading implementations appear twice, at one thread and at the
+    machine's full count, so the language and the parallelism are not conflated
+    into one number — which matters here, because single-threaded the kernel is
+    level with Python on the policy that scores every segment.
+
+    The batched loop's threaded row is here despite being slower than its own
+    single-threaded row under most policies. It is the denominator of the
+    fastest-Python column wherever the sort is large enough for threading to pay,
+    so leaving it out would quote a speedup against a baseline that is not the
+    fastest Python available.
 
     Args:
-        threads: The full thread count to run the kernel at.
+        threads: The full thread count to run the threading implementations at.
 
     Returns:
         One configuration per row.
@@ -56,6 +72,7 @@ def configurations(threads: int) -> list[benchmarks.Configuration]:
     return [
         benchmarks.Configuration("reference", 1, REFERENCE_REPS),
         benchmarks.Configuration("batched_numpy", 1, BENCHMARK_REPS),
+        benchmarks.Configuration("batched_numpy", threads, BENCHMARK_REPS),
         benchmarks.Configuration("kernel", 1, BENCHMARK_REPS),
         benchmarks.Configuration("kernel", threads, BENCHMARK_REPS),
     ]

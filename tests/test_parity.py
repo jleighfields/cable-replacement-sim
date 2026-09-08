@@ -578,8 +578,8 @@ def test_a_chunk_gives_the_same_rows_wherever_it_starts(
     """Splitting a run into chunks changes no number in it.
 
     A chunk is told where it starts, and every draw it takes is computed from
-    that position, so running four replications at once and running two chunks
-    of two have to give the same eight rows. This is what lets a long run be
+    that position, so running a chunk whole and running it as two consecutive
+    pieces have to give the same rows in the same order. This is what lets a long run be
     divided across calls, and it is the only assertion here that varies
     ``first_replication`` — every fixture otherwise starts a run at zero, which
     leaves an implementation free to ignore the offset entirely and still agree
@@ -611,6 +611,34 @@ def test_a_chunk_gives_the_same_rows_wherever_it_starts(
         ):
             assert np.array_equal(wanted, actual), (
                 f"{implementation}, {name}: two chunks disagree with one run"
+            )
+
+
+@pytest.mark.parametrize("policy", POLICIES, ids=lambda spec: str(spec.kind))
+def test_a_threaded_chunk_that_does_not_start_at_zero_matches_the_reference(
+    deterministic_arguments: dict[str, object],
+    policy: policies.Resolved,
+) -> None:
+    """Chunk offset and threading are correct together, not only apart.
+
+    Two assertions here cover one of these each: one varies the starting
+    replication and never threads, the other threads and always starts at zero.
+    Their combination is what a run actually does — ``run.execute`` chunks a
+    long sweep and hands each chunk to a threaded implementation — and an
+    implementation that passed its block's own offset instead of the run's would
+    satisfy both while getting every chunk after the first wrong.
+    """
+    offset = {**deterministic_arguments, "first_replication": 50}
+    expected = simulate.run_chunk(**offset, policy=policy)
+
+    for implementation in sorted(run.CONCURRENT):
+        produced = run.RUNNABLE[implementation](**offset, policy=policy, threads=3)
+        for name, wanted, actual in zip(
+            simulate.Results._fields, expected, produced, strict=True
+        ):
+            assert np.array_equal(wanted, actual), (
+                f"{implementation}, {name}: a threaded chunk starting at 50 "
+                f"disagrees with the reference"
             )
 
 

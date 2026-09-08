@@ -51,15 +51,18 @@ exactly one respect.
 
 ## What the numbers say
 
-**Rust is worth 1.2 to 1.4 times, on one thread, and about nothing on
-forty-eight.** Against Numba running the same algorithm, the kernel is ahead by
-1.15x to 1.37x single-threaded across all six columns. At forty-eight threads
-the two trade places by policy and by size, within about 20% either way. Whatever
-the kernel's advantage is, it is not large and it does not survive
-parallelisation.
+**Rust is worth 1.2 to 1.4 times on one thread, and the comparison stops being
+decidable on forty-eight.** Against Numba running the same algorithm, the kernel
+is ahead by 1.18x to 1.37x single-threaded, in all six columns. At forty-eight
+threads the two trade places by policy and by size, and the spread is wide —
+Numba is 1.73x ahead at 12,000 segments under `age_threshold`, the kernel 1.17x
+ahead at 100,000 under `risk_ranked`. Those 12,000-segment rows are 11 to 19
+microseconds per replication, which three repeats on a shared machine cannot
+separate, so the honest reading is that the language stops mattering once the
+work is spread, not that either side wins.
 
-**Compiling is worth five to six times — but only where the loop is
-scalar-shaped.** Under `age_threshold`, Numba on one thread beats the reference
+**Compiling is worth five and a half to six and a half times — but only where
+the loop is scalar-shaped.** Under `age_threshold`, Numba on one thread beats the reference
 it is a translation of by 6.5x at 12,000 segments and 5.5x at 100,000. That
 policy makes a few hundred segments eligible in a year, and a compiled scalar
 loop touches only those where the batched loop sorts all of them. This is the
@@ -72,22 +75,41 @@ candidate, so the work is one large sort, and NumPy's C `argsort` beats the
 sort Numba generates. Compiling helps where the interpreter was the cost; it
 does not help where the cost was already inside a C routine.
 
-**Threads are worth twenty-five to thirty-five times, and are almost the whole
-story.** Every headline figure this project has published is dominated by this
-term.
+**Threads are worth eight to thirty-six times, and are almost the whole story.**
+The term is the largest in every column, and it varies more than any other, so
+it is worth reading with its conditions attached rather than as one number:
 
-**Threading NumPy does not work.** This is the clearest result here. Forty-eight
-threads made the batched loop *slower* in four of the six columns, by as much as
-3.9x, and helped only under `risk_ranked`, where it gave 1.26x at 12,000
-segments and 2.6x at 100,000.
+| 1 thread against 48 | `run_to_failure` | `age_threshold` | `risk_ranked` |
+|---|---|---|---|
+| Kernel, 12,000 segments | 14.4x | 14.0x | 27.4x |
+| Numba, 12,000 segments | 19.5x | 28.5x | 36.5x |
+| Kernel, 100,000 segments | 8.2x | 7.8x | 27.2x |
+| Numba, 100,000 segments | 10.1x | 10.5x | 29.4x |
+
+It reaches the high twenties only under `risk_ranked`, where each replication is
+long enough that spreading it pays fully. Where a replication is short — 2 to 27
+milliseconds in the other two columns — the fixed cost of handing work to
+forty-eight workers takes a visible share, and at 100,000 segments with only 48
+replications there is also one replication per worker, so a single straggler
+holds the result.
+
+**Threading NumPy mostly does not work.** Forty-eight threads made the batched
+loop *slower* in three of the six columns — 3.9x and 1.8x slower at 12,000
+segments under `run_to_failure` and `age_threshold`, and 3.1x slower at 100,000
+under `run_to_failure`. It helped in the other three, and only where the sort is
+large: 1.26x and 2.6x under `risk_ranked` at the two sizes, and 1.4x under
+`age_threshold` at 100,000, where a bigger population makes that policy's sort
+big enough to pay for the threads.
 
 The reason is visible in what the operations do with the interpreter lock. Timed
 in isolation, `lexsort` dominates the batched loop's cost and scales 3.94x on
 four threads, and `argsort`, `cumsum`, `where` and the elementwise arithmetic
 release the lock as well. But between those calls sits Python-level
 orchestration that holds the lock throughout, and that is what binds: threading
-helps only under the one policy where the sort is large enough to dominate the
-orchestration, and elsewhere the per-block overhead is pure loss. **An
+helps only where the sort is large enough to dominate the orchestration, and
+elsewhere the per-block overhead is pure loss. Growing the population moves a
+policy across that line, which is why `age_threshold` flips from 1.8x slower to
+1.4x faster between the two sizes. **An
 operation releasing the lock is not enough; it has to release it for long enough
 to outweigh what surrounds it.**
 
@@ -121,13 +143,14 @@ level with it threaded.
 
 ## What was not measured
 
-The `first_run_seconds` column in the tables above is **not** a compile time. It
-is whatever the first call cost in that process, and for the Numba rows the
-on-disk cache had usually already been written by an earlier row, so those
-figures are warm. The 5.4 seconds above is the cold number and was taken
+The first-call figure the harness records beside each row is **not** a compile
+time, and is not reproduced in the tables above. It is whatever that call cost
+in that process, and for the Numba rows the on-disk cache had usually been
+written by an earlier row already, so those figures are warm. The 5.4 seconds above is the cold number and was taken
 separately.
 
 * **One machine, three repeats per configuration.** Enough to separate effects
-  of 5x; not enough to defend the 20% differences between Numba and the kernel
-  at forty-eight threads, which should be read as a tie.
+  of 5x; not enough to defend the differences between Numba and the kernel at
+  forty-eight threads, which should be read as a tie whichever way a given cell
+  falls.
 * **Memory.** Only wall time was recorded here.

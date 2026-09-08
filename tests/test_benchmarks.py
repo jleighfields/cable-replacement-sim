@@ -140,6 +140,31 @@ def test_the_speedup_columns_are_ratios_to_the_rows_they_name() -> None:
     )
 
 
+def test_the_batched_baseline_does_not_depend_on_the_row_order() -> None:
+    """The denominator is one named row, not whichever batched row came first.
+
+    The batched NumPy loop can now appear twice in a table — once on one thread
+    and once on many — and ``speedup_over_batched_numpy`` is meant to name a
+    fixed baseline. Taking the first matching row makes the whole column a
+    function of the order the caller listed its configurations in, so the same
+    measurement yields two different published speedups. The row whose ratio is
+    exactly one is the baseline by construction, so asserting on which row that
+    is needs no timing and cannot flake.
+    """
+    settings = small_settings()
+    reps = settings.simulation.n_reps
+    one_thread = benchmarks.Configuration("batched_numpy", 1, reps)
+    two_threads = benchmarks.Configuration("batched_numpy", 2, reps)
+
+    for configurations in ([one_thread, two_threads], [two_threads, one_thread]):
+        table = benchmarks.compare(settings, "risk_ranked", configurations, repeats=1)
+        baseline = table.filter(table["speedup_over_batched_numpy"] == 1.0)
+        assert baseline["threads"].to_list() == [1], (
+            f"listed as {[c.threads for c in configurations]}, the baseline "
+            f"became the {baseline['threads'].to_list()}-thread row"
+        )
+
+
 @pytest.mark.parametrize(
     "path", helpers.CALLERS_THAT_NAME_IMPLEMENTATIONS, ids=lambda p: p.name
 )

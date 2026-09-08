@@ -2093,8 +2093,8 @@ part worth having: the parity tests run at 400 and 2,000 segments, so a defect
 that only appears at scale — an index overflowing, a reduction reordering —
 would be invisible to the whole suite.
 
-Peak memory was **0.32 GB** for a process that ran all four implementations in
-turn. The same run under the design that passed draws in as an array would have
+Peak memory was **0.32 GB** for a process that ran the reference, the batched
+loop and the kernel in turn. The same run under the design that passed draws in as an array would have
 needed about 1.2 GB for the draws alone.
 
 The threading ratio there is 8.8 and not 20, and the population is not the
@@ -2133,13 +2133,13 @@ kernel changing at all.
 Five findings, and only the second is the one this project set out to make:
 
 - **Single-threaded, the compiled kernel is not reliably faster than Python.**
-  It is roughly level under `risk_ranked` — 0.0406 against 0.0440 — and 7.8x
+  It is roughly level under `risk_ranked` — 0.0406 against 0.0440 — and 7.6x
   under `age_threshold`. The gap tracks the candidate set exactly: the kernel scores
   only the candidates, the array implementations score the whole population
   because that is what vectorizes, and when every segment is a candidate the
   advantage is gone. A claim that this model is faster in Rust, single
   threaded, would be false for the policy that is the actual proposal.
-- **The win is the replication axis: 18x to 78x.** Replications are
+- **The win is the replication axis: 24x to 108x.** Replications are
   independent, each reads its own slice of the draws and writes its own block,
   and the interpreter lock is released for the whole computation. Nothing on
   the Python side follows without multiprocessing. This holds for reasons that

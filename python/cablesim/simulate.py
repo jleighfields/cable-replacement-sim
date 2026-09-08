@@ -274,7 +274,7 @@ def check_arguments(arguments: dict[str, object], concurrent: bool = False) -> i
         raise ValueError(
             f"threads is {threads}; this implementation runs one replication "
             f"at a time and cannot use more than 1. cablesim.kernel and "
-            f"cablesim.compiled are the implementations that can"
+            f"cablesim.batched are the implementations that can"
         )
 
     return n_segments

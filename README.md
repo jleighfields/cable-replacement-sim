@@ -69,14 +69,21 @@ year — none, between 76 and 868 of 12,000, and all of it — and that matters 
 than anything else here. Bold marks the fastest Python in each column, and it is
 a different implementation in each.
 
+The last row divides the bolded cell by the kernel's 48-thread cell, and both
+sit near a tenth of a millisecond per replication, where three repeats on a
+shared machine vary by a few percent — re-running the script gives 24x to 25x
+under `risk_ranked` and moves `run_to_failure` further than that. Read them as
+one and two significant figures.
+
 **Read that last row with its thread counts attached.** Under two of the three
 policies the fastest Python is single-threaded, so those figures compare one
 thread against forty-eight. That is not a limit of the language: a Numba
 implementation of the same algorithm was built and measured, reached the kernel
 at forty-eight threads, and was retired — `deprecated/README.md` has it. What
 the three effects are worth separately, measured rather than argued: **threads
-25–35x, compiling 5–6x where a policy makes few segments eligible, and the
-language 1.2–1.4x on one thread and about nothing on forty-eight.**
+8–36x depending on how long one replication is, compiling 5.5–6.5x where a
+policy makes few segments eligible, and the language 1.2–1.4x on one thread and
+not separable at all on forty-eight.**
 
 **Threading the batched loop mostly does not work**, which is why the fastest
 Python is single-threaded in two columns. It is *slower* on 48 threads than on
@@ -151,9 +158,12 @@ uv run python scripts/budget_sweep.py --threads 8                  # over 8 work
 uv run python scripts/budget_sweep.py --implementation reference   # the Python reference
 ```
 
-Only the Rust kernel uses more than one thread. Every other implementation
-refuses a larger count rather than ignoring it, so a saved run cannot record a
-thread count that nothing acted on.
+The Rust kernel and the batched NumPy loop both use more than one thread; the
+scalar reference refuses a larger count rather than ignoring it, so a saved run
+cannot record a thread count that nothing acted on. Threading the batched loop
+is slower than one thread under most policies — the benchmark section above has
+the measurement — so it is there as evidence rather than as a faster way to
+sweep.
 
 The benchmark script times all three — with the kernel appearing twice, at one
 thread and at the machine's full count — and checks each against the reference

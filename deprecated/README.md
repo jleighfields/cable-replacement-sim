@@ -28,10 +28,17 @@ at every thread count, so those figures compare one computation rather than
 several.
 
 **Reproducing it** needs `uv add --optional compiled "numba>=0.60"`, the file
-moved back to `python/cablesim/compiled.py`, and `"numba"` restored to
-`run.RUNNABLE`, `run.CONCURRENT` and `results.IMPLEMENTATIONS`. The parity tests
-pick it up from the registry with no further change, which is what they are
-written that way for.
+moved back to `python/cablesim/compiled.py`, `"numba"` restored to
+`run.RUNNABLE`, `run.CONCURRENT` and `results.IMPLEMENTATIONS`, and `--extra
+compiled` added to the CI sync line. `run.RUNNABLE` needs a wrapper that imports
+the module inside the call rather than at the top of `run.py`: numba is an extra
+rather than a dependency every install carries, and importing it at module scope
+makes a compute-only install unable to import `run` at all.
+
+The parity tests need no change — they take their implementations from the
+registry, which is what they are written that way for. Removing the entry
+dropped its parametrisations and left the suite green, and adding it back
+restores them.
 
 ## Why a column store is the wrong shape for this simulation
 

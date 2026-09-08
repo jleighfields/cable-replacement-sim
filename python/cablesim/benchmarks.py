@@ -75,10 +75,10 @@ class Configuration(NamedTuple):
 
     Attributes:
         implementation: The name in ``run.RUNNABLE``.
-        threads: Workers to spread replications over. Only the scalar Rust
-            kernel accepts more than one; every other implementation refuses,
-            which is what keeps a row from claiming a thread count nothing
-            acted on.
+        threads: Workers to spread replications over. The implementations
+            named in ``run.CONCURRENT`` accept more than one; every other one
+            refuses, which is what keeps a row from claiming a thread count
+            nothing acted on.
         n_reps: Replications to run. Stated per configuration because the
             scalar reference cannot afford what the others should be measured
             at.
@@ -202,7 +202,7 @@ def time_once(
     arguments: dict[str, object],
     policy: policies.Resolved,
     repeats: int,
-) -> tuple[simulate.Results, float, float]:
+) -> tuple[simulate.Results, float, float, float]:
     """Runs one configuration, returning its result and how long it took.
 
     Args:
@@ -353,7 +353,14 @@ def compare(
     # speedup quoted against a baseline the reference beats is flattered, so
     # the second column is against whichever Python implementation was actually
     # fastest, and that is the one an outside claim should use.
-    baseline = frame.filter(pl.col("implementation") == "batched_numpy")
+    #
+    # The single-threaded row specifically. That implementation can now be
+    # listed at more than one thread count, and taking whichever row came first
+    # would make the denominator depend on the order the caller wrote its
+    # configurations in.
+    baseline = frame.filter(
+        (pl.col("implementation") == "batched_numpy") & (pl.col("threads") == 1)
+    )
     if baseline.height > 0:
         per_replication = baseline["seconds_per_replication"][0]
         frame = frame.with_columns(
