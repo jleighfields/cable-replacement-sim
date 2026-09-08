@@ -208,10 +208,11 @@ here. A mirrored pair carries the same module name on both sides:
 - **The `notebooks` and `app` marker groups are excluded from a default run**
   because each costs minutes and neither gates a merge. The app suite is
   scheduled weekly and on pushes to `main`, and skips itself until app tests
-  exist; **the notebook suite runs nowhere automatically**, so run `pytest -m notebooks` yourself after changing any
-  package API a notebook imports, and before opening a pull request that
-  touches one. `README.md` has the commands, and `PLAN.md`, on the Shiny app
-  integration tests, has what that suite is for.
+  exist; **the notebook suite runs nowhere automatically**, so run
+  `pytest -m notebooks` yourself after changing any package API a notebook
+  imports, and before opening a pull request that touches one. `README.md`
+  has the commands, and `PLAN.md`, on the Shiny app integration tests, has
+  what that suite is for.
 
 ## Notebooks and the app
 

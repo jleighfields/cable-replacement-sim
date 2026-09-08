@@ -226,8 +226,8 @@ argument and ignored it.
 
 The reference is the only one absent: it runs a replication at a time by
 construction, being the version written to be checkable by reading. Every name
-here must be one ``RUNNABLE`` holds, which the import-time guard below
-``missing_names`` refuses.
+here must be one ``RUNNABLE`` holds; the import-time guard below calls
+``missing_names`` and raises on any that is not.
 """
 
 

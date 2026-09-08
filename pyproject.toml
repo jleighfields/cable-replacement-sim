@@ -56,8 +56,10 @@ app = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Both suites cost minutes: the notebook run executes every marimo notebook
-# headless, and the app run drives a real browser. They run on pushes to the
-# default branch and weekly rather than gating a merge. An explicit -m on the
+# headless, and the app run drives a real browser. Neither gates a merge, and
+# neither runs the way the other does: the app suite is scheduled on pushes to
+# the default branch and weekly, and skips itself until app tests exist, while
+# nothing runs the notebook suite automatically at all. An explicit -m on the
 # command line overrides this, so `pytest -m notebooks` still works.
 markers = [
     "notebooks: executes marimo notebooks headless; deselect with '-m \"not notebooks\"'",
