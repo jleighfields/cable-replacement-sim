@@ -204,4 +204,59 @@ figure reads as a costed result it is not.
 
 ## Review
 
-To be written when the work is done.
+Everything above was built. Three things are worth recording because they were
+not known when the plan was written.
+
+**A third of the phase was already done.** `PLAN.md` listed the reliability
+trajectory figures as work Phase 6 adds; notebooks 04 and 06 had been drawing
+them since Phases 3 and 5. The plan was written against the roadmap and the
+roadmap had not been reconciled with the code. The Phase 6 entry now says so
+rather than being quietly deleted, since the failure it records is worth
+keeping.
+
+**Every test was watched failing.** Eleven mutations, each reddening the test
+that names it: the escalation dropped from the accumulation; every segment
+contributing rather than the failed ones; lost load charged to the budget
+beside the emergency bill; lost load folded into `total_spend`; `voll` losing
+its present-value twin; `failure_cost` dropped from the horizon totals; the
+batched loop dropping the escalation; the kernel writing into the wrong class
+cell; the frontier plotting the budget offered instead of the spend incurred;
+the replication cloud not drawn; the clouds drawn over the curves.
+
+Two of those are worth the detail. The kernel and batched mutations were
+caught by the parity suite — 68 and 75 tests respectively — but only because
+the shared fixture escalates costs at the configured rate; the four parity
+tests that override `cost_escalation` to ones cannot see an escalation defect
+at all, and a first attempt at the mutation check selected exactly those and
+reported the defect harmless. The lesson is the one already in this repo: a
+green result from a filtered selection is not a green result.
+
+**The claims this touched were re-measured rather than reasoned about.**
+
+- *Timing.* One chunk at 12,000 segments and 200 replications under
+  `risk_ranked`, best of three, this branch against `main` built the same way:
+  kernel on 48 threads 0.211 s both; batched NumPy 8.882 to 8.973 s, up 1.0%;
+  scalar reference 8.856 to 8.882 s, up 0.3%. The README quotes ranges spanning
+  tens of percent, so a one-percent shift cannot move them and they stand.
+- *Memory.* The result arrays are 5.76 MB at a thousand replications against
+  5.04 for seven, and `run.py` now says 5.8. Peak resident memory through a
+  whole `run.run` over five policies at 12,000 segments: 399.5 MB at 1,000
+  replications and 1,123.7 at 10,000, against 393.5 and 1,109.0 measured the
+  same way on `main`. So the eighth array costs about 1% of the peak, which is
+  inside the run-to-run spread.
+
+**One thing was found and not fixed.** Those peak figures do not match the ones
+`run.py`'s `UNBOUNDED_BATCH` docstring records — 220 MB at 1,000 replications
+and 867 at 10,000 — and they do not match them **on `main` either**, so this is
+a claim that was already unreproducible rather than one this branch broke. The
+same docstring's other memory figure, 386 MB for an unchunked kernel run at
+12,000 segments and 1,000 replications, does reproduce, and it contradicts the
+220 in the paragraph above it. Whatever produced the 220/867/1,415/2,499 series
+is not a straightforward `run.run` at the shipped population, and the
+conditions were not written down beside it. Re-taking that series under a
+recorded driver is its own piece of work.
+
+**The naming seam stands as planned.** The result is `voll`; the per-segment
+column it totals is still `outage_cost_per_failure`, and
+`reliability.voll_per_customer_hour` is still the rate. Each says which it is
+in its own docstring.

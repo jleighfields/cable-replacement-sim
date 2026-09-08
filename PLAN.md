@@ -29,8 +29,10 @@ the year draws are ever read, depending on the policy — and is what lets a
 worker generate without a lock.
 
 The kernel runs replications over worker threads with the interpreter lock
-released, and the benchmark table exists. Phase 6, the cost frontier and the
-outage cost it needs, is next.
+released, and the benchmark table exists. Results carry an eighth array,
+`voll`, for the customer value the failures destroy, and the cost frontier is
+drawn from it. Phase 7, the Shiny application and the wheel it needs, is
+next.
 `rust-toolchain.toml` pins the compiler a checkout and continuous integration
 both build against, so `maturin develop` rebuilds the extension module and the
 format, lint and test gates all run — rustup installs what that file names, so
@@ -577,7 +579,9 @@ is not SAIFI and that no regulator would recognize.
 the indices cover unplanned interruptions only (2.6), and it is reported on its
 own so the cost of the work stays visible without entering a metric defined to
 exclude it. `outage_cost_per_failure` feeds policy scoring
-(2.8), where value is exactly what should drive the ranking.
+(2.8), where value is exactly what should drive the ranking, and it is totalled
+over the segments that failed into the `voll` result (7.2), which is the same
+column read as an outcome rather than as a reason to act.
 
 **Durations are configured in hours and converted to minutes here**, once, at
 the only place that does it. The reliability indices are defined in
@@ -1493,7 +1497,7 @@ question with a different answer.
 | Batched annual loop | `batched.py` | — | The benchmark baseline only (6.5), and array-shaped, so there is nothing for the kernel to mirror |
 | **Random draws** | `random_draws.py` | `draws.rs` | **Mirrored.** Both compute Philox-4x64-10 at a position, and both are checked against NumPy's implementation rather than against each other |
 | Reliability metrics and discounting | `metrics.py` | — | Ratios derived once from returned counts, so both implementations are compared on what they compute (7.4) |
-| Kernel wrapper | `kernel.py` | — | Rebuilds the reference's `Results` from the seven arrays the binding returns, so both implementations hand back one type (5.2) |
+| Kernel wrapper | `kernel.py` | — | Rebuilds the reference's `Results` from the arrays the binding returns, so both implementations hand back one type (5.2) |
 | Run orchestration and writing | `run.py` | — | Owns the chunk and policy loops, the concatenation, and every write (7.1) |
 | Run directory format and sweep reading | `results.py` | — | The layout `run.py` writes through, and the reader; the kernel does no I/O |
 | Figures | `plots.py` | — | — |
@@ -1587,10 +1591,11 @@ fn run_chunk<'py>(
     emergency_charged_to_budget:  bool,
     n_classes:                    usize,   // sizes the third result axis
     n_years:                      usize,
-) -> PyResult<Bound<'py, PyTuple>>          // seven numpy arrays
+) -> PyResult<Bound<'py, PyTuple>>          // one array per result field
 ```
 
-The call returns seven `(chunk, n_years, n_classes)` arrays as a plain tuple,
+The call returns one `(chunk, n_years, n_classes)` array per field of
+`simulate.Results`, as a plain tuple in that field order,
 and `kernel.py` — the Python wrapper — rebuilds `simulate.Results` from them.
 **Both implementations then return the identical Python type**, so `run.py`,
 the metrics layer and every test drive either without knowing which they hold;
@@ -2275,9 +2280,9 @@ override — never `policy`, which varies within one.
 ### 7.2 What one saved row is
 
 `results.parquet` holds one row per `(policy, replication, year, class)`, with
-one column for each of the seven arrays the kernel returns (5.2): `failures`,
+one column for each array the kernel returns (5.2): `failures`,
 `customers_interrupted`, `customer_minutes`, `planned_customer_minutes`,
-`planned_replacements`, `planned_spend`, `emergency_spend`.
+`planned_replacements`, `planned_spend`, `emergency_spend`, `voll`.
 
 **Every returned array is saved, without exception.** 7.4 computes the metrics
 from this frame and from nothing else, so a quantity the kernel produces and
@@ -2839,44 +2844,64 @@ It was called `allow_threads` until PyO3 renamed it, which is what examples
 found elsewhere still use; the old name compiles with a deprecation warning
 rather than failing, so `cargo clippy` is what catches it.
 
-**Phase 6 — the cost frontier, and the outage cost it needs**
-Two figures the project does not have, and the one quantity they both need.
+**Phase 6 — the cost frontier, and the lost load it needs**
+Two figures the project did not have, and the one quantity they both needed.
 
-*The quantity.* Results carry `planned_spend` and `emergency_spend` but nothing
-for what customers lost. `outage_cost_per_failure` already exists per segment,
-built in `population.py` from `reliability.voll_per_customer_hour` and the
-segment's customer counts, so the value of lost load is already parameterised
-and needs no new knob — it is simply never accumulated. **Add one result field,
-`outage_cost`**, totalling that column over the segments that failed, escalated
-by the year the way the ranking score already escalates it.
+*The quantity.* Results carried `planned_spend` and `emergency_spend` and
+nothing for what customers lost. `outage_cost_per_failure` already exists per
+segment, built in `population.py` from `reliability.voll_per_customer_hour` and
+the segment's customer counts, so the value of lost load was already
+parameterised and needed no new knob — it was simply never accumulated.
+`Results` gains one field, **`voll`**, totalling that column over the segments
+that failed, escalated by the year the way the ranking score escalates the same
+column.
 
-That is the expensive part of this phase and the reason it comes before the
+That was the expensive part of this phase and the reason it comes before the
 application: a field on `Results` changes the scalar reference, the batched
 loop, the Rust kernel, the binding carrying the arrays across, the parity tests
 comparing every cell, and the schema a saved manifest is validated against. The
 model has to be still while it happens, and the application should be built
 against the final shape rather than migrated after.
 
+**`voll` is charged to no budget and summed into no spend column.** It is
+customer value destroyed rather than money the utility pays, so it reaches a
+funding decision only through the `risk_ranked` score, which already read the
+per-segment column it totals. `metrics` derives `failure_cost` — emergency
+spend plus lost load — beside `total_spend`, which stays the utility's own
+outlay because the reliability-against-budget figures divide by it.
+
+Parity covers the new array on its own, since the comparison iterates the field
+names, and three implementations agreeing says nothing about the value. What
+pins the value is analytical: the class totals at a known escalation, that only
+failed segments contribute, and that scaling lost load a thousandfold moves no
+funding decision.
+
 *The trajectory figures.* A reliability index against year, per policy, with an
-uncertainty ribbon. **Most of this exists**: `plots.trajectory` draws a quantity
-against year per policy behind a shaded interval, fed by
-`metrics.summarize_replications`, which emits a mean and the quantile pair named
-in `metrics.BAND_QUANTILES`. What this phase adds is driving it with the
-reliability indices rather than with raw counts, and a notebook showing them for
-one policy at one budget.
+uncertainty ribbon. **These were already built**, in Phases 3 and 5:
+`plots.trajectory` draws a quantity against year per policy behind a shaded
+interval, fed by `metrics.summarize_replications`, and notebooks 04 and 06 both
+drive it with `saidi` and `saifi` rather than with raw counts. This phase added
+nothing to them, and the entry that once listed them as work is corrected
+rather than deleted, because the mistake it records — planning against a
+document instead of against the code — is the one worth not repeating.
 
 *The frontier.* A scatter tracing what each policy buys, **planned spend
 actually incurred on the x-axis** — the money spent rather than the budget
-offered, so a policy that cannot spend its allowance shows that — and **the cost
-of failure on the y-axis: emergency replacement spend plus outage cost**. One
-point per policy per budget level, over the sweep `scripts/budget_sweep.py`
-already produces.
+offered, so a policy that cannot spend its allowance shows that — and **the
+cost of failure on the y-axis: emergency replacement spend plus the value of
+lost load**. One point per policy per budget level, over the sweep
+`scripts/budget_sweep.py` already produces, drawn by `plots.cost_frontier` in
+notebook 04.
 
 **Every replication is drawn faintly behind the policy means**, rather than
 error bars on each axis. The two costs are correlated within a replication — a
 year of many failures raises both — and a pair of error bars states each margin
-while hiding exactly that. The cloud shows it. At 1,000 replications this is the
-one figure in the project whose rendering cost is worth measuring.
+while hiding exactly that. The cloud shows it, and `metrics.replication_totals`
+is what reaches those totals before they are averaged.
+
+At the size the shipped sweep produces — five policies, eight budget levels and
+1,000 replications, so 40,000 points behind 40 means — the figure takes 0.16 s
+to build and serializes to 1.4 MB of HTML, so it needs no thinning.
 
 Emergency replacement is charged at `emergency_multiplier`, which is 2.5 and
 stays there. It feeds the `risk_ranked` score as well as the bill, so a frontier
@@ -3149,8 +3174,8 @@ the argument belongs beside the model it constrains.
    **This does nothing for the population axis**, which is the one the draw
    array binds — see the item above. What made the population axis scale at all
    is a decision already taken elsewhere: the kernel totals by segment class
-   inside its own loop, so the boundary returns seven small arrays rather than a
-   table. Returning per-segment detail instead would be 43 GB at the shipped
+   inside its own loop, so the boundary returns a handful of small arrays
+   rather than a table. Returning per-segment detail instead would be 43 GB at the shipped
    size and 3.6 TB at a million segments.
 7. **Settled: rung 5 stays in the suite.** Fitting per-technology shape was
    expected to need a record table large enough to be slow. Timed, the whole
@@ -3190,14 +3215,14 @@ the argument belongs beside the model it constrains.
 
 ## 14. First actions in the next session
 
-1. Phase 6, the cost frontier and the outage cost it needs. Section 11, Phased
-   roadmap, has what it owes, and the sentence in it worth not skipping is that
-   the result field lands before the application is built, not after. The
-   application phase that follows must build and prove its wheel installs on
-   the deployment target in that phase rather than in the publishing one — it
-   deploys to an
+1. Phase 7, the Shiny application and the wheel it needs. Section 11, Phased
+   roadmap, has what it owes. The sentence in it worth not skipping is that the
+   application must build and prove its wheel installs on the deployment target
+   in that phase rather than in the publishing one — it deploys to an
    environment that installs this package itself, so a working wheel is a
-   prerequisite for the application being deliverable at all.
+   prerequisite for the application being deliverable at all. The result shape
+   it is built against is now final: `voll` landed in Phase 6, which is what
+   that phase came before the application for.
 
    The application inherits a decision from Phase 5 that its own design section
    already half-anticipates. The kernel is level with Python on one thread and
