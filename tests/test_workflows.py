@@ -11,6 +11,7 @@ instead.
 import os
 import pathlib
 import subprocess
+import tempfile
 
 import yaml
 from cablesim import constants
@@ -124,8 +125,15 @@ def gate_answers_present(tree: pathlib.Path) -> bool:
             leaves the job condition reading an empty string and the suite
             skipped for a reason nothing reports.
     """
-    written = tree / "github_output"
-    written.write_text("", encoding="utf-8")
+    # Somewhere other than the directory being inspected. The runner points
+    # `GITHUB_OUTPUT` at a file outside the checkout, and writing it inside
+    # `tree` would leave one in the repository root the moment this is asked
+    # about the real one.
+    handle = tempfile.NamedTemporaryFile(  # noqa: SIM115
+        mode="w", suffix=".github_output", delete=False
+    )
+    handle.close()
+    written = pathlib.Path(handle.name)
     # `bash -e`, because that is the shell GitHub gives a `run:` block on a
     # Linux runner, and `compgen` is a bash builtin that a `sh` fallback does
     # not carry.
@@ -139,6 +147,7 @@ def gate_answers_present(tree: pathlib.Path) -> bool:
         check=True,
     )
     answer = written.read_text(encoding="utf-8")
+    written.unlink()
     assert "present=" in answer, f"the gate wrote no answer at all: {answer!r}"
     return "present=true" in answer
 
@@ -146,16 +155,35 @@ def gate_answers_present(tree: pathlib.Path) -> bool:
 APP_SUITE_LAYOUTS: dict[str, str] = {
     "flat under tests/app": "tests/app/test_smoke.py",
     "a subdirectory of tests/app": "tests/app/ui/test_smoke.py",
-    "the app marker outside tests/app": "tests/test_app_smoke.py",
 }
-"""Places an app test can sit that ``pytest -m app`` would collect from.
+"""Places an app test can sit that the gate has to see.
 
-`testpaths` is `tests`, `python_files` is left at pytest's `test_*.py`, and
-`app` is a marker declared for the whole project — so a marked test is in the
-app suite wherever under `tests/` it is written. The second entry is the shape
-`tests/` mirroring the package produces; the third is what a single wiring test
-looks like before anyone makes a directory for it.
+The second is the shape `tests/` mirroring the package produces, and it is why
+the gate searches at any depth rather than globbing one directory's immediate
+children.
 """
+
+
+def collected_app_tests() -> list[str]:
+    """What ``pytest -m app`` actually selects in this repository.
+
+    Asks pytest rather than reading the source for the marker. A search of the
+    text finds the marker wherever it is written, including inside a string
+    literal in a test that builds fixtures containing it — which is how the
+    gate came to answer "there are app tests" for a repository with none.
+
+    Returns:
+        The node id of every test the ``app`` marker selects, empty when the
+        suite does not exist yet.
+    """
+    found = subprocess.run(  # noqa: S603
+        ["uv", "run", "pytest", "-m", "app", "--collect-only", "-q"],  # noqa: S607
+        cwd=constants.PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return [line for line in found.stdout.splitlines() if "::" in line]
 
 
 def test_the_app_gate_finds_an_app_suite_wherever_pytest_would(
@@ -191,7 +219,52 @@ def test_the_app_gate_finds_an_app_suite_wherever_pytest_would(
 
     assert not unseen, (
         f"`pytest -m app` would collect these and the workflow gate would not, "
-        f"so the app job stays skipped and the run stays green: {unseen}. The "
-        f"gate has to select the way the job does — on the marker, not on one "
-        f"directory's immediate children."
+        f"so the app job stays skipped and the run stays green: {unseen}"
+    )
+
+
+def test_the_gate_answers_this_repository_the_way_pytest_does() -> None:
+    """Run against the repository it actually gates, not only against fixtures.
+
+    The gate's other test builds trees under a temporary directory, and a gate
+    can be right about every one of those and wrong here. It was: a search for
+    the marker text matched this file, which writes the marker into the
+    fixtures above, so the gate answered `present=true` for a repository with
+    no app tests — the job ran, `pytest -m app` selected nothing, exited 5, and
+    the scheduled workflow failed on every push to the default branch.
+
+    Comparing the gate against pytest on this checkout is the check that was
+    missing, and it is the one that cannot be satisfied by a gate that is right
+    about hypothetical trees alone.
+    """
+    collected = collected_app_tests()
+    present = gate_answers_present(constants.PROJECT_ROOT)
+
+    assert present == bool(collected), (
+        f"the gate says the app suite is "
+        f"{'present' if present else 'absent'} and `pytest -m app` collects "
+        f"{len(collected)} tests, so the app job "
+        f"{'runs with nothing to do' if present else 'skips a suite that exists'}"
+    )
+
+
+def test_no_app_test_hides_where_the_gate_cannot_see_it() -> None:
+    """The convention the gate rests on: app tests live under ``tests/app``.
+
+    A cheap gate cannot reproduce pytest's collection, so it reads a convention
+    instead — and a convention nothing enforces is one the next person breaks
+    without hearing about it. `pytest -m app` would collect a marked test
+    anywhere under `tests/`; the gate only looks under `tests/app`; this is
+    what keeps those two answers the same.
+    """
+    stray = [
+        node
+        for node in collected_app_tests()
+        if not node.startswith("tests/app/")
+    ]
+
+    assert not stray, (
+        f"these carry the `app` marker outside `tests/app/`, where the "
+        f"workflow gate cannot see them, so the app job would skip while they "
+        f"exist: {stray}"
     )
