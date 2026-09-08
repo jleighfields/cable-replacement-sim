@@ -9,6 +9,38 @@ assertion.
 |---|---|
 | `batched_polars.py` | The annual loop over a polars frame, in Python. Competitive on one policy and slower on the rest, and beaten 20–80× by the Rust kernel. |
 | `batched.rs` | The same loop in Rust. Answered its question — there is no interop penalty to recover — and charged 2m22s of every Rust edit to keep asking it. |
+| `compiled_numba.py` | The scalar reference's algorithm compiled by Numba. Answered its question and reached the kernel; retired because reaching it is not a reason to maintain a fourth implementation of the model, and numba pulls LLVM into every install to do it. |
+
+## What the compiled implementation established
+
+Its measurement is in
+[docs/compiled-and-threaded-python.md](../docs/compiled-and-threaded-python.md),
+and it is the reason the benchmark table no longer claims what it used to. The
+published speedup compared **one Python thread against forty-eight Rust
+threads**, because at the time every Python implementation refused a larger
+count. The batched loop accepts one now, which this study is also what
+prompted. This one
+did not, and separating the three effects gave: threads worth
+8–36x depending on how long one replication is and dominating everything, compiling worth
+5.5–6.5x where a policy makes few segments eligible, and the language worth
+1.2–1.4x on one thread and not separable at all on forty-eight.
+
+It reproduced the reference exactly in every cell, under all five policies and
+at every thread count, so those figures compare one computation rather than
+several.
+
+**Reproducing it** needs `uv add --optional compiled "numba>=0.60"`, the file
+moved back to `python/cablesim/compiled.py`, `"numba"` restored to
+`run.RUNNABLE`, `run.CONCURRENT` and `results.IMPLEMENTATIONS`, and `--extra
+compiled` added to the CI sync line. `run.RUNNABLE` needs a wrapper that imports
+the module inside the call rather than at the top of `run.py`: numba is an extra
+rather than a dependency every install carries, and importing it at module scope
+makes a compute-only install unable to import `run` at all.
+
+The parity tests need no change — they take their implementations from the
+registry, which is what they are written that way for. Removing the entry
+dropped its parametrisations and left the suite green, and adding it back
+restores them.
 
 ## Why a column store is the wrong shape for this simulation
 

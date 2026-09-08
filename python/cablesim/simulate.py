@@ -121,7 +121,7 @@ def running_total(values: np.ndarray) -> float:
     return float(np.cumsum(values)[-1])
 
 
-def check_arguments(arguments: dict[str, object]) -> int:
+def check_arguments(arguments: dict[str, object], concurrent: bool = False) -> int:
     """Refuses an argument set no implementation of this loop should accept.
 
     Authored once and called by every Python implementation of the loop — this
@@ -156,6 +156,11 @@ def check_arguments(arguments: dict[str, object]) -> int:
             their order in a second place, and a pair whose order drifted would
             check the wrong array against the wrong name while every length
             still matched.
+        concurrent: Whether the calling implementation can spread replications
+            over workers. False refuses any count but 1; True refuses only a
+            count below 1, which is what the Rust binding refuses. The
+            distinction is a property of the caller, so it is passed rather
+            than guessed.
 
     Returns:
         The segment count, read off the population.
@@ -166,9 +171,10 @@ def check_arguments(arguments: dict[str, object]) -> int:
             replication, segment or year this chunk would draw at is past what
             a draw index can carry, if a per-segment or per-year array is the
             wrong length, if a class index is past the end of the class axis,
-            or if ``threads`` is not 1 — no Python implementation of this loop
-            runs replications concurrently, and the compute kernel is the one
-            that can.
+            or if ``threads`` is a count the calling implementation cannot
+            run — 1 is the only count an implementation that runs one
+            replication at a time accepts, and anything below 1 is refused by
+            every implementation.
         TypeError: If ``policy.kind`` is not an integer.
     """
     policy = arguments["policy"]
@@ -255,14 +261,20 @@ def check_arguments(arguments: dict[str, object]) -> int:
         )
     # Last, which is where the binding checks its own thread count, so the two
     # sides ask their questions in the same order. What they ask differs, and
-    # that difference is the whole point of the kernel: the binding refuses
-    # only 0, because it can spread replications over any number above that.
+    # that difference is what `concurrent` carries: an implementation that runs
+    # one replication at a time takes only 1, and one that spreads them takes
+    # any count above 0, which is what the binding refuses.
     threads = arguments["threads"]
-    if threads != 1:
+    if concurrent and threads < 1:
+        raise ValueError(
+            f"threads is {threads}; a chunk cannot be spread over fewer than "
+            f"one worker"
+        )
+    elif not concurrent and threads != 1:
         raise ValueError(
             f"threads is {threads}; this implementation runs one replication "
-            f"at a time and cannot use more than 1. cablesim.kernel is the "
-            f"implementation that can"
+            f"at a time and cannot use more than 1. cablesim.kernel and "
+            f"cablesim.batched are the implementations that can"
         )
 
     return n_segments

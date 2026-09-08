@@ -64,8 +64,10 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=1,
         help=(
-            "workers to spread each chunk's replications over; only the kernel "
-            f"can use more than 1, and this machine offers "
+            "workers to spread each chunk's replications over; the kernel and "
+            "the batched loop can use more than 1 and the scalar reference "
+            "refuses it, though threading the batched loop is slower than one "
+            f"thread wherever the sort is small. This machine offers "
             f"{kernel.AVAILABLE_THREADS}"
         ),
     )

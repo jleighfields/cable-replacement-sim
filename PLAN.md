@@ -29,8 +29,8 @@ the year draws are ever read, depending on the policy — and is what lets a
 worker generate without a lock.
 
 The kernel runs replications over worker threads with the interpreter lock
-released, and the benchmark table exists. Phase 6, the Shiny application and the
-wheel it needs, is next.
+released, and the benchmark table exists. Phase 6, the cost frontier and the
+outage cost it needs, is next.
 `rust-toolchain.toml` pins the compiler a checkout and continuous integration
 both build against, so `maturin develop` rebuilds the extension module and the
 format, lint and test gates all run — rustup installs what that file names, so
@@ -1423,7 +1423,8 @@ cable-replacement-sim/
 │   ├── 02_effective_scale.py
 │   ├── 03_weibull_fitting.py
 │   ├── 04_policy_explorer.py
-│   └── 05_parity_and_bench.py
+│   ├── 05_parity_and_bench.py
+│   └── 06_production_run.py
 ├── app/                        # Shiny for Python
 │   ├── app.py                  # UI + server
 │   ├── overrides.py            # UI controls -> config overrides
@@ -2067,11 +2068,23 @@ and `risk_ranked` makes every segment a candidate.
 
 | Implementation | `run_to_failure` | `age_threshold` | `risk_ranked` |
 |---|---|---|---|
-| Scalar Python reference | 0.00747 | **0.02039** | 0.04425 |
-| Batched NumPy | **0.00445** | 0.02426 | **0.04400** |
-| Rust kernel, 1 thread | 0.00201 | 0.00262 | 0.04057 |
-| **Rust kernel, 48 threads** | **0.00024** | **0.00026** | **0.00195** |
-| **Fastest Python, beaten by** | **18.5x** | **78.4x** | **22.6x** |
+| Scalar Python reference | 0.00746 | 0.02033 | 0.04405 |
+| Batched NumPy, 1 thread | 0.00459 | 0.02468 | 0.04479 |
+| Batched NumPy, 48 threads | 0.01792 | 0.04335 | 0.03564 |
+| Rust kernel, 1 thread | 0.00202 | 0.00266 | 0.04058 |
+| Rust kernel, 48 threads | 0.00014 | 0.00019 | 0.00148 |
+| Fastest Python, beaten by | 33.0x | 107.6x | 24.1x |
+
+Retaken at 96 replications, with each configuration warmed before the clock
+starts, which is why these differ from the figures they replace. Under
+`run_to_failure` and `age_threshold` the fastest Python is single-threaded, so
+those two ratios compare one thread against forty-eight — a Numba implementation
+built and measured for this reached the kernel at forty-eight threads before
+being retired, so the gap is the thread count rather than the language.
+`docs/compiled-and-threaded-python.md` separates the three effects the ratio
+carries: threads 8–36x depending on how long one replication is, compiling
+5.5–6.5x where a policy makes few segments eligible, and the language
+1.2–1.4x on one thread and not separable at all on forty-eight.
 
 **Measured once at 100,000 segments**, which is eight times the shipped
 population and further than anything in the test suite goes. Ten replications,
@@ -2082,8 +2095,8 @@ part worth having: the parity tests run at 400 and 2,000 segments, so a defect
 that only appears at scale — an index overflowing, a reduction reordering —
 would be invisible to the whole suite.
 
-Peak memory was **0.32 GB** for a process that ran all four implementations in
-turn. The same run under the design that passed draws in as an array would have
+Peak memory was **0.32 GB** for a process that ran the reference, the batched
+loop and the kernel in turn. The same run under the design that passed draws in as an array would have
 needed about 1.2 GB for the draws alone.
 
 The threading ratio there is 8.8 and not 20, and the population is not the
@@ -2122,13 +2135,13 @@ kernel changing at all.
 Five findings, and only the second is the one this project set out to make:
 
 - **Single-threaded, the compiled kernel is not reliably faster than Python.**
-  It is roughly level under `risk_ranked` — 0.0406 against 0.0440 — and 7.8x
+  It is roughly level under `risk_ranked` — 0.0406 against 0.0440 — and 7.6x
   under `age_threshold`. The gap tracks the candidate set exactly: the kernel scores
   only the candidates, the array implementations score the whole population
   because that is what vectorizes, and when every segment is a candidate the
   advantage is gone. A claim that this model is faster in Rust, single
   threaded, would be false for the policy that is the actual proposal.
-- **The win is the replication axis: 18x to 78x.** Replications are
+- **The win is the replication axis: 24x to 108x.** Replications are
   independent, each reads its own slice of the draws and writes its own block,
   and the interpreter lock is released for the whole computation. Nothing on
   the Python side follows without multiprocessing. This holds for reasons that
@@ -2391,6 +2404,7 @@ notebook needs a function, it belongs in the package.
 | `03_weibull_fitting.py` | Censored MLE walkthrough. Slider for censoring fraction; show the likelihood surface, fitted vs true survival curve, and the recovery test result. Demonstrates *why* censoring must be handled. |
 | `02_effective_scale.py` | The effective-scale reduction derived and made visual (2.3). Numbered ahead of the fitting notebook because the fitting notebook's third rung tests what this one establishes. Sliders for `k`, `lambda`, `n` and length; overlay conductor-level and segment-level survival curves against the empirical minimum of sampled draws, and against draws for a longer segment. Shows scale shrinking by `(n * L/L_ref)^(-1/k)` while shape holds, which is the claim the recovery ladder's rung 3 tests numerically. |
 | `04_policy_explorer.py` | Sliders for annual budget, policy, and policy params; plot SAIDI/SAIFI trajectories over 30 years, spend, and failures by class. **This is the reliability-vs-budget curve** — the deliverable the original work produced. |
+| `06_production_run.py` | The shipped configuration run end to end on the kernel, at its full replication count, with every stage timed. Exposes the population size and replication count as the two parameters, so the same demonstration runs at a larger fleet; `resize_population` carries the customer denominator and the annual budget with it. Asserts what a timing has to be read against — the build profile, and that the manifest records the implementation and thread count that actually ran — and that the saved rows factor as policies times replications times years times classes, which no check on the values would catch. It is the only notebook that goes through `run.run`, so it is where the batch size is visible. |
 | `05_parity_and_bench.py` | Agreement and the benchmark table. Its rows are the implementations of Section 6.5, with the Rust kernel appearing twice as its two thread configurations, at a stated population size and replication count. Its *agreement* table reads the runnable registry, so an implementation added there is checked without being named here; its *timing* table names its rows, because each carries a thread count and a replication count the registry does not hold, and a test asserts every name it uses is one that exists. The scalar reference is shown for scale and is explicitly **not** the baseline a speedup is claimed against; 6.5 rules that comparison out as flattering. |
 
 **Each notebook walks the API layer by layer rather than making the top-level
@@ -2404,7 +2418,7 @@ requires every layer to be callable on its own with plain arguments.
 
 This is a constraint on the package rather than a style for the notebooks. If a
 step is awkward to show, the API is awkward, and that surfaces in Phase 1
-instead of Phase 6. The walkthrough is also an executable check that the
+instead of Phase 7. The walkthrough is also an executable check that the
 package has seams at all — one that runs when someone runs it (10.2, Notebook
 execution is a manual step).
 
@@ -2510,8 +2524,8 @@ projects.
 installs the package into an environment it builds itself, so the Rust
 extension has to exist as an installable **abi3 wheel** (stable ABI, so one
 wheel covers multiple Python versions) that the target platform accepts.
-Building that wheel and proving it installs belongs to Phase 6 alongside the
-app, not to Phase 7 — the app is not deliverable without it, and a wheel that
+Building that wheel and proving it installs belongs to Phase 7 alongside the
+app, not to Phase 8 — the app is not deliverable without it, and a wheel that
 will not install is otherwise discovered at deploy time, after everything else
 is finished.
 
@@ -2519,7 +2533,7 @@ is finished.
 `app/requirements.txt` by relative path, rather than being fetched from an
 index. Nothing external has to exist for a deploy to work: no index, no
 credentials, no extra index URL configured on the server. It also keeps
-publishing in Phase 7 where it belongs, instead of committing to a permanent
+publishing in Phase 8 where it belongs, instead of committing to a permanent
 version number while the model is still moving — a released version cannot be
 replaced. Because the wheel is `abi3-py311`, one file covers every Python 3.11
 and later, so the Linux platform tag is the only thing that has to match the
@@ -2705,7 +2719,7 @@ Between them they set:
 
 ### 10.5 What CI does not cover yet
 
-Wheel building across platforms and Python versions belongs to Phase 7, where
+Wheel building across platforms and Python versions belongs to Phase 8, where
 abi3 wheels and the Shiny deployment target settle what actually has to be
 built. Until then CI proves the code works on one Linux runner at one Python
 version, which is what the phases before it need. Adding a build matrix
@@ -2823,7 +2837,51 @@ It was called `allow_threads` until PyO3 renamed it, which is what examples
 found elsewhere still use; the old name compiles with a deprecation warning
 rather than failing, so `cargo clippy` is what catches it.
 
-**Phase 6 — Shiny app, and the wheel it needs**
+**Phase 6 — the cost frontier, and the outage cost it needs**
+Two figures the project does not have, and the one quantity they both need.
+
+*The quantity.* Results carry `planned_spend` and `emergency_spend` but nothing
+for what customers lost. `outage_cost_per_failure` already exists per segment,
+built in `population.py` from `reliability.voll_per_customer_hour` and the
+segment's customer counts, so the value of lost load is already parameterised
+and needs no new knob — it is simply never accumulated. **Add one result field,
+`outage_cost`**, totalling that column over the segments that failed, escalated
+by the year the way the ranking score already escalates it.
+
+That is the expensive part of this phase and the reason it comes before the
+application: a field on `Results` changes the scalar reference, the batched
+loop, the Rust kernel, the binding carrying the arrays across, the parity tests
+comparing every cell, and the schema a saved manifest is validated against. The
+model has to be still while it happens, and the application should be built
+against the final shape rather than migrated after.
+
+*The trajectory figures.* A reliability index against year, per policy, with an
+uncertainty ribbon. **Most of this exists**: `plots.trajectory` draws a quantity
+against year per policy behind a shaded interval, fed by
+`metrics.summarize_replications`, which emits a mean and the quantile pair named
+in `metrics.BAND_QUANTILES`. What this phase adds is driving it with the
+reliability indices rather than with raw counts, and a notebook showing them for
+one policy at one budget.
+
+*The frontier.* A scatter tracing what each policy buys, **planned spend
+actually incurred on the x-axis** — the money spent rather than the budget
+offered, so a policy that cannot spend its allowance shows that — and **the cost
+of failure on the y-axis: emergency replacement spend plus outage cost**. One
+point per policy per budget level, over the sweep `scripts/budget_sweep.py`
+already produces.
+
+**Every replication is drawn faintly behind the policy means**, rather than
+error bars on each axis. The two costs are correlated within a replication — a
+year of many failures raises both — and a pair of error bars states each margin
+while hiding exactly that. The cloud shows it. At 1,000 replications this is the
+one figure in the project whose rendering cost is worth measuring.
+
+Emergency replacement is charged at `emergency_multiplier`, which is 2.5 and
+stays there. It feeds the `risk_ranked` score as well as the bill, so a frontier
+drawn at another value is a different experiment rather than the same one
+rescaled.
+
+**Phase 7 — Shiny app, and the wheel it needs**
 `app/` with config-override wiring, ExtendedTask + progress, cached default
 sweep, and policy comparison mode. Confirm a full interactive run completes in
 a few seconds at the reduced interactive defaults. Then `tests/app/` and
@@ -2832,17 +2890,17 @@ integration tests, including the assertion that drives the UI and requires the
 result to match the package called directly with the same overrides and seed.
 
 **Build the abi3 wheel and prove it installs on the deployment target in this
-phase, not in Phase 7.** The app deploys to Posit Connect, which installs the
+phase, not in Phase 8.** The app deploys to Posit Connect, which installs the
 package into its own environment, so a working wheel is a prerequisite for the
 app being deliverable at all. Section 9, Shiny application, has the constraint;
 discovering it at deploy time is the most likely way this project stalls at the
 last step.
 
-**Phase 7 — package and publish**
+**Phase 8 — package and publish**
 `Cargo.toml` holds the authoritative version and `pyproject.toml` must match
 it — maturin reads both, and a mismatch surfaces as wheel metadata disagreeing
 with the crate rather than as an error. Version, docs, and the wheel-building matrix across platforms and Python
-versions. Optional: publish to PyPI and tag a release. Phase 6 has already
+versions. Optional: publish to PyPI and tag a release. Phase 7 has already
 proven one wheel installs on one target; what this phase adds is the matrix and
 the release process (Section 10.5, What CI does not cover yet).
 
@@ -3130,10 +3188,12 @@ the argument belongs beside the model it constrains.
 
 ## 14. First actions in the next session
 
-1. Phase 6, the Shiny application and the wheel it needs. Section 11, Phased
+1. Phase 6, the cost frontier and the outage cost it needs. Section 11, Phased
    roadmap, has what it owes, and the sentence in it worth not skipping is that
-   the wheel must be built and proven to install on the deployment target in
-   that phase rather than in Phase 7 — the application deploys to an
+   the result field lands before the application is built, not after. The
+   application phase that follows must build and prove its wheel installs on
+   the deployment target in that phase rather than in the publishing one — it
+   deploys to an
    environment that installs this package itself, so a working wheel is a
    prerequisite for the application being deliverable at all.
 

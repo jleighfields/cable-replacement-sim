@@ -115,6 +115,46 @@ refused only at the write.
 """
 
 
+CONCURRENT: frozenset[str] = frozenset({"batched_numpy", "kernel"})
+"""The implementations that spread a chunk's replications over workers.
+
+Declared rather than discovered, because the alternative is calling each one
+with two threads and seeing which raises — a test of the refusal rather than of
+the capability, which would quietly pass an implementation that accepted the
+argument and ignored it.
+
+The reference is the only one absent: it runs a replication at a time by
+construction, being the version written to be checkable by reading. Every name
+here must be one ``RUNNABLE`` holds, which
+``unthreadable_implementations`` checks.
+"""
+
+
+def unthreadable_implementations(names: Iterable[str]) -> set[str]:
+    """Names among these that no runnable implementation answers to.
+
+    A function rather than a check run once at import, for the reason
+    ``unknown_implementations`` below is one: an import-time check cannot be
+    watched failing, because breaking it stops the whole suite at collection
+    instead of reddening a test.
+
+    Args:
+        names: Implementation names claiming to spread replications.
+
+    Returns:
+        Those that name nothing in ``RUNNABLE``.
+    """
+    return set(names) - set(RUNNABLE)
+
+
+UNTHREADABLE = unthreadable_implementations(CONCURRENT)
+if UNTHREADABLE:
+    raise ValueError(
+        f"{sorted(UNTHREADABLE)} claim to spread replications but name no "
+        f"implementation; the runnable set is {sorted(RUNNABLE)}"
+    )
+
+
 def unknown_implementations(names: Iterable[str]) -> set[str]:
     """Names among these that no saved result may claim.
 
@@ -337,9 +377,9 @@ def run(
             a timing from the kernel without one means nothing.
         batch_size: Replications per call.
         threads: Workers to spread each chunk's replications over, recorded in
-            the manifest beside the implementation and the build profile. Only
-            the compute kernel can use more than one; every other
-            implementation refuses, so a manifest cannot claim a thread count
+            the manifest beside the implementation and the build profile. The
+            implementations named in ``CONCURRENT`` can use more than one; the
+            scalar reference refuses, so a manifest cannot claim a thread count
             that nothing acted on. ``kernel.AVAILABLE_THREADS`` is this
             machine's count.
         swept: Values that vary between the runs of a sweep, written into the

@@ -30,16 +30,18 @@ that costs nothing to run.
 **The annual loop is implemented three times**, and that is the validation
 strategy rather than duplication. A scalar Python reference written to be
 checkable by reading; a batched NumPy loop that holds every replication in
-flight at once; and a Rust kernel that spreads replications over worker
-threads. All three take the same arguments, compute the same draws and return
-the same result type, so any of them can be named at the call. No array of
-uniforms is passed: each computes every draw from the run's key and the
+flight at once; and a Rust kernel. The last two can spread replications over
+worker threads. All three take the same arguments, compute the same draws and
+return the same result type, so any of them can be named at the call. No array
+of uniforms is passed: each computes every draw from the run's key and the
 position it is reading, and the two generators are held to agreeing bit for bit
 against NumPy's own Philox.
 
-Two further implementations over a polars frame, one in each language, were
-built and retired; [deprecated/README.md](deprecated/README.md) has the
-measurements and what they say about running a simulation on a column store.
+Three further implementations were built and retired: two over a polars frame,
+one in each language, and one compiling the reference's algorithm with Numba.
+[deprecated/README.md](deprecated/README.md) has the measurements, what they say
+about running a simulation on a column store, and what the compiled one
+established about where this project's speed actually comes from.
 
 They are compared by tests that force the lifetimes and check every cell, by a
 paired test over drawn lifetimes, and by runs written to disk and diffed row for
@@ -48,37 +50,54 @@ anywhere — which takes deliberate care rather than luck, because floating-poin
 addition is not associative and the year's emergency bill decides which segment
 the budget reaches last.
 
-What the timings say, at 12,000 segments over 30 years, on a release build with
-48 cores available. Seconds per replication, mean of 3 runs, and **including the
-cost of producing each run's random draws**, which is work a run actually does:
+What the timings say, at 12,000 segments over 30 years and 96 replications, on a
+release build with 48 cores available. Seconds per replication, mean of 3 runs
+after one warming run, and **including the cost of producing each run's random
+draws**, which is work a run actually does:
 
 | Implementation | `run_to_failure` | `age_threshold` | `risk_ranked` |
 |---|---|---|---|
-| Scalar Python reference | 0.00747 | **0.02039** | 0.04425 |
-| Batched NumPy | **0.00445** | 0.02426 | **0.04400** |
-| Rust kernel, 1 thread | 0.00201 | 0.00262 | 0.04057 |
-| **Rust kernel, 48 threads** | **0.00024** | **0.00026** | **0.00195** |
-| **Fastest Python, beaten by** | **18.5x** | **78.4x** | **22.6x** |
+| Scalar Python reference | 0.00746 | **0.02033** | 0.04405 |
+| Batched NumPy, 1 thread | **0.00459** | 0.02468 | 0.04479 |
+| Batched NumPy, 48 threads | 0.01792 | 0.04335 | **0.03564** |
+| Rust kernel, 1 thread | 0.00202 | 0.00266 | 0.04058 |
+| Rust kernel, 48 threads | 0.00014 | 0.00019 | 0.00148 |
+| Fastest Python, beaten by | 33.0x | 107.6x | 24.1x |
 
 The three policies differ in how much of the population they make eligible each
 year — none, between 76 and 868 of 12,000, and all of it — and that matters more
 than anything else here. Bold marks the fastest Python in each column, and it is
-not always the same implementation: the batched loop wins where a policy funds
-nothing or everything, and the scalar reference wins where few segments are
-eligible, because the batched form still sorts every one of them.
+a different implementation in each.
 
-**On one thread the kernel is not reliably faster than Python.** It is level
-under `risk_ranked`, where every segment is a candidate and the array
-expressions it competes with are already compiled loops over the same data. It
-pulls ahead where the candidate set is small — 7.8x under `age_threshold` —
-because it scores only the candidates. All three produce only the draws they
-read, so that part of the work is the same in every row.
+The last row divides the bolded cell by the kernel's 48-thread cell, and both
+sit near a tenth of a millisecond per replication, where three repeats on a
+shared machine vary by a few percent — re-running the script gives 24x to 25x
+under `risk_ranked` and moves `run_to_failure` further than that. Read them as
+one and two significant figures.
 
-**The win is the replication axis.** They are independent, the interpreter lock
-is released for the whole computation, and no Python implementation follows
-without multiprocessing. That is a fact about the axis rather than about Rust;
-what Rust contributes is that the compiler refused the first version, which
-shared its working buffers between workers.
+**Read that last row with its thread counts attached.** Under two of the three
+policies the fastest Python is single-threaded, so those figures compare one
+thread against forty-eight. That is not a limit of the language: a Numba
+implementation of the same algorithm was built and measured, reached the kernel
+at forty-eight threads, and was retired — `deprecated/README.md` has it. What
+the three effects are worth separately, measured rather than argued: **threads
+8–36x depending on how long one replication is, compiling 5.5–6.5x where a
+policy makes few segments eligible, and the language 1.2–1.4x on one thread and
+not separable at all on forty-eight.**
+
+**Threading the batched loop works only where the sort is large**, which is why
+the fastest Python is single-threaded in two columns. On 48 threads it is
+*slower* than on one under `run_to_failure` at both population sizes and under
+`age_threshold` at 12,000 segments — by as much as 3.9x — and faster in the
+other three of the six columns measured: the operations that dominate it do
+release the interpreter lock, but the Python-level orchestration between them
+holds it throughout, and only a sort big enough to outweigh that pays.
+
+[docs/compiled-and-threaded-python.md](docs/compiled-and-threaded-python.md) has
+the full measurement, both population sizes, and what the Rust kernel carries
+that is not a speed claim — ahead-of-time compilation against Numba's
+5.4-second cold build, one wheel across Python versions, and integer semantics
+that cannot go wrong quietly.
 
 Run the table yourself with `uv run python scripts/run_benchmarks.py`, after
 building with `--release`. See [PLAN.md](PLAN.md) for the model, the decisions
@@ -141,9 +160,12 @@ uv run python scripts/budget_sweep.py --threads 8                  # over 8 work
 uv run python scripts/budget_sweep.py --implementation reference   # the Python reference
 ```
 
-Only the Rust kernel uses more than one thread. Every other implementation
-refuses a larger count rather than ignoring it, so a saved run cannot record a
-thread count that nothing acted on.
+The Rust kernel and the batched NumPy loop both use more than one thread; the
+scalar reference refuses a larger count rather than ignoring it, so a saved run
+cannot record a thread count that nothing acted on. Threading the batched loop
+is slower than one thread wherever the sort is small — the benchmark section
+above has the measurement — so it is there as evidence rather than as a faster
+way to sweep.
 
 The benchmark script times all three — with the kernel appearing twice, at one
 thread and at the machine's full count — and checks each against the reference

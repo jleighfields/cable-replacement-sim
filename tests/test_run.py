@@ -232,6 +232,36 @@ def test_a_name_no_result_may_claim_is_reported_as_unknown() -> None:
     assert run.unknown_implementations([]) == set()
 
 
+def test_a_threading_claim_that_names_no_implementation_is_reported() -> None:
+    """The check behind the threading registry, driven with a bad name.
+
+    The same shape as the unknown-name check above and for the same reason: the
+    invariant it guards cannot be asserted directly, because breaking it stops
+    the suite at collection rather than reddening anything.
+    """
+    assert run.unthreadable_implementations(["batched_pandas"]) == {"batched_pandas"}
+    assert run.unthreadable_implementations([]) == set()
+
+
+def test_the_threading_registry_names_the_kernel_and_something_to_compare() -> None:
+    """``CONCURRENT`` is not empty, and holds the kernel.
+
+    The parity assertion that every thread count gives the reference answer
+    loops over this set, so emptying it would leave that test collected, green,
+    and checking nothing. Naming the kernel specifically is what stops the set
+    shrinking to only the implementation whose threading is a negative result.
+    """
+    assert "kernel" in run.CONCURRENT
+    # Both, not just the kernel. Narrowing this set to the kernel alone leaves
+    # both threaded parity assertions green while they quietly stop checking
+    # the batched loop, because each loops over the set inside its body rather
+    # than parametrising on it, so the test count does not move either.
+    assert "batched_numpy" in run.CONCURRENT
+    assert set(run.RUNNABLE) > run.CONCURRENT, (
+        "the reference cannot spread replications and must stay out of this set"
+    )
+
+
 def test_the_run_derives_the_draw_key_from_the_configured_seed(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

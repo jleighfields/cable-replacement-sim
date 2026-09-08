@@ -56,8 +56,8 @@ fact and is not.
 ``batched_numpy`` and ``kernel`` are the same algorithm in the two languages,
 which is the comparison this project exists to make.
 
-Two frame implementations were here and are not: they are in ``deprecated/``,
-with the measurement that retired them.
+Two frame implementations and a compiled one were here and are not: they are in
+``deprecated/``, with the measurements that retired them.
 """
 
 SCHEMA: dict[str, pl.DataType] = {

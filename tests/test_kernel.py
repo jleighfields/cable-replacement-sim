@@ -513,11 +513,12 @@ def test_the_kernel_refuses_no_threads_at_all() -> None:
 def test_the_reference_refuses_a_thread_count_it_cannot_honour() -> None:
     """Asking the scalar reference for two workers is refused, not ignored.
 
-    Both implementations take a thread count so that a caller choosing between
-    them passes the same arguments to either. Only one can act on it. Silently
-    ignoring the request would let a benchmark row or a run manifest record a
-    thread count that nothing ran with, which is provenance that reads as fact
-    and is not.
+    Every implementation takes a thread count so that a caller choosing between
+    them passes the same arguments to either. The scalar reference is the one
+    that cannot act on it, running a replication at a time by construction, and
+    it refuses rather than ignoring: silently accepting would let a benchmark
+    row or a run manifest record a thread count that nothing ran with, which is
+    provenance that reads as fact and is not.
 
     The kernel accepts the same value, and that difference is the point rather
     than a divergence: it is what the two implementations are for.
