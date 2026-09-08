@@ -124,6 +124,40 @@ def simulation_arguments(settings: config_module.Config) -> dict[str, object]:
     return built
 
 
+def arguments_at(
+    precision: str, n_segments: int, n_reps: int
+) -> dict[str, object]:
+    """Builds one fixture's arguments at a size and a working width.
+
+    The two fixtures below differ only in how big a population they ask for,
+    and what each establishes is argued in its own docstring rather than here.
+    This is the part they share: load the shipped configuration, override the
+    precision the run is parametrized on, resize, and hand the result to the
+    one builder every implementation is given.
+
+    Args:
+        precision: The working width, keyed into ``constants.PRECISIONS``.
+        n_segments: Population size.
+        n_reps: Replications in the chunk.
+
+    Returns:
+        Every argument of ``simulate.run_chunk`` except ``policy``.
+    """
+    base = config_module.load_config(constants.DEFAULT_CONFIG_PATH)
+    settings = config_module.resize_population(
+        base.model_copy(
+            update={
+                "simulation": base.simulation.model_copy(
+                    update={"precision": precision}
+                )
+            }
+        ),
+        n_segments,
+        n_reps=n_reps,
+    )
+    return simulation_arguments(settings)
+
+
 @pytest.fixture(scope="session", params=sorted(constants.PRECISIONS), ids=str)
 def deterministic_arguments(request: pytest.FixtureRequest) -> dict[str, object]:
     """A small run's arguments, for the tests that force the lifetimes.
@@ -146,19 +180,9 @@ def deterministic_arguments(request: pytest.FixtureRequest) -> dict[str, object]
     Returns:
         Every argument of ``simulate.run_chunk`` except ``policy``.
     """
-    base = config_module.load_config(constants.DEFAULT_CONFIG_PATH)
-    settings = config_module.resize_population(
-        base.model_copy(
-            update={
-                "simulation": base.simulation.model_copy(
-                    update={"precision": request.param}
-                )
-            }
-        ),
-        DETERMINISTIC_SEGMENTS,
-        n_reps=DETERMINISTIC_REPS,
+    return arguments_at(
+        request.param, DETERMINISTIC_SEGMENTS, DETERMINISTIC_REPS
     )
-    return simulation_arguments(settings)
 
 
 @pytest.fixture(scope="session", params=sorted(constants.PRECISIONS), ids=str)
@@ -183,16 +207,4 @@ def statistical_arguments(request: pytest.FixtureRequest) -> dict[str, object]:
     Returns:
         Every argument of ``simulate.run_chunk`` except ``policy``.
     """
-    base = config_module.load_config(constants.DEFAULT_CONFIG_PATH)
-    settings = config_module.resize_population(
-        base.model_copy(
-            update={
-                "simulation": base.simulation.model_copy(
-                    update={"precision": request.param}
-                )
-            }
-        ),
-        STATISTICAL_SEGMENTS,
-        n_reps=STATISTICAL_REPS,
-    )
-    return simulation_arguments(settings)
+    return arguments_at(request.param, STATISTICAL_SEGMENTS, STATISTICAL_REPS)

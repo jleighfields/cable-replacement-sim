@@ -229,11 +229,13 @@ def test_a_name_no_result_may_claim_is_reported_as_unknown() -> None:
     raises at import and stops the suite at collection, so the assertion never
     runs. Calling the check is what can report.
     """
-    assert run.unknown_implementations(["batched_pandas"]) == {"batched_pandas"}
+    assert run.missing_names(["batched_pandas"], results.IMPLEMENTATIONS) == {
+        "batched_pandas"
+    }
     # And nothing else: asserting that `RUNNABLE` itself comes back empty would
     # be the invariant again, which breaking stops the suite at collection, and
     # asserting it of the closed set is a set minus itself.
-    assert run.unknown_implementations([]) == set()
+    assert run.missing_names([], results.IMPLEMENTATIONS) == set()
 
 
 def test_the_escalation_series_compounds_in_double_and_narrows_once() -> None:
@@ -499,8 +501,10 @@ def test_an_implementation_with_no_declared_batch_size_is_reported() -> None:
     reason: the invariant it guards cannot be asserted directly, because
     breaking it stops the suite at collection rather than reddening anything.
     """
-    assert run.unbatched_implementations(["batched_pandas"]) == {"batched_pandas"}
-    assert run.unbatched_implementations([]) == set()
+    assert run.missing_names(["batched_pandas"], run.BATCH_SIZES) == {
+        "batched_pandas"
+    }
+    assert run.missing_names([], run.BATCH_SIZES) == set()
     assert set(run.BATCH_SIZES) == set(run.RUNNABLE), (
         "every runnable implementation needs a declared batch size, because a "
         "run that names none has to resolve to something"
@@ -585,8 +589,10 @@ def test_a_threading_claim_that_names_no_implementation_is_reported() -> None:
     invariant it guards cannot be asserted directly, because breaking it stops
     the suite at collection rather than reddening anything.
     """
-    assert run.unthreadable_implementations(["batched_pandas"]) == {"batched_pandas"}
-    assert run.unthreadable_implementations([]) == set()
+    assert run.missing_names(["batched_pandas"], run.RUNNABLE) == {
+        "batched_pandas"
+    }
+    assert run.missing_names([], run.RUNNABLE) == set()
 
 
 def test_the_threading_registry_names_the_kernel_and_something_to_compare() -> None:

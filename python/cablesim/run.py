@@ -226,8 +226,8 @@ argument and ignored it.
 
 The reference is the only one absent: it runs a replication at a time by
 construction, being the version written to be checkable by reading. Every name
-here must be one ``RUNNABLE`` holds, which
-``unthreadable_implementations`` checks.
+here must be one ``RUNNABLE`` holds, which the import-time guard below
+``missing_names`` refuses.
 """
 
 
@@ -257,6 +257,11 @@ def batch_size_for(implementation: str, n_reps: int) -> int:
 def missing_names(names: Iterable[str], known: Iterable[str]) -> set[str]:
     """Names among these that ``known`` does not cover.
 
+    A function rather than an expression inlined into the guards below, because
+    an import-time check cannot be watched failing: breaking one stops the whole
+    suite at collection rather than reddening a test. This can be called with a
+    name that is deliberately wrong, and asserted on.
+
     Args:
         names: The names to check.
         known: The names that exist.
@@ -267,77 +272,24 @@ def missing_names(names: Iterable[str], known: Iterable[str]) -> set[str]:
     return set(names) - set(known)
 
 
-def unbatched_implementations(names: Iterable[str]) -> set[str]:
-    """Names among these that no batch size is declared for.
-
-    A function rather than a check run once at import, for the reason
-    ``unknown_implementations`` is one: an import-time check cannot be watched
-    failing, because breaking it stops the suite at collection rather than
-    reddening a test.
-
-    Args:
-        names: Implementation names to check.
-
-    Returns:
-        Those that ``BATCH_SIZES`` does not cover.
-    """
-    return missing_names(names, BATCH_SIZES)
-
-
-def unthreadable_implementations(names: Iterable[str]) -> set[str]:
-    """Names among these that no runnable implementation answers to.
-
-    A function rather than a check run once at import, for the reason
-    ``unknown_implementations`` below is one: an import-time check cannot be
-    watched failing, because breaking it stops the whole suite at collection
-    instead of reddening a test.
-
-    Args:
-        names: Implementation names claiming to spread replications.
-
-    Returns:
-        Those that name nothing in ``RUNNABLE``.
-    """
-    return missing_names(names, RUNNABLE)
-
-
-UNBATCHED = unbatched_implementations(RUNNABLE)
-if UNBATCHED:
+# The three registries have to agree, and each disagreement has its own
+# consequence, so each is refused separately with the reason attached.
+if unbatched := missing_names(RUNNABLE, BATCH_SIZES):
     raise ValueError(
-        f"{sorted(UNBATCHED)} are runnable but no batch size is declared for "
+        f"{sorted(unbatched)} are runnable but no batch size is declared for "
         f"them; every implementation needs one, because a run that names no "
         f"size has to resolve to something"
     )
 
-UNTHREADABLE = unthreadable_implementations(CONCURRENT)
-if UNTHREADABLE:
+if unthreadable := missing_names(CONCURRENT, RUNNABLE):
     raise ValueError(
-        f"{sorted(UNTHREADABLE)} claim to spread replications but name no "
+        f"{sorted(unthreadable)} claim to spread replications but name no "
         f"implementation; the runnable set is {sorted(RUNNABLE)}"
     )
 
-
-def unknown_implementations(names: Iterable[str]) -> set[str]:
-    """Names among these that no saved result may claim.
-
-    A function rather than an expression evaluated once at import, because an
-    import-time check cannot be watched failing: breaking it stops the whole
-    suite at collection rather than reddening a test. This can be called with
-    a bad name and asserted on.
-
-    Args:
-        names: Implementation names to check.
-
-    Returns:
-        Those that are not in the closed set a manifest accepts.
-    """
-    return missing_names(names, results.IMPLEMENTATIONS)
-
-
-UNRUNNABLE = unknown_implementations(RUNNABLE)
-if UNRUNNABLE:
+if unrunnable := missing_names(RUNNABLE, results.IMPLEMENTATIONS):
     raise ValueError(
-        f"{sorted(UNRUNNABLE)} name no implementation a result may claim; "
+        f"{sorted(unrunnable)} name no implementation a result may claim; "
         f"the closed set is {list(results.IMPLEMENTATIONS)}"
     )
 

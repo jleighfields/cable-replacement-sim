@@ -52,9 +52,10 @@ valid configuration can violate. When adding a test, break the thing it names
 and watch it go red before trusting it.
 
 **Marker groups are excluded from a default run.** `notebooks` and `app` each
-cost minutes, so `addopts` deselects them. The `app` group runs on pushes to
-the default branch and weekly, so a break in it surfaces after a merge rather
-than before it. **Nothing runs the `notebooks` group at all** — it executes
+cost minutes, so `addopts` deselects them. The `app` group is scheduled on pushes to the
+default branch and weekly, so a break in it surfaces after a merge rather than
+before it — once there is one to break. No app tests exist yet, and the
+workflow's first job checks for them and skips the rest when there are none. **Nothing runs the `notebooks` group at all** — it executes
 only when someone runs `uv run pytest -m notebooks`, so run it after changing
 any package interface a notebook imports. Both need `uv sync --extra plots`
 alongside their dependency group, because notebook 04 imports

@@ -20,7 +20,7 @@ PLAN_PATH: pathlib.Path = constants.PROJECT_ROOT / "PLAN.md"
 """The standing project plan, whose structure the document tests check."""
 
 
-def headings(text: str) -> list[tuple[int, str]]:
+def headings(text: str) -> list[str]:
     """Finds the level-2 and level-3 headings outside fenced code blocks.
 
     Fenced blocks are skipped because the configuration examples contain YAML
@@ -30,17 +30,17 @@ def headings(text: str) -> list[tuple[int, str]]:
         text: The whole markdown document.
 
     Returns:
-        One `(level, heading text)` pair per heading, in document order.
+        The heading text, without its leading hashes, in document order.
     """
-    found: list[tuple[int, str]] = []
+    found: list[str] = []
     fenced = False
     for line in text.splitlines():
         if line.startswith("```"):
             fenced = not fenced
         elif not fenced:
-            match = re.match(r"^(#{2,3}) (.+)$", line)
+            match = re.match(r"^#{2,3} (.+)$", line)
             if match is not None:
-                found.append((len(match.group(1)), match.group(2).strip()))
+                found.append(match.group(1).strip())
     return found
 
 
@@ -54,7 +54,7 @@ def section_numbers(text: str) -> set[str]:
         Numbers such as `{"2", "2.11", "10.4"}`, taken from numbered headings.
     """
     numbers: set[str] = set()
-    for _, heading in headings(text):
+    for heading in headings(text):
         match = re.match(r"^(\d+(?:\.\d+)?)[.\s]", heading)
         if match is not None:
             numbers.add(match.group(1).rstrip("."))
@@ -411,18 +411,17 @@ def alternating_lifetimes(arguments: dict[str, object]) -> dict[str, object]:
 
 
 def forced_lifetimes(
-    arguments: dict[str, object],
-    scale: float,
-    replacement: float | None = None,
-    from_new: bool = False,
+    arguments: dict[str, object], scale: float, from_new: bool = False
 ) -> dict[str, object]:
     """Copies a call's arguments with every Weibull scale replaced.
 
     Args:
         arguments: The arguments to copy.
-        scale: What to put in ``scale``.
-        replacement: What to put in ``replacement_scale``, or None to use
-            ``scale`` for both.
+        scale: What to put in both ``scale`` and ``replacement_scale``. One
+            value for the pair because no caller has ever wanted two: a test
+            forcing lifetimes wants the whole run deterministic, and a
+            replacement drawn at a different scale would leave the years after
+            the first one governed by something the test did not choose.
         from_new: Also start every segment at age zero. **Required for
             ``FAILS_AT_ONCE`` to force what its name says at single
             precision**, and harmless at double. A lifetime is drawn
@@ -454,11 +453,7 @@ def forced_lifetimes(
     forced = {
         **arguments,
         "scale": np.full(segments, scale, dtype=reference.dtype),
-        "replacement_scale": np.full(
-            segments,
-            scale if replacement is None else replacement,
-            dtype=reference.dtype,
-        ),
+        "replacement_scale": np.full(segments, scale, dtype=reference.dtype),
     }
     if from_new:
         forced["age0"] = np.zeros(segments, dtype=reference.dtype)

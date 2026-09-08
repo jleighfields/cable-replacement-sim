@@ -2660,7 +2660,10 @@ Mechanics that decide whether this suite is usable or abandoned:
 
 `.github/workflows/app.yml` runs these behind an `app` marker, on pushes to
 `main` and weekly — off the pull-request path, because the browser download
-and install dominate the run. It runs pytest with
+and install dominate the run. **A first job decides whether the suite exists
+and the rest is skipped when it does not**, so the schedule costs a checkout
+rather than a release build and a Chromium download until the app phase lands
+the tests. It runs pytest with
 `--tracing=retain-on-failure --screenshot=only-on-failure` and uploads what
 those produce — without the flags Playwright writes nothing
 and the upload step is a silent no-op.
