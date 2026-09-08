@@ -39,6 +39,7 @@ two exchanged funds a different set of segments.
 """
 
 import pathlib
+import re
 
 import numpy as np
 import polars as pl
@@ -416,13 +417,14 @@ BOUNDARY_CASES = {
         ),
     ),
 }
-"""The two boundary cases above, with the quantity each one's guard asserts.
+"""The two boundary cases below, with the quantity each one's guard asserts.
 
 Keyed by the boundary rather than by the test name so a reader can see which
 constants belong to which. The second element reads back exactly what that
 test's guard reads, so the check below is a check on the guard rather than on
 something adjacent to it.
 """
+
 
 def test_the_emergency_premium_is_narrowed_where_the_reference_narrows_it(
     implementation: run.Implementation,
@@ -544,6 +546,89 @@ def test_each_boundary_guard_notices_that_its_boundary_has_moved(
         f"searched against and {drifted} at {DRIFTED_POPULATION} "
         f"segments, so it cannot tell that the boundary has moved; it needs "
         f"to assert a quantity the drift changes as well"
+    )
+
+
+PREMIUM_CLAIM = re.compile(
+    r"At a multiplier of\s+(?P<multiplier>[0-9.]+),\s+(?P<premiums>[0-9,]+) of the "
+    r"shipped population's [0-9,]+ premium terms differ between the two orders "
+    r"and (?P<keys>[0-9,]+) of its rank keys follow"
+)
+"""The measurement `src/policies.rs` quotes beside its narrowing order.
+
+Read out of the comment rather than restated here, so the test fails when the
+comment and the measurement disagree instead of when someone forgets to update
+a second copy.
+"""
+
+
+def test_the_premium_comment_quotes_a_multiplier_that_moves_what_it_says() -> None:
+    """The counts beside the narrowing order have to hold at the multiplier named.
+
+    `rank_key` narrows the emergency multiplier after subtracting one rather
+    than before, and the comment justifying that quotes how far apart the two
+    orders land: a multiplier, a count of premium terms that differ, and a count
+    of rank keys that follow. A multiplier the width happens to hold exactly
+    moves neither, so a comment quoting one demonstrates the opposite of what it
+    claims while reading as though it were measured.
+
+    Nothing else could see this. The comment is prose, no test reads it, and the
+    parity suite runs at the shipped multiplier of 2.5 — which is exactly
+    representable, so both orders agree and every case stays green whatever the
+    comment says.
+    """
+    source = (constants.PROJECT_ROOT / "src" / "policies.rs").read_text(
+        encoding="utf-8"
+    )
+    # The comment wraps across lines behind `//`, so the markers and the
+    # indentation come out before the sentence can be matched as one.
+    flattened = " ".join(
+        line.strip().lstrip("/").strip() for line in source.splitlines()
+    )
+    quoted = PREMIUM_CLAIM.search(flattened)
+    assert quoted is not None, (
+        "src/policies.rs no longer quotes a multiplier and the counts it moves "
+        "in the form this reads; either the comment was reworded, in which case "
+        "update this pattern, or the measurement was dropped"
+    )
+
+    multiplier = float(quoted["multiplier"])
+    arguments = one_year_at_single_precision(
+        multiplier=multiplier, budget=41938160.0, charged=False
+    )
+    planned = policies.planned_cost(
+        arguments["length_ft"],
+        arguments["cost_per_ft"],
+        arguments["mobilization_per_segment"],
+    )
+    failure_probability = weibull.conditional_failure_probability(
+        arguments["age0"], arguments["shape"], arguments["scale"]
+    )
+    outage = arguments["outage_cost_per_failure"]
+    narrow = planned.dtype.type
+
+    # The reference's order, then the one the comment says gives a different
+    # answer: subtract in double and let NumPy narrow, against narrowing the
+    # multiplier first and subtracting at the working width.
+    after = planned * narrow(multiplier - 1.0)
+    before = planned * (narrow(multiplier) - narrow(1.0))
+    premiums = int((after != before).sum())
+    keys = int(
+        (
+            failure_probability * (outage + after)
+            != failure_probability * (outage + before)
+        ).sum()
+    )
+
+    assert (premiums, keys) == (
+        int(quoted["premiums"].replace(",", "")),
+        int(quoted["keys"].replace(",", "")),
+    ), (
+        f"src/policies.rs says a multiplier of {multiplier} moves "
+        f"{quoted['premiums']} premium terms and {quoted['keys']} rank keys on "
+        f"the shipped population; it moves {premiums:,} and {keys:,}. A "
+        f"multiplier single precision holds exactly moves neither, so a comment "
+        f"quoting one argues against itself"
     )
 
 

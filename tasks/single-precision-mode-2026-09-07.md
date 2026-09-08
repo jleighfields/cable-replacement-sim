@@ -138,7 +138,7 @@ anywhere.** An earlier reading of this plan said otherwise and was wrong.
 **The prediction was wrong in its mechanism and roughly right in its
 scepticism.** It expected about 2x where a policy is arithmetic-bound and
 nothing where it is sort-bound, drawn from NumPy microbenchmarks. The split is
-by population size instead: nothing at 12,000 segments, 1.6x to 2.4x at 100,000,
+by population size instead: nothing at 12,000 segments, the range in `docs/single-precision.md`'s tables at 100,000,
 and it helps the sort-bound policy nearly as much as the other. Halving the
 working set matters when forty-eight workers pull their scratch through a
 shared cache and does not matter when it already fits. Those microbenchmarks
@@ -157,8 +157,13 @@ rather than one. `docs/single-precision.md` carries the corrected account, and
 its second assertion exists to rule out the guess above, and deleting it as
 redundant would leave the test unable to tell the two apart.
 
-**Memory falls 25% to 87%** across implementations and sizes, which is what the
-arithmetic did predict.
+**Memory falls**, which is what the arithmetic did predict, though by less than
+it suggested: 4.6% to 20.7% of the whole process across implementations and
+sizes, or 15.4% to 33.4% of what the model adds above the interpreter's own
+~126 MB. The arithmetic predicted 46% of the kernel's per-worker scratch, and
+that scratch is a fraction of either figure. `docs/single-precision.md` carries
+the table these come from; an earlier version of this line quoted 25% to 87%,
+read off a memory table since retaken at one replication count.
 - [ ] 8. Review passes.
 
 ## What would make this not worth doing

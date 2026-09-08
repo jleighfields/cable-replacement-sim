@@ -54,8 +54,11 @@ def test_numpy_and_the_system_library_agree_in_single_precision() -> None:
 
     The second half is what makes this a test rather than a restatement. The
     other available explanation — that each computes in double and rounds once —
-    is ruled out, not merely unnecessary: that is a different answer for about a
-    tenth of the inputs sampled here. Without it, a NumPy that grew its own
+    is ruled out, not merely unnecessary: over this sample it gives a different
+    answer for 2,064 of 20,000 `expm1` inputs and 1,478 of 20,000 `log1p`, but
+    for only **15 of 20,000** on `pow`. That last margin is what the `pow` arm
+    turns on, so narrowing its range or shrinking the sample can disarm that arm
+    while the other two go on passing. Without it, a NumPy that grew its own
     vectorised single-precision loops would pass the first assertion by
     accident only until it did not.
 

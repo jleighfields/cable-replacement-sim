@@ -227,17 +227,19 @@ def check_arguments(arguments: dict[str, object], concurrent: bool = False) -> i
             f"The widths are {sorted(constants.PRECISIONS)}"
         )
     if len(set(widths.values())) > 1:
-        # The most common width is named only to make the message readable;
-        # on an exact tie it is an arbitrary half, so the wording says "most of
-        # them" rather than "everywhere else", which a tie would make untrue.
+        # Every width with its count, rather than one named as the majority.
+        # An even split is reachable — a `budget` passed as a list is not
+        # counted here, leaving twelve arrays that can divide six and six — and
+        # any wording that calls one side the exception is then false.
         counted = collections.Counter(widths.values())
-        common, _ = counted.most_common(1)[0]
-        odd = {name: str(kind) for name, kind in widths.items() if kind != common}
+        tally = ", ".join(
+            f"{count} at {kind}" for kind, count in sorted(counted.items(), key=str)
+        )
         raise TypeError(
-            f"this call carries more than one floating width: {odd} against "
-            f"{common} for most of them. The precision a run computes in is "
-            f"the dtype of these arrays, so a mixed call is a call at neither "
-            f"width"
+            f"this call carries more than one floating width ({tally}): "
+            f"{ {name: str(kind) for name, kind in widths.items()} }. The "
+            f"precision a run computes in is the dtype of these arrays, so a "
+            f"mixed call is a call at neither width"
         )
 
     n_classes = arguments["n_classes"]

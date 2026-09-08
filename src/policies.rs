@@ -214,7 +214,7 @@ pub fn rank_key<T: Real>(
             // subtracting a narrowed one here gives a different premium for any
             // multiplier not exactly representable at this width — about two
             // fifths of them at single precision. At a multiplier of
-            // 2.942645808, 8,883 of the shipped population's 12,000 premium
+            // 2.942645377983026, 8,883 of the shipped population's 12,000 premium
             // terms differ between the two orders and 7,012 of its rank keys
             // follow. The shipped 2.5 is exactly representable and moves none
             // of them, which is why the parity tests that use it are silent
