@@ -1039,11 +1039,55 @@ def _(fleet, np, records, settings):
 
 
 @app.cell
-def _(design, design_names, fleet_end, fleet_entry, fleet_observed, weibull):
+def _():
+    def with_interval(label, value, bounds, places=3):
+        """One estimate beside the interval around it, as a line to print.
+
+        Every number this section reports is read against its interval rather
+        than on its own — a coefficient is identified or not, and the point
+        estimate alone cannot say which.
+
+        Args:
+            label: What the number is.
+            value: The estimate.
+            bounds: Its lower and upper bound.
+            places: Decimal places, for numbers of different magnitudes.
+
+        Returns:
+            One formatted line.
+        """
+        low, high = (float(bound) for bound in bounds)
+        return (
+            f"  {label:16} {float(value):.{places}f}"
+            f"  [{low:.{places}f}, {high:.{places}f}]"
+        )
+
+    return (with_interval,)
+
+
+@app.cell
+def _(
+    design,
+    design_names,
+    fleet_end,
+    fleet_entry,
+    fleet_observed,
+    weibull,
+    with_interval,
+):
     common_shape = weibull.fit_regression(
         fleet_end, fleet_entry, fleet_observed, design, design_names
     )
-    common_shape.shape, common_shape.reference_scale
+    print(
+        with_interval("shape", common_shape.shape, common_shape.shape_interval)
+        + "\n"
+        + with_interval(
+            "reference scale",
+            common_shape.reference_scale,
+            common_shape.reference_scale_interval,
+            places=2,
+        )
+    )
     return (common_shape,)
 
 
@@ -1104,6 +1148,7 @@ def _(
     technology_columns,
     technology_names,
     weibull,
+    with_interval,
 ):
     varying_shape = weibull.fit_regression(
         fleet_end,
@@ -1114,7 +1159,16 @@ def _(
         ancillary=technology_columns,
         ancillary_names=technology_names,
     )
-    varying_shape.shape, varying_shape.reference_scale
+    print(
+        with_interval("shape", varying_shape.shape, varying_shape.shape_interval)
+        + "\n"
+        + with_interval(
+            "reference scale",
+            varying_shape.reference_scale,
+            varying_shape.reference_scale_interval,
+            places=2,
+        )
+    )
     return (varying_shape,)
 
 
@@ -1137,8 +1191,10 @@ def _(reference_technology, varying_shape):
         f"the technology this fleet has the most failures for and nothing "
         f"below it means anything"
     )
-    f"reference {reference_technology.name}: shape interval "
-    f"[{_low:.3f}, {_high:.3f}] covers the configured {_configured}"
+    (
+        f"reference {reference_technology.name}: shape interval "
+        f"[{_low:.3f}, {_high:.3f}] covers the configured {_configured}"
+    )
     return
 
 
@@ -1205,8 +1261,11 @@ def _(exposure, pl, widths):
         f"what makes its scarcity of failures an exposure problem rather than "
         f"a sampling one"
     )
-    f"{_newest}: {_episodes[_newest]:,} episodes, {_failures[_newest]} failures, "
-    f"shape interval {_ratio:.1f}x wider than {_middle}'s"
+    (
+        f"{_newest}: {_episodes[_newest]:,} episodes, "
+        f"{_failures[_newest]} failures, shape interval {_ratio:.1f}x wider "
+        f"than {_middle}'s"
+    )
     return
 
 
