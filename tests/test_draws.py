@@ -14,7 +14,6 @@ its implementation is the same algorithm, indexed the same way.
 
 import subprocess
 import sys
-import textwrap
 
 import numpy as np
 import pytest
@@ -218,10 +217,11 @@ def test_a_run_starting_mid_block_drops_the_words_before_it() -> None:
     """A run is asked for by position, and a block holds four of them.
 
     ``uniforms_over`` reaches the position by producing the whole block it sits
-    in and discarding what comes before it. Every production caller happens to
-    start on a block boundary — the segment field is at shift 0 and the other
-    fields are multiples of four — so nothing else here asks for a run that
-    starts one, two or three positions in, and the discard is unexercised.
+    in and discarding what comes before it. Every production caller starts its
+    run at segment 0, and the three fields above the segment sit at shift 32 or
+    higher, so every index they can produce is a multiple of four — nothing
+    else here asks for a run that starts one, two or three positions in, and the
+    discard is unexercised.
     """
     key = random_draws.draw_key(11)
     lanes = np.uint64(random_draws.PHILOX_LANES)
@@ -239,7 +239,7 @@ def test_a_run_starting_mid_block_drops_the_words_before_it() -> None:
         assert np.array_equal(run, one_at_a_time), f"run starting at {first}"
 
 
-def test_asking_for_no_positions_gives_nothing() -> None:
+def test_the_sparse_path_given_no_positions_gives_nothing() -> None:
     """The sparse path is reached with nothing to draw and must not read.
 
     Both callers guard it behind a test that something was replaced, so this is
@@ -268,6 +268,35 @@ def test_asking_for_no_positions_gives_nothing() -> None:
             4,
         ),
     )
+
+
+def test_the_run_bound_changes_which_path_computes_and_not_what_it_computes() -> (
+    None
+):
+    """``MAX_RUN_DRAWS`` decides how a draw is produced, never which draw it is.
+
+    The bound sends a long run to the path that draws each position its own
+    block. Both paths are reached across it here, against the kernel, because
+    every other test in this file lands on one side and the crossing is only
+    covered indirectly through the parity suite.
+    """
+    key = random_draws.draw_key(29)
+    purpose = random_draws.PURPOSE["records"]
+    for largest in (
+        random_draws.MAX_RUN_DRAWS - 2,
+        random_draws.MAX_RUN_DRAWS - 1,
+        random_draws.MAX_RUN_DRAWS,
+        random_draws.MAX_RUN_DRAWS + 1,
+    ):
+        segments = np.linspace(0, largest, 300, dtype=np.uint32)
+        replications = np.zeros(segments.size, dtype=np.uint32)
+
+        assert np.array_equal(
+            random_draws.uniforms_at(key, purpose, replications, segments, 2),
+            _cablesim.uniforms_at(
+                key[0], key[1], purpose, replications, segments, 2
+            ),
+        ), f"largest {largest}"
 
 
 def test_a_chunk_draws_the_same_numbers_wherever_it_sits() -> None:
@@ -409,6 +438,12 @@ def test_a_purpose_too_large_for_its_field_is_refused_rather_than_aliased() -> N
 # the cap is what turns "produces far more than it was asked for" into an
 # observable failure instead of a machine that swaps for a minute.
 CAPPED_ADDRESS_SPACE = 2 * 1024**3
+"""Address space the child is held to, which only needs to be far under 32 GB.
+
+``RLIMIT_AS`` counts reserved address space rather than resident memory, so a
+NumPy built against a BLAS that reserves per-thread arenas can want more than
+this before doing any work. Raise it if that happens; the defect it exposes
+produces a 32 GB allocation and is caught by anything well below that."""
 
 ONE_DRAW_HIGH_IN_THE_SEGMENT_FIELD = """
 import resource
@@ -452,10 +487,8 @@ def test_one_draw_high_in_the_segment_field_costs_one_draw() -> None:
         [
             sys.executable,
             "-c",
-            textwrap.dedent(
-                ONE_DRAW_HIGH_IN_THE_SEGMENT_FIELD.format(
-                    limit=CAPPED_ADDRESS_SPACE
-                )
+            ONE_DRAW_HIGH_IN_THE_SEGMENT_FIELD.format(
+                limit=CAPPED_ADDRESS_SPACE
             ),
         ],
         capture_output=True,

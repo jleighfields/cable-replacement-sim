@@ -145,13 +145,20 @@ PHILOX_LANES = 4
 MAX_RUN_DRAWS = 16_384
 """Longest run ``uniforms_at`` will produce to gather a few positions out of.
 
-A run costs the largest segment asked for and not the number of positions asked
-for, so without a bound one draw high in the segment field produces every
-position beneath it: ``check_positions`` admits segments up to ``MAX_SEGMENT``,
-where the run would be 32 GB. The value is where producing the run stops being
-cheaper than drawing each position its own block — the scattered path costs a
-fixed 268 microseconds whatever it is asked for, and a run reaches that at
-about 17,000 draws.
+**A memory bound, not a tuned crossover.** A run is charged for the largest
+segment asked for and not for how many positions were asked for, so without a
+bound one draw high in the segment field produces every position beneath it:
+``check_positions`` admits segments up to ``MAX_SEGMENT``, where the run would
+be 32 GB.
+
+The value sits above the 12,000-segment population this project ships, where
+producing the run is about three times cheaper than drawing each position its
+own block, and below 100,000, where it is two to three times more expensive.
+Where the two cross in between was measured twice, in and out of the loop that
+calls this, and came out at 16,000 one way and 80,000 the other — the run
+path's cost per draw moves with how the allocator handles the size being asked
+for. Nothing here runs a population in that range, and any value across it
+behaves the same on the two sizes that are run.
 """
 
 PHILOX_MULTIPLIERS = (np.uint64(0xD2E7470EE14C6C93), np.uint64(0xCA5A826395121157))
@@ -362,28 +369,24 @@ def uniforms_at(
         return np.empty(0)
 
     # **Positions sharing a replication lie inside one consecutive run**, so the
-    # run can be produced and the wanted entries taken out of it. That is more
-    # draws and less time while the run stays short: the scattered path pays the
-    # vectorised generator's fixed cost whatever it is asked for, 268
-    # microseconds, where a 12,000-draw run costs 78 and gathering off it costs
-    # 2. It is the reference implementation that takes this branch, drawing one
-    # replication's replaced segments at a time.
+    # run can be produced and the wanted entries taken out of it. At the shipped
+    # population that is more draws and less time — 108 microseconds against
+    # 325 for the scattered path, asking for 200 positions across 12,000
+    # segments. It is the reference implementation that takes this branch,
+    # drawing one replication's replaced segments at a time.
     #
     # Both conditions are needed. Positions spanning several replications are
     # several runs separated by a wide stride, and a run longer than
-    # ``MAX_RUN_DRAWS`` costs more than the scattered path it is replacing —
-    # the run is charged for the largest segment asked for, so it grows with a
-    # population that the number of positions asked for does not. Detected here
-    # rather than asked of the caller: which branch is cheaper is a fact about
-    # this module's generators, not about the loop.
-    if (replications == replications[0]).all():
-        largest = int(segments.max())
-        if largest < MAX_RUN_DRAWS:
-            start = draw_index(
-                purpose, replications[:1], np.zeros(1, np.uint64), year
-            )
-            run = uniforms_over(key, int(start[0]), largest + 1)
-            return run[segments]
+    # ``MAX_RUN_DRAWS`` is refused for the reason that constant carries. The
+    # scattered path's cost grows with the number of positions asked for; the
+    # run's grows with the largest segment among them, which is why the two
+    # cross at all. Detected here rather than asked of the caller: which branch
+    # is cheaper is a fact about this module's generators, not about the loop.
+    largest = int(segments.max())
+    if largest < MAX_RUN_DRAWS and (replications == replications[0]).all():
+        start = draw_index(purpose, replications[:1], np.zeros(1, np.uint64), year)
+        run = uniforms_over(key, int(start[0]), largest + 1)
+        return run[segments]
 
     lanes = np.uint64(PHILOX_LANES)
     # One block per draw, because the positions share nothing.

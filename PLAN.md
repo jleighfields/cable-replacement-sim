@@ -1961,7 +1961,8 @@ Which comparisons share random draws, and which do not:
 **What the single-threaded kernel is worth, measured.** At 12,000 segments,
 50 replications and a 30-year horizon, release build, one thread, against the
 reference on the same draws: 1.9x with no candidates at all, 5.8x under an age
-threshold of 45 years — which leaves 655 of 12,000 eligible — and **1.0x for
+threshold of 45 years — which leaves between 76 and 868 of 12,000 eligible in
+any one year — and **1.0x for
 the three policies that use the neutral threshold**, where every segment is a
 candidate every year. The kernel scores only candidates while the reference
 scores the whole population every year, which is the whole of that spread.
@@ -2061,8 +2062,8 @@ something else being computed.
 The three policies are shown together because the answer depends on them more
 than on anything else in the table. What varies is how much of the population a
 policy makes eligible each year: `run_to_failure` funds nothing, `age_threshold`
-at 45 years makes 655 of 12,000 eligible, and `risk_ranked` makes every segment
-a candidate.
+at 45 years makes between 76 and 868 of 12,000 eligible depending on the year,
+and `risk_ranked` makes every segment a candidate.
 
 | Implementation | `run_to_failure` | `age_threshold` | `risk_ranked` |
 |---|---|---|---|
@@ -2105,10 +2106,12 @@ Bold marks the fastest Python implementation in each column, which is the
 denominator of the last row. **It is not the same implementation in every
 column**, which is exactly why that row exists rather than a fixed baseline: the
 batched loop wins where a policy funds nothing or everything, and the scalar
-reference wins under `age_threshold`, where 655 of 12,000 segments are
-eligible in the first year — rising to 7,235 by the last, as the population
-ages past the 45-year threshold — and the batched form sorts all 12,000 every
-year regardless.
+reference wins under `age_threshold`, where 503 of 12,000 segments are
+eligible in the first year and between 76 and 868 in any year, and the batched
+form sorts all 12,000 every year regardless. The count does not climb with the
+population's age the way the threshold alone would suggest, because funding a
+segment replaces it and a replaced segment is new again — the policy spends the
+candidates it creates.
 
 The two swapped places twice while this was being built — once when the batched
 loop was written with a wasted pass in it, and once when computing draws made

@@ -61,7 +61,7 @@ cost of producing each run's random draws**, which is work a run actually does:
 | **Fastest Python, beaten by** | **18.5x** | **78.4x** | **22.6x** |
 
 The three policies differ in how much of the population they make eligible each
-year — none, 655 of 12,000, and all of it — and that turns out to matter more
+year — none, between 76 and 868 of 12,000, and all of it — and that matters more
 than anything else here. Bold marks the fastest Python in each column, and it is
 not always the same implementation: the batched loop wins where a policy funds
 nothing or everything, and the scalar reference wins where few segments are

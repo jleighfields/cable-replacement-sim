@@ -73,9 +73,9 @@ much as about the runtime.
 - [x] 2. `uniforms_at` takes the run-and-gather path when every position shares
       a replication, with the measurement in the comment that justifies
       producing draws nobody reads. Bounded by `MAX_RUN_DRAWS`: the run is
-      charged for the largest segment asked for, so above about 17,000 it
-      costs more than the scattered path it replaces, and at the largest
-      segment a draw index can carry it would ask for 32 GB.
+      charged for the largest segment asked for, so at the largest segment a
+      draw index can carry it would ask for 32 GB. The bound is a memory cap,
+      not a tuned crossover — that constant's docstring says why.
 - [x] 3. Re-measure both loops and the whole table, at 12,000 segments and
       again at 100,000.
 - [x] 4. Check what remains: `order_by_rank` and
