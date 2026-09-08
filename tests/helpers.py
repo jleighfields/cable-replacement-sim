@@ -326,10 +326,14 @@ def assert_at_width(arguments: dict[str, object], precision: str) -> None:
         and value.dtype.kind == "f"
         and value.dtype != wanted
     }
-    assert not wrong, (
-        f"the call was built for {precision} and carries {wrong}; a test "
-        f"parametrised on a width it does not produce pins nothing"
-    )
+    if wrong:
+        # Raised rather than asserted, because a bare `assert` disappears under
+        # `python -O` and this is the check that catches a whole width running
+        # twice under two names.
+        raise AssertionError(
+            f"the call was built for {precision} and carries {wrong}; a test "
+            f"parametrised on a width it does not produce pins nothing"
+        )
 
 
 def at_call_width(arguments: dict[str, object]) -> dict[str, object]:

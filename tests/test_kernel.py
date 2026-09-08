@@ -616,6 +616,33 @@ def test_both_implementations_report_the_same_first_complaint() -> None:
     assert str(from_reference.value) == str(from_kernel.value)
 
 
+@pytest.mark.parametrize("implementation", sorted(run.RUNNABLE))
+def test_no_implementation_runs_a_call_at_a_width_no_run_computes_at(
+    implementation: str,
+) -> None:
+    """A uniform width is not the same as a width this project runs at.
+
+    The binding refuses anything but the two it has entry points for, at
+    extraction and before its body runs. A Python implementation would compute
+    happily in half precision and return numbers nothing else here could be
+    compared against, so the refusal has to be made on that side too — the
+    check that the two sides refuse the same things is what makes an
+    implementation interchangeable at the call.
+    """
+    arguments = minimal_arguments(4)
+    narrow = {
+        name: value.astype(np.float16)
+        if isinstance(value, np.ndarray) and value.dtype.kind == "f"
+        else value
+        for name, value in arguments.items()
+    }
+
+    with pytest.raises(TypeError):
+        run.RUNNABLE[implementation](
+            **narrow, policy=helpers.resolved("risk_ranked")
+        )
+
+
 @pytest.mark.parametrize("name", sorted(run.RUNNABLE), ids=str)
 def test_no_implementation_runs_a_call_that_mixes_two_widths(name: str) -> None:
     """A call at neither precision has to be refused, not silently widened.

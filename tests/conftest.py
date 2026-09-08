@@ -21,10 +21,11 @@ own sizes: they compare against a closed form rather than against another
 implementation, so they have nothing to share.
 """
 
-import numpy as np
 import pytest
 from cablesim import config as config_module
 from cablesim import constants, population, random_draws, run
+
+from tests import helpers
 
 DETERMINISTIC_SEGMENTS = 400
 """Population for the deterministic tests.
@@ -115,24 +116,11 @@ def simulation_arguments(settings: config_module.Config) -> dict[str, object]:
         "n_years": simulation.n_years,
     }
 
-    # Asserted rather than trusted. The precision is carried by the dtype of
-    # these arrays, so a builder that forgot to pass it produces the same
-    # arrays for both parametrisations: the case ids say two widths, one runs
-    # twice, and everything passes. That is exactly what happened here, and no
-    # comparison between implementations could have found it.
-    wanted = constants.PRECISIONS[simulation.precision]
-    wrong = {
-        name: str(value.dtype)
-        for name, value in built.items()
-        if isinstance(value, np.ndarray)
-        and value.dtype.kind == "f"
-        and value.dtype != wanted
-    }
-    if wrong:
-        raise AssertionError(
-            f"the fixture asked for {simulation.precision} and built {wrong}; "
-            f"a case parametrised on a width it does not produce tests nothing"
-        )
+    # Asserted rather than trusted. A builder that forgot to pass the
+    # precision produces the same arrays for both parametrisations: the case
+    # ids say two widths, one runs twice, and everything passes. That happened
+    # here, and no comparison between implementations could have found it.
+    helpers.assert_at_width(built, simulation.precision)
     return built
 
 

@@ -193,8 +193,9 @@ measured under `risk_ranked`. All three are recorded in the `provenance.json`
 written beside the table, because each changes the numbers as well as the
 timings and two tables taken at different settings are otherwise
 indistinguishable on disk. The memory columns in that document come from
-`scripts/measure_memory.py` instead, which takes the same three flags and a
-`--reps` the peak scales with.
+`scripts/measure_memory.py` instead, which takes the same three flags, an
+`--implementation` naming which row you are reproducing, and a `--reps` the
+peak scales with rather than divides by.
 
 ## Testing
 

@@ -260,6 +260,35 @@ def time_once(
     return produced, sum(elapsed) / len(elapsed), min(elapsed), first_run
 
 
+def configured_policy(
+    settings: config_module.Config, name: str
+) -> config_module.PolicySpec:
+    """The named policy from a configuration, or an error naming the ones there.
+
+    A bare ``next`` over the configured policies raises ``StopIteration`` with
+    an empty message, which names neither what was asked for nor what exists —
+    and a misspelled policy arrives from a command line, so it is the likeliest
+    way here.
+
+    Args:
+        settings: The configuration to look in.
+        name: The policy asked for.
+
+    Returns:
+        The matching specification.
+
+    Raises:
+        ValueError: If the configuration has no policy of that name.
+    """
+    for spec in settings.policies:
+        if spec.name == name:
+            return spec
+    raise ValueError(
+        f"no policy named {name!r} is configured; the configured ones are "
+        f"{[spec.name for spec in settings.policies]}"
+    )
+
+
 def compare(
     settings: config_module.Config,
     policy_name: str,
@@ -312,9 +341,7 @@ def compare(
             f"ones that exist"
         )
 
-    policy = policies.resolve(
-        next(spec for spec in settings.policies if spec.name == policy_name)
-    )
+    policy = policies.resolve(configured_policy(settings, policy_name))
     shared = population_arguments(settings)
     reference: dict[int, simulate.Results] = {}
     rows = []

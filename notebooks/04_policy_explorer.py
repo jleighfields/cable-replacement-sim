@@ -127,8 +127,10 @@ def _(config, np, policies, segments, settings):
     # says, because they illustrate what the ranking does rather than reproduce
     # what a run computed — nothing below is compared against the saved rows.
     # The budget line further down is compared, and does follow the run's width.
-    # Measured on the shipped configuration the two agree on which segments are
-    # funded and differ by cents on the spend.
+    # At the shipped `precision: f64` these cells and a run compute at the same
+    # width, so there is nothing between them. At `f32` there is: measured over
+    # one year of the shipped population under `risk_ranked`, the two fund the
+    # same 65 segments and the planned spend differs by five cents.
     failure_probability = weibull.conditional_failure_probability(
         segments["age"].to_numpy().astype(float),
         segments["shape"].to_numpy(),

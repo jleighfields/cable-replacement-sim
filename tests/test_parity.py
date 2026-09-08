@@ -227,13 +227,12 @@ def test_the_alternating_scale_fails_the_half_it_names_at_both_widths(
     the population failing rather than a half.
     """
     arguments = helpers.alternating_lifetimes(deterministic_arguments)
-    n_segments = np.size(arguments["age0"])
-    # `arange(n) % 2 == 0` selects the ceiling of half, which differs from
-    # `n // 2` on an odd population; counted rather than divided so this does
-    # not become wrong the first time the fixture size changes.
-    intended = int(np.count_nonzero(np.arange(n_segments) % 2 == 0)) * (
-        arguments["n_reps"]
-    )
+    # Counted off the fixture the helper returned rather than by restating its
+    # rule here: a second copy of "even segments fail" would have to be changed
+    # with it, and dividing by two is wrong on an odd population besides.
+    intended = int(
+        np.count_nonzero(np.isclose(arguments["scale"], helpers.FAILS_AT_ONCE))
+    ) * arguments["n_reps"]
 
     failures = simulate.run_chunk(
         **arguments, policy=helpers.resolved("run_to_failure")
@@ -360,25 +359,27 @@ def one_year_at_single_precision(
             )
         }
     )
+    # Read once, from the configuration, so the width is named in one place.
+    precision = settings.simulation.precision
+    floating = constants.PRECISIONS[precision]
     built = {
-        **run.segment_arrays(
-            population.generate(settings), settings.simulation.precision
-        ),
+        **run.segment_arrays(population.generate(settings), precision),
         "draw_key": random_draws.draw_key(settings.simulation.seed),
         "first_replication": 0,
         "n_reps": 1,
-        "budget": np.full(1, budget, dtype=np.float32),
-        "cost_escalation": np.ones(1, dtype=np.float32),
+        "budget": np.full(1, budget, dtype=floating),
+        "cost_escalation": np.ones(1, dtype=floating),
         "emergency_multiplier": multiplier,
         "mobilization_per_segment": settings.costs.mobilization_per_segment,
         "emergency_charged_to_budget": charged,
         "n_classes": len(settings.population.classes),
         "n_years": 1,
     }
-    # The fourth argument builder in this suite, and the one the parity
-    # fixtures' own assertion does not cover. Building at the wrong width would
-    # leave both callers passing and pinning nothing.
-    helpers.assert_at_width(built, settings.simulation.precision)
+    # This builder assembles its own arguments rather than going through
+    # `conftest.simulation_arguments`, so the width check that fixture makes
+    # does not reach it. Building at the wrong width would leave both callers
+    # passing and pinning nothing.
+    helpers.assert_at_width(built, precision)
     return built
 
 
@@ -417,7 +418,8 @@ def test_the_emergency_premium_is_narrowed_where_the_reference_narrows_it(
     assert reference.planned_replacements.sum() == 181, (
         "the budget no longer sits between the two cut points, so this test "
         "pins nothing whatever it asserts next; the multiplier and budget were "
-        "searched against a particular population and need searching again"
+        "searched against a particular population and need searching again, "
+        "unless the reference's own premium arithmetic changed"
     )
     assert_identical(
         reference, implementation(**arguments, policy=UNFILTERED_RISK)

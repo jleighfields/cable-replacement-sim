@@ -7,7 +7,9 @@ asserts that something was fast, because a test that did would fail on a loaded
 machine and teach nothing when it did.
 """
 
+import importlib.util
 import pathlib
+import types
 
 import numpy as np
 import pytest
@@ -111,6 +113,74 @@ def test_a_configuration_naming_no_implementation_is_refused() -> None:
             "risk_ranked",
             [benchmarks.Configuration("batched_pandas", 1, 2)],
             repeats=1,
+        )
+
+
+def measure_memory_script() -> types.ModuleType:
+    """Loads the memory-measurement script as a module.
+
+    ``scripts/`` is not part of the importable package, so the file is loaded
+    by path. Reading it this way is what lets a test drive the script's
+    argument handling without starting a subprocess.
+
+    Returns:
+        The loaded module, whose ``main`` takes an argument list.
+
+    Raises:
+        ImportError: If the file could not be loaded as a module.
+    """
+    path = constants.PROJECT_ROOT / "scripts" / "measure_memory.py"
+    spec = importlib.util.spec_from_file_location("measure_memory", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"{path} could not be loaded as a module")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_caller_naming_no_configured_policy_is_told_which_exist() -> None:
+    """A misspelled policy name is refused the way a misspelled implementation is.
+
+    Both benchmark entry points take a policy by name and look it up in the
+    configured list. The implementation name beside it is checked and refused
+    with the set that exists; the policy name is not, so the lookup runs off
+    the end of the list and the caller gets an exception carrying no message
+    and naming neither the policy asked for nor the ones configured. The
+    ``--policy`` flag is documented in ``README.md`` for both scripts, and a
+    typo in it is the ordinary way to reach this.
+
+    ``LookupError`` covers the ``KeyError`` the sibling check raises for an
+    implementation name; ``ValueError`` covers reporting it as a bad value
+    instead. Neither covers running off the end of the list, which is the
+    behaviour this pins.
+    """
+    settings = small_settings()
+    misspelled = "risk_rankd"
+    configured = [spec.name for spec in settings.policies]
+    assert misspelled not in configured, (
+        f"{misspelled} is a configured policy, so this test no longer asks "
+        f"for one that does not exist; the configured names are {configured}"
+    )
+
+    with pytest.raises((LookupError, ValueError)) as from_compare:
+        benchmarks.compare(
+            settings,
+            misspelled,
+            [benchmarks.Configuration("kernel", 1, 2)],
+            repeats=1,
+        )
+    with pytest.raises((LookupError, ValueError)) as from_script:
+        measure_memory_script().main(
+            ["--policy", misspelled, "--segments", "50", "--reps", "2"]
+        )
+
+    for raised in (from_compare, from_script):
+        assert misspelled in str(raised.value), (
+            f"{raised.value!r} does not name the policy that was asked for"
+        )
+        assert any(name in str(raised.value) for name in configured), (
+            f"{raised.value!r} does not name any policy that is configured, "
+            f"so it does not say what to write instead"
         )
 
 

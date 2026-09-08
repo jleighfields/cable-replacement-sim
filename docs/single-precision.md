@@ -16,10 +16,12 @@ program running three of them cannot say which needed it.
 **Seconds are per replication and memory is not**, so the two columns are read
 differently. A peak grows with how many replications are in flight — the same
 kernel row is 383 MB at 24 and 567 MB at 48 — so every memory figure here is at
-**24 replications**. It is stated because it is not a rate, and because these
-columns previously mixed counts across rows of one table, which compares
-nothing. The memory column is filled for one policy per size: it moves with the
-population and the replication count and barely with the policy.
+**24 replications**, and the count is stated because two figures taken at
+different counts compare nothing.
+
+**The policy moves it too**, by about 50 MB at 100,000 segments — three
+quarters of the saving this column exists to show — so every row carries its own
+measurement rather than borrowing the row above it.
 
 Every configuration reproduced the scalar reference **exactly, in every cell of
 every array, at its own width** — the parity suite runs at both precisions with
@@ -56,7 +58,7 @@ single-precision `expm1`, `log1p` and `pow` are bit-identical to this platform's
 `expm1f`, `log1pf` and `powf` — 20,000 of 20,000 each — which are the routines
 the crate calls. They are *not* a double computation rounded once: that
 explanation matches NumPy for 17,936 of 20,000 `expm1` inputs drawn uniformly on
-[-3, 3], 18,522 of 20,000 `log1p` inputs on -[0.01, 0.99), and 19,985 of 20,000
+[-3, 3], 18,522 of 20,000 `log1p` inputs on (-0.99, -0.01], and 19,985 of 20,000
 `pow` inputs on [0.1, 50) raised to 6.5, so it is ruled out rather than merely
 unnecessary. The margin is thinnest for `pow` — fifteen inputs in twenty
 thousand — which is what its negative assertion turns on.
@@ -74,18 +76,21 @@ is what would notice.
 
 | | seconds, f64 | seconds, f32 | | peak MB, f64 | peak MB, f32 | saved |
 |---|---|---|---|---|---|---|
-| Kernel, 48 threads, `age_threshold` | 0.000239 | 0.000264 | **0.90x** | | | |
+| Kernel, 48 threads, `age_threshold` | 0.000239 | 0.000264 | **0.90x** | 162.5 | 154.3 | 8.2 |
 | Kernel, 48 threads, `risk_ranked` | 0.001337 | 0.001339 | 1.00x | 168.7 | 159.3 | 9.4 |
-| Batched NumPy, `age_threshold` | 0.03708 | 0.03630 | 1.02x | | | |
+| Batched NumPy, `age_threshold` | 0.03708 | 0.03630 | 1.02x | 179.8 | 171.5 | 8.3 |
 | Batched NumPy, `risk_ranked` | 0.03927 | 0.03861 | 1.02x | 184.3 | 173.9 | 10.4 |
 
-**No speed at all, and slightly slower in one cell.**
+**No speed at all, and slightly slower in one cell.** The saved column here is
+8 to 10 MB against a run-to-run spread of about 3, so read it as "under ten"
+rather than to the tenth; the 100,000-segment figures below reproduce within
+half a percent.
 
 ### 100,000 segments
 
 | | seconds, f64 | seconds, f32 | | peak MB, f64 | peak MB, f32 | saved |
 |---|---|---|---|---|---|---|
-| Kernel, 48 threads, `age_threshold` | 0.003014 | 0.001242 | **2.43x** | | | |
+| Kernel, 48 threads, `age_threshold` | 0.003014 | 0.001242 | **2.43x** | 331.4 | 262.7 | 68.7 |
 | Kernel, 48 threads, `risk_ranked` | 0.014016 | 0.008796 | **1.59x** | 383.2 | 316.7 | 66.5 |
 | Batched NumPy, `risk_ranked` | 0.42947 | 0.36766 | 1.17x | 509.5 | 405.4 | 104.1 |
 | Scalar reference, `risk_ranked` | 0.40756 | 0.34929 | 1.17x | 258.5 | 228.8 | 29.7 |

@@ -374,7 +374,6 @@ pub fn fill_run<T: crate::weibull::Real>(first_index: u64, key: [u64; 2], into: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::weibull::Real;
 
     /// The first eight raw words NumPy produces for `key=[1, 0]`, counter zero.
     ///
@@ -478,15 +477,17 @@ mod tests {
                 // The single-precision instantiation is a different generated
                 // function, and it is the one a run at that width calls. The
                 // draw is produced in double and narrowed on the way into the
-                // slice, so what it must equal is the narrowed double rather
-                // than anything computed at the narrower width.
+                // slice, so what it must equal is the narrowed double.
+                //
+                // Narrowed with `as` rather than through `Real::from_double`,
+                // which is what `fill_run` uses: routing both sides through the
+                // same conversion would move them together, and the arm could
+                // then not fail for a defect in that conversion — which is the
+                // one it is here to catch.
                 let mut narrow = vec![0.0f32; length];
                 fill_run(first, key, &mut narrow);
                 for (offset, drawn) in narrow.iter().enumerate() {
-                    assert_eq!(
-                        *drawn,
-                        f32::from_double(uniform_at(first + offset as u64, key))
-                    );
+                    assert_eq!(*drawn, uniform_at(first + offset as u64, key) as f32);
                 }
             }
         }

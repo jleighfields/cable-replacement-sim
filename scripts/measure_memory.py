@@ -55,7 +55,14 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
         "--segments", type=int, default=12_000, help="population size"
     )
     parser.add_argument(
-        "--reps", type=int, default=48, help="replications in the chunk"
+        "--reps",
+        type=int,
+        default=24,
+        help=(
+            "replications in the chunk. The peak scales with it rather than "
+            "per replication, so this default is the count the published "
+            "figures were taken at and changing it changes every number"
+        ),
     )
     parser.add_argument(
         "--policy", default="risk_ranked", help="which policy to run under"
@@ -96,9 +103,7 @@ def main(argv: list[str] | None = None) -> int:
         n_reps=arguments.reps,
     )
     chunk = benchmarks.chunk_arguments(settings, arguments.reps)
-    spec = next(
-        policy for policy in settings.policies if policy.name == arguments.policy
-    )
+    spec = benchmarks.configured_policy(settings, arguments.policy)
     threads = arguments.threads
     if threads is None:
         threads = (
