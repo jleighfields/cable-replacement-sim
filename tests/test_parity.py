@@ -401,6 +401,29 @@ UNFILTERED_RISK = policies.Resolved(
 )
 
 
+BOUNDARY_CASES = {
+    "premium": (
+        {"multiplier": 2.942645377983026, "budget": 41938160.0, "charged": False},
+        lambda produced: (produced.planned_replacements.sum(),),
+    ),
+    "emergency_bill": (
+        {"multiplier": 2.5, "budget": 80962232.0, "charged": True},
+        # Both quantities its guard reads. The funded count alone does not move
+        # at the drifted population, which is why that guard needed the bill.
+        lambda produced: (
+            produced.planned_replacements.sum(),
+            produced.emergency_spend.sum(),
+        ),
+    ),
+}
+"""The two boundary cases above, with the quantity each one's guard asserts.
+
+Keyed by the boundary rather than by the test name so a reader can see which
+constants belong to which. The second element reads back exactly what that
+test's guard reads, so the check below is a check on the guard rather than on
+something adjacent to it.
+"""
+
 def test_the_emergency_premium_is_narrowed_where_the_reference_narrows_it(
     implementation: run.Implementation,
 ) -> None:
@@ -418,9 +441,7 @@ def test_the_emergency_premium_is_narrowed_where_the_reference_narrows_it(
     budget between the two cut points on the shipped population, where the two
     orders fund 181 candidates and 180.
     """
-    arguments = one_year_at_single_precision(
-        multiplier=2.942645377983026, budget=41938160.0, charged=False
-    )
+    arguments = one_year_at_single_precision(**BOUNDARY_CASES["premium"][0])
     reference = simulate.run_chunk(**arguments, policy=UNFILTERED_RISK)
 
     assert reference.planned_replacements.sum() == 181, (
@@ -449,9 +470,7 @@ def test_the_emergency_bill_totals_at_the_width_the_budget_compares_at(
     79,962,480 against 79,962,488 for the double-then-narrow one, and one
     candidate falls either side.
     """
-    arguments = one_year_at_single_precision(
-        multiplier=2.5, budget=80962232.0, charged=True
-    )
+    arguments = one_year_at_single_precision(**BOUNDARY_CASES["emergency_bill"][0])
     reference = simulate.run_chunk(**arguments, policy=UNFILTERED_RISK)
 
     # The funded count alone cannot guard this one: at 12,001 segments it still
@@ -474,29 +493,6 @@ def test_the_emergency_bill_totals_at_the_width_the_budget_compares_at(
         reference, implementation(**arguments, policy=UNFILTERED_RISK)
     )
 
-
-BOUNDARY_CASES = {
-    "premium": (
-        {"multiplier": 2.942645377983026, "budget": 41938160.0, "charged": False},
-        lambda produced: (produced.planned_replacements.sum(),),
-    ),
-    "emergency_bill": (
-        {"multiplier": 2.5, "budget": 80962232.0, "charged": True},
-        # Both quantities its guard reads. The funded count alone does not move
-        # at the drifted population, which is why that guard needed the bill.
-        lambda produced: (
-            produced.planned_replacements.sum(),
-            produced.emergency_spend.sum(),
-        ),
-    ),
-}
-"""The two boundary cases above, with the quantity each one's guard asserts.
-
-Keyed by the boundary rather than by the test name so a reader can see which
-constants belong to which. The second element reads back exactly what that
-test's guard reads, so the check below is a check on the guard rather than on
-something adjacent to it.
-"""
 
 DRIFTED_POPULATION = 12_001
 """One segment more than the shipped population.
@@ -545,7 +541,7 @@ def test_each_boundary_guard_notices_that_its_boundary_has_moved(
 
     assert searched != drifted, (
         f"the {boundary} guard reads {searched} on the population it was "
-        f"searched against and {searched} again at {DRIFTED_POPULATION} "
+        f"searched against and {drifted} at {DRIFTED_POPULATION} "
         f"segments, so it cannot tell that the boundary has moved; it needs "
         f"to assert a quantity the drift changes as well"
     )

@@ -227,13 +227,17 @@ def check_arguments(arguments: dict[str, object], concurrent: bool = False) -> i
             f"The widths are {sorted(constants.PRECISIONS)}"
         )
     if len(set(widths.values())) > 1:
+        # The most common width is named only to make the message readable;
+        # on an exact tie it is an arbitrary half, so the wording says "most of
+        # them" rather than "everywhere else", which a tie would make untrue.
         counted = collections.Counter(widths.values())
         common, _ = counted.most_common(1)[0]
         odd = {name: str(kind) for name, kind in widths.items() if kind != common}
         raise TypeError(
             f"this call carries more than one floating width: {odd} against "
-            f"{common} everywhere else. The precision a run computes in is the "
-            f"dtype of these arrays, so a mixed call is a call at neither width"
+            f"{common} for most of them. The precision a run computes in is "
+            f"the dtype of these arrays, so a mixed call is a call at neither "
+            f"width"
         )
 
     n_classes = arguments["n_classes"]

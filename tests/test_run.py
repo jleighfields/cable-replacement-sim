@@ -233,6 +233,30 @@ def test_a_name_no_result_may_claim_is_reported_as_unknown() -> None:
     assert run.unknown_implementations([]) == set()
 
 
+def test_the_escalation_series_compounds_in_double_and_narrows_once() -> None:
+    """Compounding at the working width is not the same as narrowing after it.
+
+    Raising `(1 + rate)` to each year at single precision accumulates that
+    width's rounding once per year; computing the whole series in double and
+    narrowing at the end does not. At the shipped rate over a thirty-year
+    horizon the two disagree in 26 of 30 multipliers, first at year four, and
+    every dollar in a single-precision run is scaled by one of them.
+
+    Nothing else could see this. Every implementation reads the same series, so
+    they all move together and go on agreeing with each other; the two width
+    checks assert the dtype the series arrives at, not how it was computed.
+    """
+    single = run.escalation_series(0.03, 30, "f32")
+    double = run.escalation_series(0.03, 30, constants.DEFAULT_PRECISION)
+
+    assert single.dtype == np.float32
+    assert np.array_equal(single, double.astype(np.float32)), (
+        "the single-precision series is not the double one narrowed, so it "
+        "compounded at the narrower width and carries thirty years of that "
+        "width's rounding rather than one narrowing at the end"
+    )
+
+
 def test_a_precision_that_names_no_dtype_is_refused() -> None:
     """The two array builders refuse a width that does not exist.
 

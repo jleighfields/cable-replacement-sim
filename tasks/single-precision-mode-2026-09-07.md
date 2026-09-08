@@ -109,12 +109,14 @@ anywhere.** An earlier reading of this plan said otherwise and was wrong.
       computing the hazard with `exp` instead of `exp_m1` on the Rust side
       makes 76% of it differ.
 
-      The likely reason it agrees is structural rather than lucky. Both sides
-      appear to evaluate single-precision `expm1`, `log1p` and `pow` by
-      widening to double, computing there, and rounding once — which is exact
-      over these ranges and leaves nothing for the two to disagree about.
-- [x] 2. `precision` on the config model, taking effect in `population.py`, so
-      the arrays carry the choice and nothing else needs an argument.
+      The reason it agrees was guessed here as both sides widening to double
+      and rounding once, and that guess is wrong — see the review section
+      below. They agree because both reach the same C library.
+- [x] 2. `precision` on the config model, taking effect in
+      `run.segment_arrays` rather than in `population.py` as planned — the
+      population frame is built at one width and narrowed as its arrays are
+      taken, so the choice reaches an implementation without the generator
+      knowing about it.
 - [x] 3. The scalar reference and the batched loop read the dtype they are
       given. Python needs care that no literal silently promotes back to `f64`
       — a `float` in an expression with an `f32` array does not, but `np.float64`
@@ -143,9 +145,17 @@ shared cache and does not matter when it already fits. Those microbenchmarks
 timed one thread on isolated arrays, which is the wrong shape for the thing
 being predicted.
 
-**Step 1's explanation predicts the timings.** If both widths evaluate `powf`,
-`expm1` and `log1p` by widening to double, the two agree bit for bit *and*
-single precision buys nothing per operation. One mechanism, both results.
+**Step 1's first explanation was wrong, and its own test is what refuted it.**
+The guess was that both widths evaluate `powf`, `expm1` and `log1p` by widening
+to double, which would have explained the agreement and the absent speedup at
+once. It does not hold: a double computation rounded once matches NumPy for
+17,936 of 20,000 `expm1` inputs, not all of them. They agree because both sides
+reach the same C library, and the arithmetic is no faster because a scalar call
+into that library does not get cheaper for being narrower — two mechanisms
+rather than one. `docs/single-precision.md` carries the corrected account, and
+`test_numpy_and_the_system_library_agree_in_single_precision` is what holds it:
+its second assertion exists to rule out the guess above, and deleting it as
+redundant would leave the test unable to tell the two apart.
 
 **Memory falls 25% to 87%** across implementations and sizes, which is what the
 arithmetic did predict.

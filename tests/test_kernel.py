@@ -624,8 +624,8 @@ def test_no_implementation_runs_a_call_at_a_width_no_run_computes_at(
 
     The binding refuses anything but the two it has entry points for, at
     extraction and before its body runs. A Python implementation would compute
-    happily in half precision and return numbers nothing else here could be
-    compared against, so the refusal has to be made on that side too — the
+    in half precision and return numbers nothing else here could be compared
+    against, so the refusal has to be made on that side too — the
     check that the two sides refuse the same things is what makes an
     implementation interchangeable at the call.
     """

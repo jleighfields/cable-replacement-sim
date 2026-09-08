@@ -50,8 +50,8 @@ use num_traits::Float;
 /// widths. It was already in the dependency tree beneath `ndarray`, so naming
 /// it directly costs no build time. `Send + Sync` is here rather than at each
 /// use because the kernel hands replications to worker threads, and both
-/// widths satisfy it trivially — they are plain numbers with no interior
-/// mutability to share.
+/// widths satisfy it — they are plain numbers with no interior mutability to
+/// share.
 pub trait Real: Float + Send + Sync {
     /// Narrows a configured value to the working width.
     ///

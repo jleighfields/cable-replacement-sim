@@ -213,8 +213,12 @@ pub fn rank_key<T: Real>(
             // arithmetic and NumPy narrows the result to meet the array, so
             // subtracting a narrowed one here gives a different premium for any
             // multiplier not exactly representable at this width — about two
-            // fifths of them at single precision, moving 9,537 of 12,000 rank
-            // keys on the shipped population.
+            // fifths of them at single precision. At a multiplier of
+            // 2.942645808, 8,883 of the shipped population's 12,000 premium
+            // terms differ between the two orders and 7,012 of its rank keys
+            // follow. The shipped 2.5 is exactly representable and moves none
+            // of them, which is why the parity tests that use it are silent
+            // here.
             //
             // `test_the_emergency_premium_is_narrowed_where_the_reference_narrows_it`
             // holds this, on the shipped population at single precision, where

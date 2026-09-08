@@ -119,9 +119,10 @@ everything gained here is bandwidth and cache.
 
 ## Where it is worth using
 
-**At 100,000 segments and above, on the kernel.** That is where it is 1.6x to
-2.4x, and where the 67 MB it saves at 24 replications starts to be worth
-having — a figure that itself grows with the replication count.
+**At 100,000 segments and above, on the kernel.** That is where the speedup in
+the table above appears at all, and where the 67 MB it saves at 24 replications
+starts to be worth having — a figure that itself grows with the replication
+count.
 
 **Not at the shipped 12,000.** It is a wash on time, and the 9 MB it saves is
 not a constraint on a machine with 251 GB.

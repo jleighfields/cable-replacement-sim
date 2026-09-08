@@ -317,6 +317,8 @@ def assert_at_width(arguments: dict[str, object], precision: str) -> None:
 
     Raises:
         AssertionError: If any float array is at another width.
+        KeyError: If ``precision`` names no width, which is a caller error
+            rather than something about the arguments.
     """
     wanted = constants.PRECISIONS[precision]
     wrong = {

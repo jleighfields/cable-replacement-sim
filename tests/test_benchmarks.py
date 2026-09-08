@@ -11,6 +11,7 @@ import importlib.util
 import json
 import pathlib
 import types
+from collections.abc import Callable
 
 import numpy as np
 import pytest
@@ -40,12 +41,12 @@ def test_every_float_an_implementation_is_handed_carries_the_precision(
 ) -> None:
     """A run at one precision hands its implementations nothing at the other.
 
-    **The parity tests cannot catch this and it is worth saying why.** The
-    precision travels as the dtype of the arrays, so an argument left at double
-    widens whatever it touches — and every implementation touches it the same
-    way, so all of them widen together and go on agreeing with each other in
-    every cell. Comparing implementations proves they compute the same thing,
-    not that they compute it at the width the run asked for.
+    **The parity tests cannot catch this.** The precision travels as the dtype
+    of the arrays, so an argument left at double widens whatever it touches —
+    and every implementation touches it the same way, so all of them widen
+    together and go on agreeing with each other in every cell. Comparing
+    implementations proves they compute the same thing, not that they compute
+    it at the width the run asked for.
 
     This caught exactly that: the per-year budget and cost-escalation series
     were built in double while the per-segment arrays were narrowed, so the
@@ -117,12 +118,15 @@ def test_a_configuration_naming_no_implementation_is_refused() -> None:
         )
 
 
-def measure_memory_script() -> types.ModuleType:
-    """Loads the memory-measurement script as a module.
+def script(name: str) -> types.ModuleType:
+    """Loads one of the driver scripts as a module.
 
     ``scripts/`` is not part of the importable package, so the file is loaded
-    by path. Reading it this way is what lets a test drive the script's
-    argument handling without starting a subprocess.
+    by path. Reading it this way is what lets a test drive a script's argument
+    handling without starting a subprocess.
+
+    Args:
+        name: The file's stem, without the extension.
 
     Returns:
         The loaded module, whose ``main`` takes an argument list.
@@ -130,8 +134,8 @@ def measure_memory_script() -> types.ModuleType:
     Raises:
         ImportError: If the file could not be loaded as a module.
     """
-    path = constants.PROJECT_ROOT / "scripts" / "measure_memory.py"
-    spec = importlib.util.spec_from_file_location("measure_memory", path)
+    path = constants.PROJECT_ROOT / "scripts" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"{path} could not be loaded as a module")
     module = importlib.util.module_from_spec(spec)
@@ -171,7 +175,7 @@ def test_a_caller_naming_no_configured_policy_is_told_which_exist() -> None:
             repeats=1,
         )
     with pytest.raises((LookupError, ValueError)) as from_script:
-        measure_memory_script().main(
+        script("measure_memory").main(
             ["--policy", misspelled, "--segments", "50", "--reps", "2"]
         )
 
@@ -300,8 +304,50 @@ def test_the_shipped_callers_only_name_implementations_that_exist(
     )
 
 
+def ran_at(
+    module: types.ModuleType, out: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> str:
+    """The width a script reports, read from wherever it records it.
+
+    Args:
+        module: The loaded script.
+        out: The directory a table-writing script was pointed at.
+        caplog: Captured log records, for a script that reports on one line.
+
+    Returns:
+        The precision the run recorded.
+    """
+    provenance = out / "provenance.json"
+    if provenance.exists():
+        return str(json.loads(provenance.read_text())["precision"])
+    return str(json.loads(caplog.messages[-1])["precision"])
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments"),
+    [
+        (
+            "measure_memory",
+            lambda out: [
+                "--implementation", "reference", "--segments", "50", "--reps", "2",
+            ],
+        ),
+        (
+            "run_benchmarks",
+            lambda out: [
+                "--reduced", "--repeats", "1", "--policy", "run_to_failure",
+                "--out", str(out),
+            ],
+        ),
+    ],
+    ids=["measure_memory", "run_benchmarks"],
+)
 def test_a_script_run_computes_at_the_width_its_configuration_names(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    name: str,
+    arguments: Callable[[pathlib.Path], list[str]],
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A flag left off must defer to the configuration, not overwrite it.
 
@@ -317,37 +363,35 @@ def test_a_script_run_computes_at_the_width_its_configuration_names(
     suite exist for, one layer up: the number is right for *some* run, and
     nothing says it is not the run that was asked for.
 
-    ``measure_memory.py`` is the one driven here because it completes on a
-    small population; ``scripts/run_benchmarks.py`` builds its override the
-    same way and needs the same repair.
+    Both driver scripts are checked, because both build the override the same
+    way and the repair to one said nothing about the other — reverting it in
+    ``run_benchmarks.py`` alone left the whole suite green.
 
     Args:
+        name: The script's file stem.
+        arguments: Builds its command line, given a directory to write into.
+        tmp_path: Where a table-writing script puts its output.
         monkeypatch: Replaces the configuration the script loads.
-        caplog: Captures the JSON line the script reports.
+        caplog: Captures the JSON line a reporting script writes.
     """
     asked_for = "f32"
-    settings = small_settings(n_segments=50, n_reps=2).model_copy(
+    base = small_settings(n_segments=50, n_reps=2)
+    settings = base.model_copy(
         update={
-            "simulation": small_settings().simulation.model_copy(
-                update={"precision": asked_for, "n_reps": 2}
-            )
+            "simulation": base.simulation.model_copy(update={"precision": asked_for})
         }
     )
     assert settings.simulation.precision != constants.DEFAULT_PRECISION, (
         f"this test needs a configuration naming the width the flag does not "
         f"default to; both are {asked_for}"
     )
-    script = measure_memory_script()
+    module = script(name)
     monkeypatch.setattr(config, "load_config", lambda *_args, **_kwargs: settings)
+    with caplog.at_level("INFO"):
+        module.main(arguments(tmp_path))
 
-    with caplog.at_level("INFO", logger="measure_memory"):
-        script.main(
-            ["--implementation", "reference", "--segments", "50", "--reps", "2"]
-        )
-
-    reported = json.loads(caplog.messages[-1])
-    assert reported["precision"] == asked_for, (
-        f"the configuration named {asked_for} and the run reported "
-        f"{reported['precision']!r}; the --precision default overrode the "
-        f"configuration instead of deferring to it"
+    assert ran_at(module, tmp_path, caplog) == asked_for, (
+        f"{name} was given a configuration naming {asked_for} and ran at "
+        f"something else; its --precision default overrode the configuration "
+        f"instead of deferring to it"
     )

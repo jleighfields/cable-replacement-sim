@@ -43,12 +43,15 @@ that failed, not the two replacements that are now missing. Reporting the change
 as made, on the strength of a later command that printed something reassuring,
 is how it reaches a commit message.
 
-It happened twice in one branch. Once as above, where an assertion on the second
-replacement discarded the first, and a review three passes later found the
-commit describing a change the diff did not contain. Once as a conditional
+It happened three times in one branch. Once as above, where an assertion on the
+second replacement discarded the first, and a review three passes later found
+the commit describing a change the diff did not contain. Once as a conditional
 replacement — `if s.count(old) == 1:` — that silently matched nothing because
 the target text was wrapped differently than expected, and the script reported
-success anyway.
+success anyway. And once as a `sed` whose pattern missed a line carrying a
+trailing comment, which is the worst of the three: the edit was a *setup* step
+for a verification run, so the run went ahead against unchanged input and
+reported a pass that proved nothing.
 
 **Verify the file on disk after writing it**, in the same command:
 
