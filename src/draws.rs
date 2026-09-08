@@ -349,7 +349,7 @@ pub fn uniform_at(index: u64, key: [u64; 2]) -> f64 {
 /// * `first_index` - the position the run starts at.
 /// * `key` - the two key words for this run.
 /// * `into` - filled with one uniform per position, in order.
-pub fn fill_run(first_index: u64, key: [u64; 2], into: &mut [f64]) {
+pub fn fill_run<T: crate::weibull::Real>(first_index: u64, key: [u64; 2], into: &mut [T]) {
     let lanes = LANES as u64;
     let mut position = first_index;
     let mut filled = 0;
@@ -359,7 +359,11 @@ pub fn fill_run(first_index: u64, key: [u64; 2], into: &mut [f64]) {
         // entered part-way through.
         let mut lane = (position % lanes) as usize;
         while lane < LANES && filled < into.len() {
-            into[filled] = to_double(words[lane]);
+            // Produced in double and narrowed as it is written. The
+            // generator is checked against NumPy's own Philox, so it computes
+            // at one width whatever the run's precision is, and the narrowing
+            // is the same rounding NumPy applies on the other side.
+            into[filled] = T::from_double(to_double(words[lane]));
             filled += 1;
             lane += 1;
             position += 1;
@@ -464,10 +468,26 @@ mod tests {
         let key = [0xDEAD_BEEF, 0x0BAD_C0DE];
         for first in [0u64, 1, 2, 3, 4, 7, 4096, 4099] {
             for length in [0usize, 1, 3, 4, 5, 9, 33] {
-                let mut run = vec![0.0; length];
+                let mut run = vec![0.0f64; length];
                 fill_run(first, key, &mut run);
                 for (offset, drawn) in run.iter().enumerate() {
                     assert_eq!(*drawn, uniform_at(first + offset as u64, key));
+                }
+
+                // The single-precision instantiation is a different generated
+                // function, and it is the one a run at that width calls. The
+                // draw is produced in double and narrowed on the way into the
+                // slice, so what it must equal is the narrowed double.
+                //
+                // Narrowed with `as` rather than through `Real::from_double`,
+                // which is what `fill_run` uses: routing both sides through the
+                // same conversion would move them together, and the arm could
+                // then not fail for a defect in that conversion — which is the
+                // one it is here to catch.
+                let mut narrow = vec![0.0f32; length];
+                fill_run(first, key, &mut narrow);
+                for (offset, drawn) in narrow.iter().enumerate() {
+                    assert_eq!(*drawn, uniform_at(first + offset as u64, key) as f32);
                 }
             }
         }

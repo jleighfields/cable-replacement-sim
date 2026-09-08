@@ -14,7 +14,7 @@ panic message goes to stderr rather than into the traceback.
 
 import numpy as np
 import pytest
-from cablesim import _cablesim, kernel, policies, random_draws, simulate
+from cablesim import _cablesim, kernel, policies, random_draws, run, simulate
 
 from tests import helpers
 
@@ -614,3 +614,107 @@ def test_both_implementations_report_the_same_first_complaint() -> None:
         simulate.run_chunk(**arguments, policy=unrankable)
 
     assert str(from_reference.value) == str(from_kernel.value)
+
+
+@pytest.mark.parametrize("implementation", sorted(run.RUNNABLE))
+def test_no_implementation_runs_a_call_at_a_width_no_run_computes_at(
+    implementation: str,
+) -> None:
+    """A uniform width is not the same as a width this project runs at.
+
+    The binding refuses anything but the two it has entry points for, at
+    extraction and before its body runs. A Python implementation would compute
+    in half precision and return numbers nothing else here could be compared
+    against, so the refusal has to be made on that side too — the
+    check that the two sides refuse the same things is what makes an
+    implementation interchangeable at the call.
+    """
+    arguments = minimal_arguments(4)
+    narrow = {
+        name: value.astype(np.float16)
+        if isinstance(value, np.ndarray) and value.dtype.kind == "f"
+        else value
+        for name, value in arguments.items()
+    }
+
+    with pytest.raises(TypeError):
+        run.RUNNABLE[implementation](
+            **narrow, policy=helpers.resolved("risk_ranked")
+        )
+
+
+@pytest.mark.parametrize("name", sorted(run.RUNNABLE), ids=str)
+def test_no_implementation_runs_a_call_that_mixes_two_widths(name: str) -> None:
+    """A call at neither precision has to be refused, not silently widened.
+
+    The working precision reaches an implementation as the dtype of the arrays
+    it is handed, so an argument set carrying two of them names no precision at
+    all. The kernel refuses it already: PyO3 extracts a concrete element type
+    and rejects the array that does not match, by name. The Python
+    implementations widen instead — NumPy promotes the narrow arrays wherever
+    they meet the wide one — and return a result computed at a width nobody
+    asked for, which no comparison between implementations can see because they
+    all widen the same way.
+
+    That is the failure this project has already shipped twice, and both times
+    the argument left at double was a per-year series exactly like the one
+    here. ``check_arguments`` is where it belongs: it exists so that the
+    implementations cannot drift into refusing different things, and this is a
+    case where they do.
+
+    Args:
+        name: The implementation to check, from the runnable registry.
+    """
+    single = {
+        argument: (
+            value.astype(np.float32)
+            if isinstance(value, np.ndarray) and value.dtype.kind == "f"
+            else value
+        )
+        for argument, value in minimal_arguments(n_segments=2, n_years=2).items()
+    }
+    mixed = {**single, "budget": single["budget"].astype(np.float64)}
+
+    with pytest.raises(TypeError):
+        run.RUNNABLE[name](**mixed, policy=helpers.resolved("worst_first"))
+
+
+def test_the_mixed_width_refusal_claims_no_majority_that_does_not_exist() -> None:
+    """An evenly split call has no width that most of the arrays carry.
+
+    The refusal names every width with the count of arrays at it and claims no
+    majority. A wording that named one width as what "most of them" carry would
+    be false on an even split — the counter returns an arbitrary one of the two
+    — and it would tell the reader the other half is a handful of strays,
+    sending someone looking for a few arrays to fix when half the call is at
+    each width. This is what stops that wording coming back.
+
+    Reachable by an ordinary caller: `budget` passed as a list rather than an
+    array is not counted, which leaves twelve float arrays and lets them split
+    six and six, at which point the refusal opens "6 at float32, 6 at float64".
+    """
+    arguments = minimal_arguments(n_segments=2, n_years=2)
+    arguments["policy"] = helpers.resolved("worst_first")
+    # Uncounted, because the guard reads a dtype and a list has none. This is
+    # what makes an even split reachable at all.
+    arguments["budget"] = [0.0, 0.0]
+    narrowed = (
+        "length_ft",
+        "customers",
+        "customer_minutes_per_failure",
+        "customer_minutes_per_planned",
+        "outage_cost_per_failure",
+        "age0",
+    )
+    for name in narrowed:
+        arguments[name] = arguments[name].astype(np.float32)
+
+    with pytest.raises(TypeError) as refused:
+        simulate.check_arguments(arguments)
+
+    assert "most" not in str(refused.value), (
+        f"six of the twelve float arrays are at each width, and the refusal "
+        f"says one of them is what most of them carry: {refused.value}. It "
+        f"should name how many are at each width rather than assert a majority "
+        f"the call does not have"
+    )

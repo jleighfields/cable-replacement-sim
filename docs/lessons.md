@@ -34,6 +34,63 @@ wait $!
 text at all. Note also that the harness kills a foreground command at ten
 minutes, so a loop longer than that is doubly wrong.
 
+## A measured number in prose survives only if something recomputes it
+
+Across eight review passes of one branch, three passes found a wrong number in a
+comment or docstring written during the previous pass's repair. The tempting
+conclusion was that explanatory prose carrying measurements is not worth its
+maintenance, and that the fix is to write less of it.
+
+The evidence says otherwise. What predicted whether a number stayed right was
+not who wrote it or how recently — it was whether anything read it back:
+
+- The premium comment's multiplier and counts had a test recomputing them, and
+  survived.
+- The mixed-width message had a test asserting what it must not claim, and
+  survived.
+- The forced-scale bound had nothing, and every one of its four numbers was
+  wrong: the age, the shape, the overflow threshold and the margin.
+- A correction to that bound was wrong on its first draft too — and the test
+  written alongside it caught that within a minute.
+
+So the rule is not "fewer comments". It is: **put a measured number in prose
+only where something recomputes it, and where that is not worth a test, state
+the direction instead of the magnitude.** "Clears the single-precision bound
+with no room to lower it" needs no maintenance. "By a factor of 5.2" needs a
+test, and without one it is a number that was true once.
+
+A number nothing reads is not documentation. It is an assertion with no test,
+sitting where a reader will believe it.
+
+## An edit script that validates late discards every edit before it
+
+A script that applies several replacements and asserts on each as it goes will,
+on the first failed assertion, exit before writing — so the edits that already
+succeeded are lost with it. Nothing says so: the traceback names the assertion
+that failed, not the two replacements that are now missing. Reporting the change
+as made, on the strength of a later command that printed something reassuring,
+is how it reaches a commit message.
+
+It happened three times in one branch. Once as above, where an assertion on the
+second replacement discarded the first, and a review three passes later found
+the commit describing a change the diff did not contain. Once as a conditional
+replacement — `if s.count(old) == 1:` — that silently matched nothing because
+the target text was wrapped differently than expected, and the script reported
+success anyway. And once as a `sed` whose pattern missed a line carrying a
+trailing comment, which is the worst of the three: the edit was a *setup* step
+for a verification run, so the run went ahead against unchanged input and
+reported a pass that proved nothing.
+
+**Verify the file on disk after writing it**, in the same command:
+
+```python
+p.write_text(s.replace(old, new))
+assert "the new text" in p.read_text()
+```
+
+And prefer `assert s.count(old) == 1` over `if s.count(old) == 1:` — a
+replacement that matches nothing should stop, not shrug.
+
 ## Never `git add -A` while a review agent is editing
 
 A `code-reviewer` pass edits docstrings in place. Committing everything the

@@ -18,6 +18,12 @@ simulation:
                         # and every present value is discounted to this year.
                         # Nothing may be installed after it: a negative age
                         # makes both Weibull forms return NaN.
+  precision: f64        # The floating width every implementation computes in.
+                        # It reaches them as the dtype of the arrays they are
+                        # handed, so nothing branches on it. f32 halves the
+                        # working set and gives different answers in the dollar
+                        # columns; docs/single-precision.md has what it costs
+                        # and saves, and where it is worth using.
 
   # How many replications are computed per batch is deliberately NOT here. It
   # bounds the result arrays and whatever state an implementation holds in

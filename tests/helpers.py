@@ -276,20 +276,149 @@ def first_segments(
     return {**arguments, **kept}
 
 
-FAILS_AT_ONCE = 1e-6
-"""A Weibull scale that puts every segment's remaining life inside year one.
+FAILS_AT_ONCE = 1e-3
+"""A Weibull scale that puts a *new* segment's remaining life inside year one.
+
+**Pass ``from_new=True`` to ``forced_lifetimes`` with this.** On an aged
+population it forces nothing at single precision, for the reason that argument
+documents, and a test asserting that everything fails will assert it of a
+population where half of it never does.
 
 Randomness is removed through the ordinary ``scale`` and ``replacement_scale``
 arrays rather than through an argument only tests pass, so a test using this
 exercises the shipped path rather than a branch nothing else reaches.
+
+**Bounded below by what single precision can represent, not by what forces the
+outcome.** The hazard is a difference of two ``(age / scale) ** shape`` terms,
+and at the horizon's oldest age and the fleet's largest shape that term is
+``(90 / scale) ** 6.8``. Single precision tops out at 3.4e38, so a scale under
+about 1.9e-4 overflows it, both terms become infinite, and their difference is
+a NaN the ranking refuses — while double precision, with room to 1.8e308,
+carries the same fixture without noticing. This value clears that bound by a
+factor of 5.2 and no more, so lowering it is the change to refuse: two orders
+of magnitude below it, most of the shipped population scores NaN at its own age.
+It needs no lowering, because 1e-3 puts every remaining life at about a
+thousandth of a year already. No population this project generates comes near
+it: at the shipped scales the same term peaks at 178.
+
+``tests/test_weibull.py::test_the_forced_scale_stays_inside_single_precision``
+recomputes the age, the shape, the bound and the margin from the fleet, because
+a margin quoted in prose is what a later edit reads before deciding how far it
+may lower this.
 """
 
 NEVER_FAILS = 1e6
 """A scale that puts the first failure hundreds of thousands of years out."""
 
 
+def assert_at_width(arguments: dict[str, object], precision: str) -> None:
+    """Checks that every float array in a call carries the named width.
+
+    An argument builder that misses one produces a call at a width nobody asked
+    for, and nothing comparing implementations can see it because they all widen
+    together. Every builder that names a precision should end with this.
+
+    Args:
+        arguments: A call's arguments.
+        precision: The key of ``constants.PRECISIONS`` they should carry.
+
+    Raises:
+        AssertionError: If any float array is at another width.
+        KeyError: If ``precision`` names no width, which is a caller error
+            rather than something about the arguments.
+    """
+    wanted = constants.PRECISIONS[precision]
+    wrong = {
+        name: str(value.dtype)
+        for name, value in arguments.items()
+        if isinstance(value, np.ndarray)
+        and value.dtype.kind == "f"
+        and value.dtype != wanted
+    }
+    if wrong:
+        # Raised rather than asserted, because a bare `assert` disappears under
+        # `python -O` and this is the check that catches a whole width running
+        # twice under two names.
+        raise AssertionError(
+            f"the call was built for {precision} and carries {wrong}; a test "
+            f"parametrised on a width it does not produce pins nothing"
+        )
+
+
+def at_call_width(arguments: dict[str, object]) -> dict[str, object]:
+    """Casts every float array in a call to the width its population carries.
+
+    A test that overrides an argument builds the replacement at NumPy's default
+    width, and an implementation reads the run's precision off the dtype of what
+    it is handed — so a call mixing widths is a call at neither. The kernel's
+    binding refuses one outright, naming the array; a Python implementation
+    would widen everything the wider array touched and go on agreeing with the
+    others, which is the failure that has no symptom.
+
+    Args:
+        arguments: A call's arguments, some of them possibly rebuilt.
+
+    Returns:
+        The same arguments with every float array at the width ``age0`` carries.
+    """
+    width = np.asarray(arguments["age0"]).dtype
+    return {
+        name: (
+            value.astype(width)
+            if isinstance(value, np.ndarray) and value.dtype.kind == "f"
+            else value
+        )
+        for name, value in arguments.items()
+    }
+
+
+def alternating_lifetimes(arguments: dict[str, object]) -> dict[str, object]:
+    """Copies a call's arguments so even-numbered segments fail and odd ones do not.
+
+    The scenario two parity tests are built on: a year that has both an
+    emergency bill and a candidate list, so ``emergency_charged_to_budget``
+    decides how far down the second the money reaches. Half the population
+    carries ``FAILS_AT_ONCE`` and half ``NEVER_FAILS``, alternating on segment
+    identifier so the split is the same whatever the population size.
+
+    Both scales are applied through the ordinary ``scale`` and
+    ``replacement_scale`` arrays and then cast to the width ``age0`` carries, so
+    the call names one precision rather than two.
+
+    **The failing half starts from new and the surviving half keeps its age.**
+    A lifetime is drawn conditional on survival to the current age, and for a
+    segment far past its scale the accumulated hazard swamps the draw at single
+    precision, so a short scale on an aged segment does not put its remaining
+    life inside year one — measured, 273 of 600 failed rather than all 600, and
+    the tests built on this describe half the population failing. Zeroing only
+    the half meant to fail fixes that without making the survivors ineligible:
+    an all-new population is never past an age threshold, and one of the two
+    tests here ranks on exactly that.
+
+    Args:
+        arguments: The arguments to copy, as the parity fixtures build them.
+
+    Returns:
+        A new argument dictionary; the original is untouched.
+    """
+    n_segments = np.size(arguments["age0"])
+    fails = np.arange(n_segments) % 2 == 0
+    scales = np.where(fails, FAILS_AT_ONCE, NEVER_FAILS).astype(float)
+    return at_call_width(
+        {
+            **arguments,
+            "scale": scales,
+            "replacement_scale": scales,
+            "age0": np.where(fails, 0.0, np.asarray(arguments["age0"])),
+        }
+    )
+
+
 def forced_lifetimes(
-    arguments: dict[str, object], scale: float, replacement: float | None = None
+    arguments: dict[str, object],
+    scale: float,
+    replacement: float | None = None,
+    from_new: bool = False,
 ) -> dict[str, object]:
     """Copies a call's arguments with every Weibull scale replaced.
 
@@ -298,17 +427,43 @@ def forced_lifetimes(
         scale: What to put in ``scale``.
         replacement: What to put in ``replacement_scale``, or None to use
             ``scale`` for both.
+        from_new: Also start every segment at age zero. **Required for
+            ``FAILS_AT_ONCE`` to force what its name says at single
+            precision**, and harmless at double. A lifetime is drawn
+            conditional on survival to the current age, as
+            ``scale * ((age / scale) ** shape - ln1p(-u)) ** (1 / shape) -
+            age``. For a segment far past its scale the first term inside the
+            bracket is enormous — 8e30 at age 57 with a scale of a thousandth
+            — and adding the draw to it changes nothing a single-precision
+            float can hold, so the remaining life comes back as whatever the
+            round trip happens to round to rather than as something inside year
+            one. Half the population then never fails, silently, and a test
+            named for everything failing asserts against a scenario it did not
+            build. At age zero there is no accumulated hazard to swamp the
+            draw, and the same scale gives a remaining life of about a
+            thousandth of a year at both widths.
 
     Returns:
         A new argument dictionary; the original is untouched, which matters
         because the fixture it usually comes from is shared by every test in
         the session.
     """
-    segments = np.shape(arguments["age0"])
-    return {
+    # At the width the rest of the call carries. An implementation reads the
+    # precision off the dtype of the arrays it is handed, so a replacement
+    # array built at the default would hand it two widths at once — which the
+    # kernel's binding refuses outright rather than converting, and which would
+    # make a Python implementation quietly widen everything it touched.
+    reference = np.asarray(arguments["age0"])
+    segments = reference.shape
+    forced = {
         **arguments,
-        "scale": np.full(segments, scale),
+        "scale": np.full(segments, scale, dtype=reference.dtype),
         "replacement_scale": np.full(
-            segments, scale if replacement is None else replacement
+            segments,
+            scale if replacement is None else replacement,
+            dtype=reference.dtype,
         ),
     }
+    if from_new:
+        forced["age0"] = np.zeros(segments, dtype=reference.dtype)
+    return forced

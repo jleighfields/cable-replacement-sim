@@ -100,23 +100,70 @@ anywhere.** An earlier reading of this plan said otherwise and was wrong.
 
 ## Steps
 
-- [ ] 1. The transcendental agreement test, in Rust and NumPy, over the three
-      functions. **Stop and report if it fails.**
-- [ ] 2. `precision` on the config model, taking effect in `population.py`, so
-      the arrays carry the choice and nothing else needs an argument.
-- [ ] 3. The scalar reference and the batched loop read the dtype they are
+- [x] 1. The transcendental agreement test, in Rust and NumPy, over the three
+      functions. **Passes.** Identical over 2,000,000 samples of ages 0-90 and
+      uniforms on `[0, 1)`; identical again across all 160 distinct
+      (shape, scale) pairs the shipped fleet carries, at 50,000 samples each;
+      identical at the edges — a zero uniform, the smallest and largest a draw
+      can produce, and age zero. The comparison is known to discriminate:
+      computing the hazard with `exp` instead of `exp_m1` on the Rust side
+      makes 76% of it differ.
+
+      The reason it agrees was guessed here as both sides widening to double
+      and rounding once, and that guess is wrong — see the review section
+      below. They agree because both reach the same C library.
+- [x] 2. `precision` on the config model, taking effect in
+      `run.segment_arrays` rather than in `population.py` as planned — the
+      population frame is built at one width and narrowed as its arrays are
+      taken, so the choice reaches an implementation without the generator
+      knowing about it.
+- [x] 3. The scalar reference and the batched loop read the dtype they are
       given. Python needs care that no literal silently promotes back to `f64`
       — a `float` in an expression with an `f32` array does not, but `np.float64`
       scalars from configuration do.
-- [ ] 4. The kernel generic over the float type, and the binding accepting both.
+- [x] 4. The kernel generic over the float type, and the binding accepting both.
       This is the bulk of the work and the reason to be sure of step 1 first.
-- [ ] 5. Parity at both dtypes, which the registry should give without new tests
+- [x] 5. Parity at both dtypes, which the registry should give without new tests
       — confirmed by watching a planted divergence redden it.
-- [ ] 6. Re-measure time **and peak resident memory**, both dtypes, both
+- [x] 6. Re-measure time **and peak resident memory**, both dtypes, both
       population sizes, all three policies. The prediction to check: near 2x on
       `age_threshold` and `run_to_failure`, near 1.15x on `risk_ranked`, memory
       down by about 46%.
-- [ ] 7. Decide whether it stays, on those numbers.
+- [x] 7. Decide whether it stays, on those numbers. **It stays**, as a run
+      option rather than a default. `docs/single-precision.md` has the
+      measurement.
+
+## What the measurement said, against what this plan predicted
+
+**The prediction was wrong in its mechanism and roughly right in its
+scepticism.** It expected about 2x where a policy is arithmetic-bound and
+nothing where it is sort-bound, drawn from NumPy microbenchmarks. The split is
+by population size instead: nothing at 12,000 segments, the range in `docs/single-precision.md`'s tables at 100,000,
+and it helps the sort-bound policy nearly as much as the other. Halving the
+working set matters when forty-eight workers pull their scratch through a
+shared cache and does not matter when it already fits. Those microbenchmarks
+timed one thread on isolated arrays, which is the wrong shape for the thing
+being predicted.
+
+**Step 1's first explanation was wrong, and its own test is what refuted it.**
+The guess was that both widths evaluate `powf`, `expm1` and `log1p` by widening
+to double, which would have explained the agreement and the absent speedup at
+once. It does not hold: a double computation rounded once matches NumPy for
+17,936 of 20,000 `expm1` inputs, not all of them. They agree because both sides
+reach the same C library, and the arithmetic is no faster because a scalar call
+into that library does not get cheaper for being narrower — two mechanisms
+rather than one. `docs/single-precision.md` carries the corrected account, and
+`test_numpy_and_the_system_library_agree_in_single_precision` is what holds it:
+its second assertion exists to rule out the guess above, and deleting it as
+redundant would leave the test unable to tell the two apart.
+
+**Memory falls**, which is what the arithmetic did predict, though by less than
+it suggested: 4.6% to 20.7% of the whole process across implementations and
+sizes, or 15.4% to 33.4% of what the model adds above the interpreter's own
+~126 MB. The arithmetic predicted 46% of the kernel's per-worker scratch, and
+that scratch is a fraction of either figure. `docs/single-precision.md` carries
+the table these come from; an earlier version of this line quoted 25% to 87%,
+read off a memory table since retaken at one replication count.
 - [ ] 8. Review passes.
 
 ## What would make this not worth doing

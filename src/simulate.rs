@@ -62,6 +62,7 @@ use rayon::prelude::*;
 use crate::draws;
 use crate::policies::{self, Resolved};
 use crate::weibull;
+use crate::weibull::Real;
 
 /// The lifetime uniform one segment reads in one year of one replication.
 ///
@@ -159,19 +160,19 @@ impl Results {
 /// same buffer at once, which the compiler refuses rather than allowing a data
 /// race — so each worker builds its own and reuses it across the replications
 /// it happens to be given.
-struct Scratch {
+struct Scratch<T: Real> {
     /// Current age of each segment, in years.
-    age: Vec<f64>,
+    age: Vec<T>,
     /// Weibull shape currently in the ground, which a replacement changes.
-    current_shape: Vec<f64>,
+    current_shape: Vec<T>,
     /// Weibull scale currently in the ground.
-    current_scale: Vec<f64>,
+    current_scale: Vec<T>,
     /// Simulation time at which each segment next fails, measured from year 0.
-    failure_time: Vec<f64>,
+    failure_time: Vec<T>,
     /// Planned replacement cost at this year's prices.
-    planned_now: Vec<f64>,
+    planned_now: Vec<T>,
     /// The rank key, written only for the segments that are candidates.
-    rank: Vec<f64>,
+    rank: Vec<T>,
     /// Whether each segment has already been replaced this year.
     replaced: Vec<bool>,
     /// The eligible segments, ascending, refilled each year.
@@ -182,22 +183,22 @@ struct Scratch {
     /// does not depend on the year, so drawing it inside the year loop would
     /// recompute the same twelve thousand values once for every year of the
     /// horizon.
-    priority: Vec<f64>,
+    priority: Vec<T>,
 }
 
-impl Scratch {
+impl<T: Real> Scratch<T> {
     /// Buffers sized for one replication over `n_segments` segments.
     fn new(n_segments: usize) -> Self {
         Self {
-            age: vec![0.0; n_segments],
-            current_shape: vec![0.0; n_segments],
-            current_scale: vec![0.0; n_segments],
-            failure_time: vec![0.0; n_segments],
-            planned_now: vec![0.0; n_segments],
-            rank: vec![0.0; n_segments],
+            age: vec![T::zero(); n_segments],
+            current_shape: vec![T::zero(); n_segments],
+            current_scale: vec![T::zero(); n_segments],
+            failure_time: vec![T::zero(); n_segments],
+            planned_now: vec![T::zero(); n_segments],
+            rank: vec![T::zero(); n_segments],
             replaced: vec![false; n_segments],
             candidates: Vec::with_capacity(n_segments),
-            priority: vec![0.0; n_segments],
+            priority: vec![T::zero(); n_segments],
         }
     }
 }
@@ -291,24 +292,24 @@ impl std::fmt::Display for ChunkError {
 /// two workers touch the same value, and the blocks are concatenated in
 /// replication order rather than in the order they finished.
 #[allow(clippy::too_many_arguments)]
-pub fn run_chunk(
-    length_ft: &[f64],
-    customers: &[f64],
-    customer_minutes_per_failure: &[f64],
-    customer_minutes_per_planned: &[f64],
-    outage_cost_per_failure: &[f64],
+pub fn run_chunk<T: Real>(
+    length_ft: &[T],
+    customers: &[T],
+    customer_minutes_per_failure: &[T],
+    customer_minutes_per_planned: &[T],
+    outage_cost_per_failure: &[T],
     class_index: &[u8],
-    age0: &[f64],
-    shape: &[f64],
-    scale: &[f64],
-    replacement_shape: &[f64],
-    replacement_scale: &[f64],
-    cost_per_ft: &[f64],
+    age0: &[T],
+    shape: &[T],
+    scale: &[T],
+    replacement_shape: &[T],
+    replacement_scale: &[T],
+    cost_per_ft: &[T],
     draw_key: [u64; 2],
     first_replication: u64,
     n_reps: usize,
-    budget: &[f64],
-    cost_escalation: &[f64],
+    budget: &[T],
+    cost_escalation: &[T],
     policy: Resolved,
     emergency_multiplier: f64,
     mobilization_per_segment: f64,
@@ -320,17 +321,20 @@ pub fn run_chunk(
     // The segment count is the population's; the replication count arrives as
     // `n_reps`, since nothing else passed in carries the replication axis.
     let n_segments = age0.len();
+    // Configuration crosses from Python as a double whatever the run's
+    // precision is, and is narrowed once here rather than at every use.
+    let narrowed_multiplier = T::from_double(emergency_multiplier);
 
     // Costs at year-0 prices; the year's escalation is applied inside the loop.
     // `(0..n_segments).map(...).collect()` builds a list the way a Python
     // comprehension does; the type annotation on the binding is what tells
     // `collect` which kind of collection to build.
-    let planned_at_par: Vec<f64> = (0..n_segments)
+    let planned_at_par: Vec<T> = (0..n_segments)
         .map(|segment| {
             policies::planned_cost(
                 length_ft[segment],
                 cost_per_ft[segment],
-                mobilization_per_segment,
+                T::from_double(mobilization_per_segment),
             )
         })
         .collect();
@@ -348,177 +352,199 @@ pub fn run_chunk(
     // loop. Splitting it out changes no arithmetic: a replication reads its own
     // slice of the draws and writes its own results, and shares nothing with
     // any other.
-    let one_replication = |replication: usize,
-                           scratch: &mut Scratch|
-     -> Result<Results, policies::NanScore> {
-        // Naming the fields once, rather than writing `scratch.` in front of
-        // every use below. Each binding is a mutable borrow of one field, and
-        // Rust tracks them separately, which is why several can be live at once.
-        let Scratch {
-            age,
-            current_shape,
-            current_scale,
-            failure_time,
-            planned_now,
-            rank,
-            replaced,
-            candidates,
-            priority,
-        } = scratch;
-        // This replication's own results: one replication's worth, so
-        // `years * classes` per buffer.
-        let mut block = Results::zeros(1, n_years, n_classes);
+    let one_replication =
+        |replication: usize, scratch: &mut Scratch<T>| -> Result<Results, policies::NanScore> {
+            // Naming the fields once, rather than writing `scratch.` in front of
+            // every use below. Each binding is a mutable borrow of one field, and
+            // Rust tracks them separately, which is why several can be live at once.
+            let Scratch {
+                age,
+                current_shape,
+                current_scale,
+                failure_time,
+                planned_now,
+                rank,
+                replaced,
+                candidates,
+                priority,
+            } = scratch;
+            // This replication's own results: one replication's worth, so
+            // `years * classes` per buffer.
+            let mut block = Results::zeros(1, n_years, n_classes);
 
-        age.copy_from_slice(age0);
-        current_shape.copy_from_slice(shape);
-        current_scale.copy_from_slice(scale);
+            age.copy_from_slice(age0);
+            current_shape.copy_from_slice(shape);
+            current_scale.copy_from_slice(scale);
 
-        // Where this replication sits in the whole run, which is part of every
-        // draw's address. Using the position within the chunk instead would
-        // make the chunking change the numbers.
-        let replication_in_run = first_replication + replication as u64;
+            // Where this replication sits in the whole run, which is part of every
+            // draw's address. Using the position within the chunk instead would
+            // make the chunking change the numbers.
+            let replication_in_run = first_replication + replication as u64;
 
-        // The two draws every segment takes whatever happens to it, each a run
-        // of consecutive positions and so a quarter as many encryptions as
-        // asking for them one at a time. The priority does not depend on the
-        // year, so it is filled here rather than inside the year loop.
-        draws::fill_run(
-            draws::index(draws::purpose::POLICIES, replication_in_run, 0, 0),
-            draw_key,
-            priority,
-        );
-        draws::fill_run(
-            draws::index(draws::purpose::LIFETIMES, replication_in_run, 0, 0),
-            draw_key,
-            failure_time,
-        );
-
-        // Conditional on survival to age0: a population that starts partway
-        // through its life must not behave as though it were new.
-        for segment in 0..n_segments {
-            failure_time[segment] = weibull::draw_remaining_life(
-                failure_time[segment],
-                age[segment],
-                current_shape[segment],
-                current_scale[segment],
+            // The two draws every segment takes whatever happens to it, each a run
+            // of consecutive positions and so a quarter as many encryptions as
+            // asking for them one at a time. The priority does not depend on the
+            // year, so it is filled here rather than inside the year loop.
+            draws::fill_run(
+                draws::index(draws::purpose::POLICIES, replication_in_run, 0, 0),
+                draw_key,
+                priority,
             );
-        }
+            draws::fill_run(
+                draws::index(draws::purpose::LIFETIMES, replication_in_run, 0, 0),
+                draw_key,
+                failure_time,
+            );
 
-        for year in 0..n_years {
-            let escalation = cost_escalation[year];
+            // Conditional on survival to age0: a population that starts partway
+            // through its life must not behave as though it were new.
             for segment in 0..n_segments {
-                planned_now[segment] = planned_at_par[segment] * escalation;
+                failure_time[segment] = weibull::draw_remaining_life(
+                    failure_time[segment],
+                    age[segment],
+                    current_shape[segment],
+                    current_scale[segment],
+                );
             }
-            // Where this year's totals start in each buffer; the segment's
-            // class is added to it to reach the exact cell. The replication
-            // does not appear because this block holds one.
-            let cell = year * n_classes;
 
-            // 1. Failures, which are resolved before planned work so that a
-            //    segment failing this year is not also a candidate this year.
-            // Reused rather than reallocated, so it has to be cleared. The
-            // reference allocates a fresh boolean array each year instead.
-            replaced.fill(false);
-            let mut emergency_total = 0.0;
-            for segment in 0..n_segments {
-                let year_start = year as f64;
-                if failure_time[segment] >= year_start && failure_time[segment] < year_start + 1.0 {
-                    let emergency_now = planned_now[segment] * emergency_multiplier;
-                    // `usize::from` widens the `u8` class index without a
-                    // cast that could silently lose bits; Rust will not add a
-                    // `u8` to a `usize` on its own.
-                    let class = cell + usize::from(class_index[segment]);
-                    block.failures[class] += 1.0;
-                    block.customers_interrupted[class] += customers[segment];
-                    block.customer_minutes[class] += customer_minutes_per_failure[segment];
-                    block.emergency_spend[class] += emergency_now;
-                    emergency_total += emergency_now;
-                    replaced[segment] = true;
+            for year in 0..n_years {
+                let escalation = cost_escalation[year];
+                for segment in 0..n_segments {
+                    planned_now[segment] = planned_at_par[segment] * escalation;
                 }
-            }
+                // Where this year's totals start in each buffer; the segment's
+                // class is added to it to reach the exact cell. The replication
+                // does not appear because this block holds one.
+                let cell = year * n_classes;
 
-            // 2. Planned replacement, funded greedily down the ranked order.
-            let mut available = budget[year];
-            if emergency_charged_to_budget {
-                // Charged before this year's planned pass is scored, which is
-                // what produces the loop where failures crowd out prevention.
+                // 1. Failures, which are resolved before planned work so that a
+                //    segment failing this year is not also a candidate this year.
+                // Reused rather than reallocated, so it has to be cleared. The
+                // reference allocates a fresh boolean array each year instead.
+                replaced.fill(false);
+                // In the working width, not in double: its one use is subtracted
+                // from the budget the greedy fill then compares a cumulative cost
+                // against, so it has to round the way that comparison rounds.
+                // NumPy's `cumsum` preserves the width for the same reason, where
+                // its `bincount` widens the result totals to double. Both of those
+                // were checked rather than assumed.
                 //
-                // A year whose failures cost more than the budget leaves this
-                // negative, and that is left alone rather than floored at zero.
-                // Every planned cost is positive, so the greedy fill funds
-                // nothing at any value at or below zero, and nothing carries to
-                // the next year — each year takes the amount in the budget
-                // series and no more. A floor here would be a line no result
-                // could distinguish from its absence, which mutation testing
-                // confirms: removing one left the whole suite green.
-                available -= emergency_total;
-            }
-
-            candidates.clear();
-            for segment in 0..n_segments {
-                if policies::eligible(policy, age[segment], replaced[segment]) {
-                    candidates.push(segment);
+                // `test_the_emergency_bill_totals_at_the_width_the_budget_compares_at`
+                // holds this. It needs a budget landing between what the two
+                // widths total to: at single precision on the shipped
+                // population the running sum is 79,962,480 against 79,962,488
+                // for a double total narrowed once, and one candidate falls
+                // either side.
+                let mut emergency_total = T::zero();
+                let year_start = T::from_double(year as f64);
+                for segment in 0..n_segments {
+                    if failure_time[segment] >= year_start
+                        && failure_time[segment] < year_start + T::one()
+                    {
+                        let emergency_now = planned_now[segment] * narrowed_multiplier;
+                        // `usize::from` widens the `u8` class index without a
+                        // cast that could silently lose bits; Rust will not add a
+                        // `u8` to a `usize` on its own.
+                        let class = cell + usize::from(class_index[segment]);
+                        block.failures[class] += 1.0;
+                        block.customers_interrupted[class] += customers[segment].into_double();
+                        block.customer_minutes[class] +=
+                            customer_minutes_per_failure[segment].into_double();
+                        block.emergency_spend[class] += emergency_now.into_double();
+                        emergency_total = emergency_total + emergency_now;
+                        replaced[segment] = true;
+                    }
                 }
-            }
-            if !candidates.is_empty() {
-                // Only the candidates are scored. The reference scores every
-                // segment because that is what vectorizes, and then reads the
-                // candidates' entries; the values it computes for the rest are
-                // never read, so the two agree on everything either one uses.
-                for &segment in candidates.iter() {
-                    rank[segment] = policies::rank_key(
-                        policy,
-                        age[segment],
-                        weibull::conditional_failure_probability(
+
+                // 2. Planned replacement, funded greedily down the ranked order.
+                let mut available = budget[year];
+                if emergency_charged_to_budget {
+                    // Charged before this year's planned pass is scored, which is
+                    // what produces the loop where failures crowd out prevention.
+                    //
+                    // A year whose failures cost more than the budget leaves this
+                    // negative, and that is left alone rather than floored at zero.
+                    // Every planned cost is positive, so the greedy fill funds
+                    // nothing at any value at or below zero, and nothing carries to
+                    // the next year — each year takes the amount in the budget
+                    // series and no more. A floor here would be a line no result
+                    // could distinguish from its absence, which mutation testing
+                    // confirms: removing one left the whole suite green.
+                    // `Float` does not require `SubAssign`.
+                    available = available - emergency_total;
+                }
+
+                candidates.clear();
+                for segment in 0..n_segments {
+                    if policies::eligible(policy, age[segment], replaced[segment]) {
+                        candidates.push(segment);
+                    }
+                }
+                if !candidates.is_empty() {
+                    // Only the candidates are scored. The reference scores every
+                    // segment because that is what vectorizes, and then reads the
+                    // candidates' entries; the values it computes for the rest are
+                    // never read, so the two agree on everything either one uses.
+                    for &segment in candidates.iter() {
+                        rank[segment] = policies::rank_key(
+                            policy,
                             age[segment],
-                            current_shape[segment],
-                            current_scale[segment],
-                        ),
-                        outage_cost_per_failure[segment] * escalation,
-                        planned_now[segment],
-                        emergency_multiplier,
-                        priority[segment],
-                    );
-                }
-                // The `?` returns early with the error if there was one, and
-                // unwraps the value otherwise. It is Rust's substitute for an
-                // exception propagating up the stack: the failure travels the
-                // same way, but every function it passes through has to name
-                // it in its return type.
-                let ordered = policies::order_by_rank(rank, candidates)?;
-                for &segment in policies::fund(&ordered, planned_now, available) {
-                    let class = cell + usize::from(class_index[segment]);
-                    block.planned_replacements[class] += 1.0;
-                    block.planned_customer_minutes[class] += customer_minutes_per_planned[segment];
-                    block.planned_spend[class] += planned_now[segment];
-                    replaced[segment] = true;
-                }
-            }
-
-            // 3. Everything replaced this year enters service next year, as new
-            //    cable of the replacement technology, with a lifetime drawn
-            //    from that segment's cell for the following year.
-            // The reference writes `age += 1.0` over the whole array and then
-            // `age[replaced] = 0.0`, which is two passes because that is what
-            // vectorizes. One pass with a branch is the same result.
-            for segment in 0..n_segments {
-                if replaced[segment] {
-                    current_shape[segment] = replacement_shape[segment];
-                    current_scale[segment] = replacement_scale[segment];
-                    failure_time[segment] = (year + 1) as f64
-                        + weibull::draw_lifetime(
-                            weibull_draw(draw_key, replication_in_run, segment, year as u64 + 1),
-                            replacement_shape[segment],
-                            replacement_scale[segment],
+                            weibull::conditional_failure_probability(
+                                age[segment],
+                                current_shape[segment],
+                                current_scale[segment],
+                            ),
+                            outage_cost_per_failure[segment] * escalation,
+                            planned_now[segment],
+                            emergency_multiplier,
+                            priority[segment],
                         );
-                    age[segment] = 0.0;
-                } else {
-                    age[segment] += 1.0;
+                    }
+                    // The `?` returns early with the error if there was one, and
+                    // unwraps the value otherwise. It is Rust's substitute for an
+                    // exception propagating up the stack: the failure travels the
+                    // same way, but every function it passes through has to name
+                    // it in its return type.
+                    let ordered = policies::order_by_rank(rank, candidates)?;
+                    for &segment in policies::fund(&ordered, planned_now, available) {
+                        let class = cell + usize::from(class_index[segment]);
+                        block.planned_replacements[class] += 1.0;
+                        block.planned_customer_minutes[class] +=
+                            customer_minutes_per_planned[segment].into_double();
+                        block.planned_spend[class] += planned_now[segment].into_double();
+                        replaced[segment] = true;
+                    }
+                }
+
+                // 3. Everything replaced this year enters service next year, as new
+                //    cable of the replacement technology, with a lifetime drawn
+                //    from that segment's cell for the following year.
+                // The reference writes `age += 1.0` over the whole array and then
+                // `age[replaced] = 0.0`, which is two passes because that is what
+                // vectorizes. One pass with a branch is the same result.
+                for segment in 0..n_segments {
+                    if replaced[segment] {
+                        current_shape[segment] = replacement_shape[segment];
+                        current_scale[segment] = replacement_scale[segment];
+                        failure_time[segment] = T::from_double((year + 1) as f64)
+                            + weibull::draw_lifetime(
+                                T::from_double(weibull_draw(
+                                    draw_key,
+                                    replication_in_run,
+                                    segment,
+                                    year as u64 + 1,
+                                )),
+                                replacement_shape[segment],
+                                replacement_scale[segment],
+                            );
+                        age[segment] = T::zero();
+                    } else {
+                        age[segment] = age[segment] + T::one();
+                    }
                 }
             }
-        }
-        Ok(block)
-    };
+            Ok(block)
+        };
 
     let blocks: Vec<Result<Results, policies::NanScore>> = if threads <= 1 {
         // No pool, no work-stealing, no atomics. This path is the baseline the

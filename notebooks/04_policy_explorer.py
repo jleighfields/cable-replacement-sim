@@ -123,6 +123,16 @@ def _(config, np, policies, segments, settings):
 
     from cablesim import weibull
 
+    # These cells score the population at double whatever `simulation.precision`
+    # says, because they illustrate what the ranking does rather than reproduce
+    # what a run computed — nothing below is compared against the saved rows.
+    # The budget line further down is compared, and does follow the run's width.
+    #
+    # **What separates these cells from a run is the policy, not the width.**
+    # They score a `risk_ranked` built here with default parameters, which ranks
+    # on the raw value at risk; the configured one ranks per budget dollar. That
+    # is the larger difference by far, and it is deliberate — the point of the
+    # cell is to show the score before the budget divides it.
     failure_probability = weibull.conditional_failure_probability(
         segments["age"].to_numpy().astype(float),
         segments["shape"].to_numpy(),
@@ -305,7 +315,9 @@ def _(plots, saved):
 @app.cell
 def _(banded, plots, run, settings):
     _budget = settings.budget.annual * run.escalation_series(
-        settings.budget.escalation, settings.simulation.n_years
+        settings.budget.escalation,
+        settings.simulation.n_years,
+        settings.simulation.precision,
     )
     plots.spend_against_budget(banded, _budget.tolist(), "risk_ranked")
     return

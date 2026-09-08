@@ -202,12 +202,19 @@ class SimulationConfig(pydantic.BaseModel):
             as provenance rather than configured as a parameter.
         start_year: Year 0. A segment's age is ``start_year - install_year``,
             and present values are discounted to this year.
+        precision: The floating width every implementation computes in. It
+            reaches them as the dtype of the arrays they are handed rather than
+            as an argument, so nothing downstream branches on it. Two
+            implementations at the same precision are held to agreeing in every
+            cell; the two precisions give different answers, which is the point
+            of the choice.
     """
 
     n_years: int = pydantic.Field(ge=1)
     n_reps: int = pydantic.Field(ge=1)
     seed: int = pydantic.Field(ge=0)
     start_year: int
+    precision: Literal[*tuple(constants.PRECISIONS)] = constants.DEFAULT_PRECISION
 
 
 class PopulationConfig(pydantic.BaseModel):

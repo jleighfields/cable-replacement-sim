@@ -51,6 +51,8 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
+use crate::weibull::Real;
+
 /// Borrows a NumPy array as a flat slice, rejecting a non-contiguous one.
 ///
 /// Every array crosses this boundary as the same bytes NumPy holds, rather
@@ -190,35 +192,26 @@ fn as_result_array(
 /// `RuntimeError` if a thread pool of the requested size could not be built,
 /// which is the operating system refusing to start the threads rather than
 /// anything about the arguments.
-#[pyfunction]
-#[pyo3(signature = (
-    length_ft, customers, customer_minutes_per_failure,
-    customer_minutes_per_planned, outage_cost_per_failure, class_index,
-    age0, shape, scale, replacement_shape, replacement_scale, cost_per_ft,
-    draw_key, first_replication, n_reps, budget, cost_escalation, policy,
-    emergency_multiplier, mobilization_per_segment,
-    emergency_charged_to_budget, n_classes, n_years, threads=1,
-))]
 #[allow(clippy::too_many_arguments)]
-fn run_chunk<'py>(
+fn run_chunk_typed<'py, T: Element + Real>(
     py: Python<'py>,
-    length_ft: PyReadonlyArray1<'py, f64>,
-    customers: PyReadonlyArray1<'py, f64>,
-    customer_minutes_per_failure: PyReadonlyArray1<'py, f64>,
-    customer_minutes_per_planned: PyReadonlyArray1<'py, f64>,
-    outage_cost_per_failure: PyReadonlyArray1<'py, f64>,
+    length_ft: PyReadonlyArray1<'py, T>,
+    customers: PyReadonlyArray1<'py, T>,
+    customer_minutes_per_failure: PyReadonlyArray1<'py, T>,
+    customer_minutes_per_planned: PyReadonlyArray1<'py, T>,
+    outage_cost_per_failure: PyReadonlyArray1<'py, T>,
     class_index: PyReadonlyArray1<'py, u8>,
-    age0: PyReadonlyArray1<'py, f64>,
-    shape: PyReadonlyArray1<'py, f64>,
-    scale: PyReadonlyArray1<'py, f64>,
-    replacement_shape: PyReadonlyArray1<'py, f64>,
-    replacement_scale: PyReadonlyArray1<'py, f64>,
-    cost_per_ft: PyReadonlyArray1<'py, f64>,
+    age0: PyReadonlyArray1<'py, T>,
+    shape: PyReadonlyArray1<'py, T>,
+    scale: PyReadonlyArray1<'py, T>,
+    replacement_shape: PyReadonlyArray1<'py, T>,
+    replacement_scale: PyReadonlyArray1<'py, T>,
+    cost_per_ft: PyReadonlyArray1<'py, T>,
     draw_key: (u64, u64),
     first_replication: u64,
     n_reps: usize,
-    budget: PyReadonlyArray1<'py, f64>,
-    cost_escalation: PyReadonlyArray1<'py, f64>,
+    budget: PyReadonlyArray1<'py, T>,
+    cost_escalation: PyReadonlyArray1<'py, T>,
     policy: policies::Resolved,
     emergency_multiplier: f64,
     mobilization_per_segment: f64,
@@ -458,6 +451,157 @@ fn run_chunk<'py>(
             as_result_array(py, results.planned_spend, dimensions).into_any(),
             as_result_array(py, results.emergency_spend, dimensions).into_any(),
         ],
+    )
+}
+
+/// Runs one chunk of replications in double precision.
+///
+/// The pair below is the whole of the precision choice on this side of the
+/// boundary. Both forward to one generic body, so nothing about the model is
+/// written twice; what differs is the element type of the arrays each accepts,
+/// and that has to be concrete because PyO3 generates its glue from the
+/// signature. A run at one precision hands its arrays to whichever of the two
+/// matches, and `cablesim.kernel` reads the dtype to decide.
+///
+/// # Arguments
+///
+/// See `simulate::run_chunk`, which these are passed straight through to.
+#[pyfunction]
+#[pyo3(signature = (
+    length_ft, customers, customer_minutes_per_failure,
+    customer_minutes_per_planned, outage_cost_per_failure, class_index,
+    age0, shape, scale, replacement_shape, replacement_scale, cost_per_ft,
+    draw_key, first_replication, n_reps, budget, cost_escalation, policy,
+    emergency_multiplier, mobilization_per_segment,
+    emergency_charged_to_budget, n_classes, n_years, threads=1,
+))]
+#[allow(clippy::too_many_arguments)]
+fn run_chunk<'py>(
+    py: Python<'py>,
+    length_ft: PyReadonlyArray1<'py, f64>,
+    customers: PyReadonlyArray1<'py, f64>,
+    customer_minutes_per_failure: PyReadonlyArray1<'py, f64>,
+    customer_minutes_per_planned: PyReadonlyArray1<'py, f64>,
+    outage_cost_per_failure: PyReadonlyArray1<'py, f64>,
+    class_index: PyReadonlyArray1<'py, u8>,
+    age0: PyReadonlyArray1<'py, f64>,
+    shape: PyReadonlyArray1<'py, f64>,
+    scale: PyReadonlyArray1<'py, f64>,
+    replacement_shape: PyReadonlyArray1<'py, f64>,
+    replacement_scale: PyReadonlyArray1<'py, f64>,
+    cost_per_ft: PyReadonlyArray1<'py, f64>,
+    draw_key: (u64, u64),
+    first_replication: u64,
+    n_reps: usize,
+    budget: PyReadonlyArray1<'py, f64>,
+    cost_escalation: PyReadonlyArray1<'py, f64>,
+    policy: policies::Resolved,
+    emergency_multiplier: f64,
+    mobilization_per_segment: f64,
+    emergency_charged_to_budget: bool,
+    n_classes: usize,
+    n_years: usize,
+    threads: usize,
+) -> PyResult<Bound<'py, PyTuple>> {
+    run_chunk_typed(
+        py,
+        length_ft,
+        customers,
+        customer_minutes_per_failure,
+        customer_minutes_per_planned,
+        outage_cost_per_failure,
+        class_index,
+        age0,
+        shape,
+        scale,
+        replacement_shape,
+        replacement_scale,
+        cost_per_ft,
+        draw_key,
+        first_replication,
+        n_reps,
+        budget,
+        cost_escalation,
+        policy,
+        emergency_multiplier,
+        mobilization_per_segment,
+        emergency_charged_to_budget,
+        n_classes,
+        n_years,
+        threads,
+    )
+}
+
+/// Runs one chunk of replications in single precision.
+///
+/// The double-precision entry point above documents the pair.
+///
+/// # Arguments
+///
+/// See `simulate::run_chunk`, which these are passed straight through to.
+#[pyfunction]
+#[pyo3(signature = (
+    length_ft, customers, customer_minutes_per_failure,
+    customer_minutes_per_planned, outage_cost_per_failure, class_index,
+    age0, shape, scale, replacement_shape, replacement_scale, cost_per_ft,
+    draw_key, first_replication, n_reps, budget, cost_escalation, policy,
+    emergency_multiplier, mobilization_per_segment,
+    emergency_charged_to_budget, n_classes, n_years, threads=1,
+))]
+#[allow(clippy::too_many_arguments)]
+fn run_chunk_single<'py>(
+    py: Python<'py>,
+    length_ft: PyReadonlyArray1<'py, f32>,
+    customers: PyReadonlyArray1<'py, f32>,
+    customer_minutes_per_failure: PyReadonlyArray1<'py, f32>,
+    customer_minutes_per_planned: PyReadonlyArray1<'py, f32>,
+    outage_cost_per_failure: PyReadonlyArray1<'py, f32>,
+    class_index: PyReadonlyArray1<'py, u8>,
+    age0: PyReadonlyArray1<'py, f32>,
+    shape: PyReadonlyArray1<'py, f32>,
+    scale: PyReadonlyArray1<'py, f32>,
+    replacement_shape: PyReadonlyArray1<'py, f32>,
+    replacement_scale: PyReadonlyArray1<'py, f32>,
+    cost_per_ft: PyReadonlyArray1<'py, f32>,
+    draw_key: (u64, u64),
+    first_replication: u64,
+    n_reps: usize,
+    budget: PyReadonlyArray1<'py, f32>,
+    cost_escalation: PyReadonlyArray1<'py, f32>,
+    policy: policies::Resolved,
+    emergency_multiplier: f64,
+    mobilization_per_segment: f64,
+    emergency_charged_to_budget: bool,
+    n_classes: usize,
+    n_years: usize,
+    threads: usize,
+) -> PyResult<Bound<'py, PyTuple>> {
+    run_chunk_typed(
+        py,
+        length_ft,
+        customers,
+        customer_minutes_per_failure,
+        customer_minutes_per_planned,
+        outage_cost_per_failure,
+        class_index,
+        age0,
+        shape,
+        scale,
+        replacement_shape,
+        replacement_scale,
+        cost_per_ft,
+        draw_key,
+        first_replication,
+        n_reps,
+        budget,
+        cost_escalation,
+        policy,
+        emergency_multiplier,
+        mobilization_per_segment,
+        emergency_charged_to_budget,
+        n_classes,
+        n_years,
+        threads,
     )
 }
 
@@ -710,6 +854,7 @@ fn within_the_index(replication: u64, segment: u64, year: u64) -> PyResult<()> {
 #[pymodule]
 fn _cablesim(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_chunk, m)?)?;
+    m.add_function(wrap_pyfunction!(run_chunk_single, m)?)?;
     m.add_function(wrap_pyfunction!(available_threads, m)?)?;
     m.add_function(wrap_pyfunction!(philox_uniforms, m)?)?;
     m.add_function(wrap_pyfunction!(uniforms_dense, m)?)?;

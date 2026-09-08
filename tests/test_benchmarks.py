@@ -7,7 +7,11 @@ asserts that something was fast, because a test that did would fail on a loaded
 machine and teach nothing when it did.
 """
 
+import importlib.util
+import json
 import pathlib
+import types
+from collections.abc import Callable
 
 import numpy as np
 import pytest
@@ -29,6 +33,44 @@ def small_settings(n_segments: int = 200, n_reps: int = 2) -> config.Config:
     return config.resize_population(
         config.load_config(constants.DEFAULT_CONFIG_PATH), n_segments, n_reps=n_reps
     )
+
+
+@pytest.mark.parametrize("precision", sorted(constants.PRECISIONS))
+def test_every_float_an_implementation_is_handed_carries_the_precision(
+    precision: str,
+) -> None:
+    """A run at one precision hands its implementations nothing at the other.
+
+    **The parity tests cannot catch this.** The precision travels as the dtype
+    of the arrays, so an argument left at double widens whatever it touches —
+    and every implementation touches it the same way, so all of them widen
+    together and go on agreeing with each other in every cell. Comparing
+    implementations proves they compute the same thing, not that they compute
+    it at the width the run asked for.
+
+    This caught exactly that: the per-year budget and cost-escalation series
+    were built in double while the per-segment arrays were narrowed, so the
+    whole money path ran at double under a single-precision run.
+    """
+    settings = small_settings()
+    settings = settings.model_copy(
+        update={
+            "simulation": settings.simulation.model_copy(
+                update={"precision": precision}
+            )
+        }
+    )
+    arguments = benchmarks.chunk_arguments(settings, settings.simulation.n_reps)
+
+    wanted = constants.PRECISIONS[precision]
+    floats = {
+        name: value.dtype
+        for name, value in arguments.items()
+        if hasattr(value, "dtype") and value.dtype.kind == "f"
+    }
+    assert floats, "no float arrays were found, so this checked nothing"
+    wrong = {name: str(kind) for name, kind in floats.items() if kind != wanted}
+    assert not wrong, f"at {precision} these arrive as something else: {wrong}"
 
 
 def test_every_runnable_implementation_is_timed_and_matches() -> None:
@@ -73,6 +115,77 @@ def test_a_configuration_naming_no_implementation_is_refused() -> None:
             "risk_ranked",
             [benchmarks.Configuration("batched_pandas", 1, 2)],
             repeats=1,
+        )
+
+
+def script(name: str) -> types.ModuleType:
+    """Loads one of the driver scripts as a module.
+
+    ``scripts/`` is not part of the importable package, so the file is loaded
+    by path. Reading it this way is what lets a test drive a script's argument
+    handling without starting a subprocess.
+
+    Args:
+        name: The file's stem, without the extension.
+
+    Returns:
+        The loaded module, whose ``main`` takes an argument list.
+
+    Raises:
+        ImportError: If the file could not be loaded as a module.
+    """
+    path = constants.PROJECT_ROOT / "scripts" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"{path} could not be loaded as a module")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_caller_naming_no_configured_policy_is_told_which_exist() -> None:
+    """A misspelled policy name is refused the way a misspelled implementation is.
+
+    Both benchmark entry points take a policy by name and look it up in the
+    configured list. The implementation name beside it is checked and refused
+    with the set that exists; the policy name is not, so the lookup runs off
+    the end of the list and the caller gets an exception carrying no message
+    and naming neither the policy asked for nor the ones configured. The
+    ``--policy`` flag is documented in ``README.md`` for both scripts, and a
+    typo in it is the ordinary way to reach this.
+
+    ``LookupError`` covers the ``KeyError`` the sibling check raises for an
+    implementation name; ``ValueError`` covers reporting it as a bad value
+    instead. Neither covers running off the end of the list, which is the
+    behaviour this pins.
+    """
+    settings = small_settings()
+    misspelled = "risk_rankd"
+    configured = [spec.name for spec in settings.policies]
+    assert misspelled not in configured, (
+        f"{misspelled} is a configured policy, so this test no longer asks "
+        f"for one that does not exist; the configured names are {configured}"
+    )
+
+    with pytest.raises((LookupError, ValueError)) as from_compare:
+        benchmarks.compare(
+            settings,
+            misspelled,
+            [benchmarks.Configuration("kernel", 1, 2)],
+            repeats=1,
+        )
+    with pytest.raises((LookupError, ValueError)) as from_script:
+        script("measure_memory").main(
+            ["--policy", misspelled, "--segments", "50", "--reps", "2"]
+        )
+
+    for raised in (from_compare, from_script):
+        assert misspelled in str(raised.value), (
+            f"{raised.value!r} does not name the policy that was asked for"
+        )
+        assert any(name in str(raised.value) for name in configured), (
+            f"{raised.value!r} does not name any policy that is configured, "
+            f"so it does not say what to write instead"
         )
 
 
@@ -188,4 +301,97 @@ def test_the_shipped_callers_only_name_implementations_that_exist(
     assert requested <= runnable, (
         f"{path.name} asks for {sorted(requested - runnable)}, which "
         f"{sorted(runnable)} does not carry"
+    )
+
+
+def ran_at(
+    module: types.ModuleType, out: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> str:
+    """The width a script reports, read from wherever it records it.
+
+    Args:
+        module: The loaded script.
+        out: The directory a table-writing script was pointed at.
+        caplog: Captured log records, for a script that reports on one line.
+
+    Returns:
+        The precision the run recorded.
+    """
+    provenance = out / "provenance.json"
+    if provenance.exists():
+        return str(json.loads(provenance.read_text())["precision"])
+    return str(json.loads(caplog.messages[-1])["precision"])
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments"),
+    [
+        (
+            "measure_memory",
+            lambda out: [
+                "--implementation", "reference", "--segments", "50", "--reps", "2",
+            ],
+        ),
+        (
+            "run_benchmarks",
+            lambda out: [
+                "--reduced", "--repeats", "1", "--policy", "run_to_failure",
+                "--out", str(out),
+            ],
+        ),
+    ],
+    ids=["measure_memory", "run_benchmarks"],
+)
+def test_a_script_run_computes_at_the_width_its_configuration_names(
+    name: str,
+    arguments: Callable[[pathlib.Path], list[str]],
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A flag left off must defer to the configuration, not overwrite it.
+
+    Both benchmark scripts take a ``--precision`` and apply it to the loaded
+    configuration as an override. The flag defaults to
+    ``constants.DEFAULT_PRECISION`` rather than to nothing, so the override is
+    applied on every run — including the run where nobody named a width. A
+    configuration that names the other one is then discarded without a word,
+    and the figure that comes back is labelled with the width the flag
+    supplied rather than the width the configuration asked for.
+
+    That is the whole shape of the defect the width checks elsewhere in this
+    suite exist for, one layer up: the number is right for *some* run, and
+    nothing says it is not the run that was asked for.
+
+    Both driver scripts are checked, because both build the override the same
+    way and the repair to one said nothing about the other — reverting it in
+    ``run_benchmarks.py`` alone left the whole suite green.
+
+    Args:
+        name: The script's file stem.
+        arguments: Builds its command line, given a directory to write into.
+        tmp_path: Where a table-writing script puts its output.
+        monkeypatch: Replaces the configuration the script loads.
+        caplog: Captures the JSON line a reporting script writes.
+    """
+    asked_for = "f32"
+    base = small_settings(n_segments=50, n_reps=2)
+    settings = base.model_copy(
+        update={
+            "simulation": base.simulation.model_copy(update={"precision": asked_for})
+        }
+    )
+    assert settings.simulation.precision != constants.DEFAULT_PRECISION, (
+        f"this test needs a configuration naming the width the flag does not "
+        f"default to; both are {asked_for}"
+    )
+    module = script(name)
+    monkeypatch.setattr(config, "load_config", lambda *_args, **_kwargs: settings)
+    with caplog.at_level("INFO"):
+        module.main(arguments(tmp_path))
+
+    assert ran_at(module, tmp_path, caplog) == asked_for, (
+        f"{name} was given a configuration naming {asked_for} and ran at "
+        f"something else; its --precision default overrode the configuration "
+        f"instead of deferring to it"
     )

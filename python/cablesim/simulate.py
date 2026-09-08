@@ -28,11 +28,12 @@ loop free of any inner iteration, and what makes the deterministic parity test
 terminate when lifetimes are forced to zero.
 """
 
+import collections
 from typing import NamedTuple
 
 import numpy as np
 
-from cablesim import policies, random_draws, weibull
+from cablesim import constants, policies, random_draws, weibull
 
 SEGMENT_ARGUMENTS: tuple[str, ...] = (
     "length_ft",
@@ -175,9 +176,72 @@ def check_arguments(arguments: dict[str, object], concurrent: bool = False) -> i
             run — 1 is the only count an implementation that runs one
             replication at a time accepts, and anything below 1 is refused by
             every implementation.
-        TypeError: If ``policy.kind`` is not an integer.
+        TypeError: If ``policy.kind`` is not an integer, if the call carries
+            more than one floating width, or if it carries one width that no
+            run computes at — an all-``float16`` call names a single width and
+            is still one the binding cannot borrow. The width check is a type
+            error rather than a value error because the width is not a value
+            any argument holds — it is the dtype the arrays are stored at,
+            and the binding refuses the same call by failing to borrow the
+            array as the element type its signature names.
+
+            **The binding makes that refusal first, before any check here.**
+            PyO3 extracts every argument before the function body runs, so a
+            call that both mixes widths and, say, names an unknown policy is
+            refused for the width by the kernel and for the policy here. Where
+            the width is the only thing wrong, both raise ``TypeError``.
     """
     policy = arguments["policy"]
+
+    # One width per call. The precision a run computes in travels as the dtype
+    # of these arrays, so a call carrying two of them is a call at neither: an
+    # array left at the wider one silently widens everything it touches, and
+    # because every implementation widens the same way they all go on agreeing
+    # with each other in every cell. That is a defect with no symptom, and it
+    # has been shipped here twice.
+    #
+    # First, and that is the one place this function's order departs from the
+    # binding's for a reason rather than by accident: PyO3 extracts every
+    # argument before the body runs, so on the Rust side a width it cannot
+    # borrow is refused ahead of everything, including the policy tag. Checking
+    # it anywhere later would have the two sides report different problems for
+    # a call that has both. The class matches too — a dtype that cannot be
+    # borrowed is a type error rather than a bad value — and the wording is
+    # PyO3's on that side by design.
+    widths = {
+        name: arguments[name].dtype
+        for name in (*SEGMENT_ARGUMENTS, "budget", "cost_escalation")
+        if getattr(arguments[name], "dtype", None) is not None
+        and arguments[name].dtype.kind == "f"
+    }
+    known = {np.dtype(floating) for floating in constants.PRECISIONS.values()}
+    unknown = {
+        name: str(kind) for name, kind in widths.items() if kind not in known
+    }
+    if unknown:
+        # Uniform is not the same as known: an all-`float16` call is one width
+        # and the binding still refuses it at extraction, which is the
+        # asymmetry this function exists to prevent.
+        raise TypeError(
+            f"this call carries a floating width no run computes at: {unknown}. "
+            f"The widths are {sorted(constants.PRECISIONS)}"
+        )
+    if len(set(widths.values())) > 1:
+        # Every width with its count, rather than one named as the majority.
+        # An even split is reachable — a `budget` passed as a list is not
+        # counted here, leaving twelve arrays that can divide six and six — and
+        # any wording that calls one side the exception is then false.
+        counted = collections.Counter(widths.values())
+        tally = ", ".join(
+            f"{count} at {kind}" for kind, count in sorted(counted.items(), key=str)
+        )
+        raise TypeError(
+            f"this call carries more than one floating width ({tally}): "
+            f"{ {name: str(kind) for name, kind in widths.items()} }. The "
+            f"precision a run computes in is the dtype of these arrays, so a "
+            f"mixed call is a call at neither width"
+        )
+
     n_classes = arguments["n_classes"]
     n_years = arguments["n_years"]
     n_reps = arguments["n_reps"]
@@ -226,6 +290,7 @@ def check_arguments(arguments: dict[str, object], concurrent: bool = False) -> i
     random_draws.check_positions(
         arguments["first_replication"] + n_reps - 1, n_segments - 1, n_years
     )
+
     for name in SEGMENT_ARGUMENTS:
         column = arguments[name]
         if column.ndim != 1:
@@ -374,13 +439,18 @@ def run_chunk(
             These are the checks ``cablesim.kernel.run_chunk`` makes, in the
             order it makes them and word for word, because the two are
             documented as interchangeable behind one call: a caller must not
-            get an answer from one and an error from the other.
+            get an answer from one and an error from the other. The mixed-width
+            refusal is the exception to the ordering: the binding makes it at
+            extraction, before every check in this list, where this
+            implementation makes it after the draw-position check.
 
             What the two report differently is whatever the binding's
-            argument types refuse before any check of ours runs: an array that
-            is not C-contiguous, one whose dtype is not ``float64`` — ``uint8``
-            for ``class_index`` — one with the wrong number of axes, and a
-            ``policy.kind`` that is not an integer. PyO3 owns those messages.
+            argument types refuse before any check of ours runs: an array
+            that is not C-contiguous, one whose dtype is not the width the
+            call is being made at — ``uint8`` for ``class_index``, and
+            ``float64`` or ``float32`` for the rest, the same one for all of
+            them — one with the wrong number of axes, and a ``policy.kind``
+            that is not an integer. PyO3 owns those messages.
             This implementation needs none of them to be true, and raises the
             same class for the last two: a non-integer tag would otherwise
             match a branch by hash equality, and a two-dimensional array of the
@@ -388,8 +458,16 @@ def run_chunk(
             error naming neither the argument nor the reason. So an argument
             set this accepts is not guaranteed to cross the boundary.
 
-        TypeError: If ``policy.kind`` is not an integer, or an array is not
-            one-dimensional where one entry per segment is expected.
+        TypeError: If ``policy.kind`` is not an integer, or if the call carries
+            more than one floating width — the precision a run computes in is
+            the dtype of these arrays, so a call carrying two of them is a call
+            at neither, and widening one silently would give an answer at a
+            width nobody asked for.
+
+            A per-segment array that is not one-dimensional raises
+            ``ValueError`` here and ``TypeError`` from the binding, which is
+            one of the reported-differently cases above rather than a class the
+            two share.
     """
     n_segments = check_arguments(locals())
     results = Results(
@@ -415,6 +493,12 @@ def run_chunk(
         """
         return np.bincount(bins[selected], weights=weights, minlength=n_classes)
 
+    # The working precision, read off the arrays this was handed rather than
+    # passed down. Draws are produced in double whatever it is — the generator
+    # is validated against NumPy's own Philox and narrowing it would break that
+    # for no gain — and are narrowed where they meet the state, below.
+    floating = age0.dtype
+
     # The two draws every segment takes whatever happens to it: the fixed
     # priority the random policy ranks on, and the left-truncated lifetime at
     # the start of the run. Both are read for every segment of every
@@ -426,7 +510,7 @@ def run_chunk(
         n_reps,
         n_segments,
         0,
-    )
+    ).astype(floating)
     initial = random_draws.uniforms_dense(
         draw_key,
         random_draws.PURPOSE["lifetimes"],
@@ -434,12 +518,15 @@ def run_chunk(
         n_reps,
         n_segments,
         0,
-    )
+    ).astype(floating)
 
     for replication in range(n_reps):
-        age = age0.astype(float, copy=True)
-        current_shape = shape.astype(float, copy=True)
-        current_scale = scale.astype(float, copy=True)
+        # Copied rather than cast: the dtype of the arrays this was handed is
+        # the working precision, and casting to `float` here would silently
+        # widen a single-precision run back to double.
+        age = age0.copy()
+        current_shape = shape.copy()
+        current_scale = scale.copy()
         priority = priorities[replication]
         # Conditional on survival to age0: a population that starts partway
         # through its life must not behave as though it were new.
@@ -536,7 +623,7 @@ def run_chunk(
                         np.full(renewing.size, first_replication + replication),
                         renewing,
                         year + 1,
-                    ),
+                    ).astype(floating),
                     replacement_shape[replaced],
                     replacement_scale[replaced],
                 )

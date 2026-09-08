@@ -214,35 +214,75 @@ def budget_grid(annual: float, levels: int = BUDGET_GRID_LEVELS) -> list[float]:
     return [0.0, *spaced.tolist()]
 
 
-def escalation_series(rate: float, n_years: int) -> np.ndarray:
+def floating_for(precision: str) -> type[np.floating]:
+    """The dtype a named precision builds its arrays at.
+
+    Args:
+        precision: A key of ``constants.PRECISIONS``.
+
+    Returns:
+        The NumPy floating type.
+
+    Raises:
+        ValueError: If the name is not one of the precisions that exist. The
+            configuration model refuses one first, so only a direct caller
+            arrives here.
+    """
+    floating = constants.PRECISIONS.get(precision)
+    if floating is None:
+        raise ValueError(
+            f"precision is {precision!r}, which names no dtype; "
+            f"the choices are {sorted(constants.PRECISIONS)}"
+        )
+    return floating
+
+
+def escalation_series(rate: float, n_years: int, precision: str) -> np.ndarray:
     """Compounds an annual rate into a per-year multiplier.
 
     Args:
         rate: Annual growth, as a fraction.
         n_years: Horizon.
+        precision: The dtype to return at, named as ``"f64"`` or ``"f32"``.
+            Compounded in double whatever it is and narrowed once, so the
+            series does not accumulate the rounding of the width it is
+            returned at.
 
     Returns:
         One multiplier per year, starting at 1.0 in year 0.
     """
-    return (1.0 + rate) ** np.arange(n_years, dtype=float)
+    return ((1.0 + rate) ** np.arange(n_years, dtype=np.float64)).astype(
+        floating_for(precision)
+    )
 
 
-def segment_arrays(frame: pl.DataFrame) -> dict[str, np.ndarray]:
+def segment_arrays(frame: pl.DataFrame, precision: str) -> dict[str, np.ndarray]:
     """Extracts the per-segment arrays an implementation reads.
 
     A segment's position in these arrays is its identifier, and the tie-break
     that decides which of two equally ranked candidates is funded reads that
     position, so the frame is sorted before anything is taken from it.
 
+    **The dtype of these arrays is how the working precision reaches every
+    implementation.** None of them takes a precision argument; each reads what
+    it is handed, which is why a run at single precision needs nothing passed
+    down a signature that already carries twenty-odd arguments.
+
     Args:
         frame: The population, one row per segment.
+        precision: ``"f64"`` or ``"f32"``, naming the dtype every per-segment
+            float array is built at. Required rather than defaulted: this
+            argument has been forgotten twice, and both times it defaulted
+            quietly to double and produced a run at a width nobody asked for.
 
     Returns:
         The arrays, keyed by the argument name each is passed as.
 
     Raises:
         KeyError: If the population is missing a column the loop reads.
+        ValueError: If the precision names no dtype.
     """
+    floating = floating_for(precision)
     ordered = frame.sort("segment_id")
     missing = [name for name in SEGMENT_COLUMNS if name not in ordered.columns]
     if missing:
@@ -250,9 +290,14 @@ def segment_arrays(frame: pl.DataFrame) -> dict[str, np.ndarray]:
     arrays = {name: ordered[name].to_numpy() for name in SEGMENT_COLUMNS}
     # The loop names the starting age `age0`, because it holds a current age
     # that moves; the population column is the age at year 0.
-    arrays["age0"] = arrays.pop("age").astype(float)
-    arrays["class_index"] = arrays["class_index"].astype(np.uint8)
-    return arrays
+    arrays["age0"] = arrays.pop("age")
+    # The class index keys into the result axis and is not part of the
+    # arithmetic, so it keeps its own width whatever the floats are doing.
+    classes = arrays.pop("class_index").astype(np.uint8)
+    return {
+        **{name: array.astype(floating) for name, array in arrays.items()},
+        "class_index": classes,
+    }
 
 
 def replication_chunks(n_reps: int, batch_size: int) -> list[range]:
@@ -320,11 +365,15 @@ def simulate_policy(
     # whichever chunk it landed in.
     key = random_draws.draw_key(simulation.seed)
     resolved = policies.resolve(spec)
+    # At the run's precision, like the per-segment arrays. A double-precision
+    # series multiplied into single-precision costs widens the whole money path
+    # back to double, and because every implementation would widen the same way
+    # the parity tests could not see it.
     budget = settings.budget.annual * escalation_series(
-        settings.budget.escalation, simulation.n_years
+        settings.budget.escalation, simulation.n_years, simulation.precision
     )
     cost_escalation = escalation_series(
-        settings.costs.escalation_rate, simulation.n_years
+        settings.costs.escalation_rate, simulation.n_years, simulation.precision
     )
 
     written = []
@@ -408,7 +457,7 @@ def run(
     run_id = results.new_run_id()
     segments_frame = population.generate(settings)
     class_names = [segment_class.name for segment_class in settings.population.classes]
-    segments = segment_arrays(segments_frame)
+    segments = segment_arrays(segments_frame, settings.simulation.precision)
     log.info(
         "run %s: %d segments, %d policies, %d replications, %d thread(s)",
         run_id,

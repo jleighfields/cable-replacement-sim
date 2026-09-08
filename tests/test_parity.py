@@ -39,6 +39,7 @@ two exchanged funds a different set of segments.
 """
 
 import pathlib
+import re
 
 import numpy as np
 import polars as pl
@@ -48,6 +49,8 @@ from cablesim import (
     constants,
     kernel,
     policies,
+    population,
+    random_draws,
     results,
     run,
     simulate,
@@ -155,11 +158,92 @@ def test_every_implementation_matches_when_everything_fails_at_once(
     replacement enters service the following year — without which this case
     would not terminate at all.
     """
-    arguments = helpers.forced_lifetimes(deterministic_arguments, helpers.FAILS_AT_ONCE)
+    arguments = helpers.forced_lifetimes(
+        deterministic_arguments, helpers.FAILS_AT_ONCE, from_new=True
+    )
 
     assert_identical(
         simulate.run_chunk(**arguments, policy=policy),
         implementation(**arguments, policy=policy),
+    )
+
+
+def test_the_forced_scale_fails_every_segment_at_both_widths(
+    deterministic_arguments: dict[str, object],
+) -> None:
+    """`helpers.FAILS_AT_ONCE` has to force the case the tests above name.
+
+    Those tests compare implementations against each other, so they pass on any
+    scenario the fixture happens to produce — including one where half the
+    population never fails at all. What the scenario *is* has to be asserted
+    separately, and this is that assertion: at the scale documented as putting
+    every segment's remaining life inside year one, every segment fails in year
+    zero.
+
+    The remaining life is `scale * ((age / scale) ** shape - ln1p(-u)) ** (1 /
+    shape) - age`, and at a scale this far below the ages the bracket is
+    dominated by the first term, so the whole expression is a difference of two
+    numbers that agree to within a rounding step of `age`. In double that
+    leaves a positive value around 1e-14; in single the rounding step at an age
+    of 57 is about 4e-6, which is larger than the value being recovered, so the
+    result lands either side of zero. A negative remaining life is a failure
+    time no year's `[year, year + 1)` window contains, so that segment never
+    fails in any year of the horizon.
+    """
+    arguments = helpers.forced_lifetimes(
+        deterministic_arguments, helpers.FAILS_AT_ONCE, from_new=True
+    )
+    every_segment = np.size(arguments["age0"]) * arguments["n_reps"]
+
+    failures = simulate.run_chunk(
+        **arguments, policy=helpers.resolved("run_to_failure")
+    ).failures
+
+    assert failures[:, 0].sum() == every_segment, (
+        f"{failures[:, 0].sum():.0f} of {every_segment} segment-replications "
+        f"failed in year zero at {arguments['age0'].dtype}; the fixture "
+        f"documents itself as failing all of them"
+    )
+
+
+def test_the_alternating_scale_fails_the_half_it_names_at_both_widths(
+    deterministic_arguments: dict[str, object],
+) -> None:
+    """The half-and-half scenario has to be half and half at both widths.
+
+    Two tests below are built on an alternating scale and describe the case
+    they reach as half the population failing immediately and the other half
+    never failing. Both compare implementations against each other, so both
+    pass on whatever scenario the fixture happened to produce; what the
+    scenario *is* has to be asserted separately, and this is that assertion.
+
+    `helpers.FAILS_AT_ONCE` forces a failure inside year one only for a segment
+    starting from new. On an aged segment the remaining life is drawn
+    conditional on survival, so the accumulated hazard dominates the bracket and
+    adding the draw to it changes nothing a single-precision float holds — the
+    result lands either side of zero, and a negative remaining life is a
+    failure time no year's `[year, year + 1)` window contains. That is why
+    `helpers.alternating_lifetimes` zeroes the age of the half it forces to
+    fail and leaves the other half aged: applied to the fixture's aged
+    population without that, only about a quarter of it fails and the two
+    tests below no longer reach the scenario they describe.
+    """
+    arguments = helpers.alternating_lifetimes(deterministic_arguments)
+    # Counted off the fixture the helper returned rather than by restating its
+    # rule here: a second copy of "even segments fail" would have to be changed
+    # with it, and dividing by two is wrong on an odd population besides.
+    intended = int(
+        np.count_nonzero(np.isclose(arguments["scale"], helpers.FAILS_AT_ONCE))
+    ) * arguments["n_reps"]
+
+    failures = simulate.run_chunk(
+        **arguments, policy=helpers.resolved("run_to_failure")
+    ).failures
+
+    assert failures[:, 0].sum() == intended, (
+        f"{failures[:, 0].sum():.0f} of {intended} segment-replications failed "
+        f"in year zero at {arguments['age0'].dtype}; the tests built on this "
+        f"scenario describe half the population failing immediately"
     )
 
 
@@ -186,19 +270,16 @@ def test_every_implementation_matches_when_failures_crowd_out_prevention(
     """
     n_segments = np.size(deterministic_arguments["age0"])
     n_years = deterministic_arguments["n_years"]
-    scales = np.where(
-        np.arange(n_segments) % 2 == 0, helpers.FAILS_AT_ONCE, helpers.NEVER_FAILS
-    ).astype(float)
-    arguments = {
-        **deterministic_arguments,
-        "scale": scales,
-        "replacement_scale": scales,
-        "length_ft": np.full(n_segments, 100.0),
-        "cost_per_ft": np.full(n_segments, 10.0),
-        "mobilization_per_segment": 500.0,
-        "cost_escalation": np.ones(n_years),
-        "emergency_charged_to_budget": True,
-    }
+    arguments = helpers.at_call_width(
+        {
+            **helpers.alternating_lifetimes(deterministic_arguments),
+            "length_ft": np.full(n_segments, 100.0),
+            "cost_per_ft": np.full(n_segments, 10.0),
+            "mobilization_per_segment": 500.0,
+            "cost_escalation": np.ones(n_years),
+            "emergency_charged_to_budget": True,
+        }
+    )
 
     assert_identical(
         simulate.run_chunk(**arguments, policy=policy),
@@ -224,14 +305,16 @@ def test_every_implementation_funds_a_candidate_costing_the_remainder(
     n_years = deterministic_arguments["n_years"]
     funded_exactly = 10
     planned = 100.0 * 10.0 + 500.0
-    arguments = {
-        **helpers.forced_lifetimes(deterministic_arguments, helpers.NEVER_FAILS),
-        "length_ft": np.full(n_segments, 100.0),
-        "cost_per_ft": np.full(n_segments, 10.0),
-        "mobilization_per_segment": 500.0,
-        "cost_escalation": np.ones(n_years),
-        "budget": np.full(n_years, funded_exactly * planned),
-    }
+    arguments = helpers.at_call_width(
+        {
+            **helpers.forced_lifetimes(deterministic_arguments, helpers.NEVER_FAILS),
+            "length_ft": np.full(n_segments, 100.0),
+            "cost_per_ft": np.full(n_segments, 10.0),
+            "mobilization_per_segment": 500.0,
+            "cost_escalation": np.ones(n_years),
+            "budget": np.full(n_years, funded_exactly * planned),
+        }
+    )
     policy = helpers.resolved("worst_first")
 
     reference = simulate.run_chunk(**arguments, policy=policy)
@@ -240,6 +323,359 @@ def test_every_implementation_funds_a_candidate_costing_the_remainder(
     assert reference.planned_replacements[0, 0].sum() == funded_exactly
     assert reference.planned_spend[0, 0].sum() == funded_exactly * planned
     assert_identical(reference, produced)
+
+
+def one_year_at_single_precision(
+    multiplier: float, budget: float, charged: bool, n_segments: int | None = None
+) -> dict[str, object]:
+    """One year of the shipped population at single precision, on a boundary.
+
+    **The multiplier and budget each caller passes were found by search against
+    the population the shipped seed, size and cost parameters generate**, so
+    this is a statement about that exact population and not about its size.
+    Measured: at 12,001 segments, at 11,000, and at one step of the seed, the
+    constants stop straddling their boundary and the callers pin nothing. Each
+    asserts the funded count it was built on, so a change to any of those
+    reports rather than passing quietly, and the fix is to search again.
+
+    A fixture's few hundred segments will not do: what these pin is a last-bit
+    difference deciding which candidate the budget reaches last, and a small
+    population does not put enough candidates near the cut for one to fall the
+    other side. One replication over one year keeps the shipped size
+    affordable.
+
+    Args:
+        multiplier: What an emergency replacement costs, relative to planned.
+        budget: The year's budget, chosen to sit between the two cut points.
+        charged: Whether the year's emergency bill is taken off the budget
+            before the planned pass is scored.
+        n_segments: A population size to build instead of the shipped one.
+            The callers below leave it None and get the population their
+            constants were searched against; the test that checks those
+            constants are still on their boundary passes one of the sizes
+            named above, which is the perturbation that moves it.
+
+    Returns:
+        Every argument of ``simulate.run_chunk`` except ``policy``.
+    """
+    base = config.load_config(constants.DEFAULT_CONFIG_PATH)
+    if n_segments is not None:
+        base = config.with_overrides(base, {"population.n_segments": n_segments})
+    settings = base.model_copy(
+        update={
+            "simulation": base.simulation.model_copy(
+                update={"precision": "f32", "n_reps": 1, "n_years": 1}
+            )
+        }
+    )
+    # Read once, from the configuration, so the width is named in one place.
+    precision = settings.simulation.precision
+    floating = constants.PRECISIONS[precision]
+    built = {
+        **run.segment_arrays(population.generate(settings), precision),
+        "draw_key": random_draws.draw_key(settings.simulation.seed),
+        "first_replication": 0,
+        "n_reps": 1,
+        "budget": np.full(1, budget, dtype=floating),
+        "cost_escalation": np.ones(1, dtype=floating),
+        "emergency_multiplier": multiplier,
+        "mobilization_per_segment": settings.costs.mobilization_per_segment,
+        "emergency_charged_to_budget": charged,
+        "n_classes": len(settings.population.classes),
+        "n_years": 1,
+    }
+    # This builder assembles its own arguments rather than going through
+    # `conftest.simulation_arguments`, so the width check that fixture makes
+    # does not reach it. Building at the wrong width would leave both callers
+    # passing and pinning nothing.
+    helpers.assert_at_width(built, precision)
+    return built
+
+
+# Every segment a candidate and the raw score, so the ranking is the premium
+# rather than the premium divided by cost — which is where both of the
+# divergences below live.
+UNFILTERED_RISK = policies.Resolved(
+    kind=policies.KIND["risk_ranked"],
+    threshold_years=float("-inf"),
+    rank_by_cost=False,
+)
+
+
+BOUNDARY_CASES = {
+    "premium": (
+        {"multiplier": 2.942645377983026, "budget": 41938160.0, "charged": False},
+        lambda produced: (produced.planned_replacements.sum(),),
+    ),
+    "priority_narrowing": (
+        {"multiplier": 2.5, "budget": 215960000.0, "charged": False},
+        lambda produced: (produced.planned_replacements.sum(),),
+    ),
+    "emergency_bill": (
+        {"multiplier": 2.5, "budget": 80962232.0, "charged": True},
+        # Both quantities its guard reads. The funded count alone does not move
+        # at the drifted population, which is why that guard needed the bill.
+        lambda produced: (
+            produced.planned_replacements.sum(),
+            produced.emergency_spend.sum(),
+        ),
+    ),
+}
+"""The two boundary cases below, with the quantity each one's guard asserts.
+
+Keyed by the boundary rather than by the test name so a reader can see which
+constants belong to which. The second element reads back exactly what that
+test's guard reads, so the check below is a check on the guard rather than on
+something adjacent to it.
+"""
+
+
+def test_the_priority_draw_is_narrowed_where_the_state_it_ranks_meets_it(
+    implementation: run.Implementation,
+) -> None:
+    """A draw is produced in double and narrowed where it meets the state.
+
+    The generator computes at one width whatever the run's precision is,
+    because it is held to agreeing with NumPy's own Philox. What reaches the
+    model has to be narrowed, and narrowing collapses eight of the shipped
+    population's twelve thousand priorities into ties — which the greedy fill
+    then breaks on segment identifier. An implementation that skipped the
+    narrowing would rank those eight differently and fund a different segment
+    last.
+
+    Nothing else here can see that. The deterministic fixtures force the
+    lifetimes, so their draws do not decide the outcome; the statistical one
+    compares within a tolerance the difference fits inside. Removing any of the
+    three narrowings in the reference left the whole suite green.
+
+    The `random` policy is used because it ranks on the priority draw alone, so
+    the divergence is not buried under a score computed from anything else.
+
+    **This covers the priority draw and not the two lifetime draws**, and the
+    reason is that those two have no outcome to diverge in: a lifetime decides
+    a failure *year*, and narrowing moves no segment of the shipped population
+    across a year boundary — measured, zero of twelve thousand. What they
+    protect is the width of the state that carries them onward, which no
+    comparison between implementations observes, so a test that appeared to
+    cover them would be asserting something else.
+    """
+    arguments = one_year_at_single_precision(**BOUNDARY_CASES["priority_narrowing"][0])
+    reference = simulate.run_chunk(**arguments, policy=helpers.resolved("random"))
+
+    assert reference.planned_replacements.sum() == 2578, (
+        "the funded count moved, so the budget no longer sits where the tied "
+        "priorities decide it; this was searched against a particular "
+        "population and needs searching again"
+    )
+    assert_identical(
+        reference, implementation(**arguments, policy=helpers.resolved("random"))
+    )
+
+
+def test_the_emergency_premium_is_narrowed_where_the_reference_narrows_it(
+    implementation: run.Implementation,
+) -> None:
+    """Where a configured double meets the working width decides who is funded.
+
+    The risk-ranked score reads ``planned * (emergency_multiplier - 1)``. The
+    reference does that subtraction in Python's double arithmetic and lets
+    NumPy narrow the result; narrowing the multiplier first and subtracting at
+    the working width gives a different premium for any multiplier the width
+    cannot hold, which is about two fifths of them at single precision.
+
+    The multiplier and budget here are not arbitrary. The shipped 2.5 is
+    exactly representable and cannot show this at all, and on a few hundred
+    segments the ordering moves without the funded set changing. These put the
+    budget between the two cut points on the shipped population, where the two
+    orders fund 181 candidates and 180.
+    """
+    arguments = one_year_at_single_precision(**BOUNDARY_CASES["premium"][0])
+    reference = simulate.run_chunk(**arguments, policy=UNFILTERED_RISK)
+
+    assert reference.planned_replacements.sum() == 181, (
+        "the budget no longer sits between the two cut points, so this test "
+        "pins nothing whatever it asserts next; the multiplier and budget were "
+        "searched against a particular population and need searching again, "
+        "unless the reference's own premium arithmetic changed"
+    )
+    assert_identical(
+        reference, implementation(**arguments, policy=UNFILTERED_RISK)
+    )
+
+
+def test_the_emergency_bill_totals_at_the_width_the_budget_compares_at(
+    implementation: run.Implementation,
+) -> None:
+    """The year's emergency total is a running sum at the working width.
+
+    It is subtracted from the budget that the greedy fill then compares a
+    cumulative cost against, so it has to round the way that comparison rounds.
+    NumPy's ``cumsum`` preserves the width, which is what the reference uses;
+    totalling in double and narrowing once at the subtraction lands on a
+    different remaining budget.
+
+    The budget here sits between the two: the single-precision running total is
+    79,962,480 against 79,962,488 for the double-then-narrow one, and one
+    candidate falls either side.
+    """
+    arguments = one_year_at_single_precision(**BOUNDARY_CASES["emergency_bill"][0])
+    reference = simulate.run_chunk(**arguments, policy=UNFILTERED_RISK)
+
+    # The funded count alone cannot guard this one: at 12,001 segments it still
+    # reads 1 while the boundary has stopped straddling, so the test would pass
+    # having pinned nothing. The emergency bill is the quantity the boundary is
+    # cut from, and it separates every perturbation that breaks this.
+    assert reference.planned_replacements.sum() == 1, (
+        "the funded count moved, so the budget no longer sits between the two "
+        "totals; this was searched against a particular population and needs "
+        "searching again, unless the reference's own arithmetic changed"
+    )
+    assert reference.emergency_spend.sum() == pytest.approx(
+        79962487.52734375, abs=1.0
+    ), (
+        "the emergency bill moved, so the budget is no longer between what the "
+        "two accumulator widths total to and this test pins nothing; re-search "
+        "it against this population"
+    )
+    assert_identical(
+        reference, implementation(**arguments, policy=UNFILTERED_RISK)
+    )
+
+
+DRIFTED_POPULATION = 12_001
+"""One segment more than the shipped population.
+
+``one_year_at_single_precision`` names this among the perturbations that stop
+its constants straddling their boundary, so it is the smallest change that
+must be visible to a guard placed there.
+"""
+
+
+@pytest.mark.parametrize("boundary", sorted(BOUNDARY_CASES), ids=str)
+def test_each_boundary_guard_notices_that_its_boundary_has_moved(
+    boundary: str,
+) -> None:
+    """A guard that reads the same number either side of a drift disarms silently.
+
+    The two tests above are searched against one exact population, and each
+    opens with a guard whose message says the search has to be redone if the
+    constants stop straddling. That message is only reached if the guarded
+    quantity moves when the population does — a guard reading a number that is
+    the same on both sides passes on a population its test pins nothing about,
+    which is the failure the guard was added to prevent.
+
+    One segment added to the population is the perturbation the builder's own
+    docstring names. Both boundaries are checked, so a guard that does move is
+    the control showing this comparison discriminates.
+
+    Args:
+        boundary: Which of the two searched boundaries to check.
+    """
+    constants_for, guarded = BOUNDARY_CASES[boundary]
+
+    searched = guarded(
+        simulate.run_chunk(
+            **one_year_at_single_precision(**constants_for), policy=UNFILTERED_RISK
+        )
+    )
+    drifted = guarded(
+        simulate.run_chunk(
+            **one_year_at_single_precision(
+                **constants_for, n_segments=DRIFTED_POPULATION
+            ),
+            policy=UNFILTERED_RISK,
+        )
+    )
+
+    assert searched != drifted, (
+        f"the {boundary} guard reads {searched} on the population it was "
+        f"searched against and {drifted} at {DRIFTED_POPULATION} "
+        f"segments, so it cannot tell that the boundary has moved; it needs "
+        f"to assert a quantity the drift changes as well"
+    )
+
+
+PREMIUM_CLAIM = re.compile(
+    r"At a multiplier of\s+(?P<multiplier>[0-9.]+),\s+(?P<premiums>[0-9,]+) of the "
+    r"shipped population's [0-9,]+ premium terms differ between the two orders "
+    r"and (?P<keys>[0-9,]+) of its rank keys follow"
+)
+"""The measurement `src/policies.rs` quotes beside its narrowing order.
+
+Read out of the comment rather than restated here, so the test fails when the
+comment and the measurement disagree instead of when someone forgets to update
+a second copy.
+"""
+
+
+def test_the_premium_comment_quotes_a_multiplier_that_moves_what_it_says() -> None:
+    """The counts beside the narrowing order have to hold at the multiplier named.
+
+    `rank_key` narrows the emergency multiplier after subtracting one rather
+    than before, and the comment justifying that quotes how far apart the two
+    orders land: a multiplier, a count of premium terms that differ, and a count
+    of rank keys that follow. A multiplier the width happens to hold exactly
+    moves neither, so a comment quoting one demonstrates the opposite of what it
+    claims while reading as though it were measured.
+
+    Nothing else could see this. The comment is prose, no test reads it, and the
+    parity suite runs at the shipped multiplier of 2.5 — which is exactly
+    representable, so both orders agree and every case stays green whatever the
+    comment says.
+    """
+    source = (constants.PROJECT_ROOT / "src" / "policies.rs").read_text(
+        encoding="utf-8"
+    )
+    # The comment wraps across lines behind `//`, so the markers and the
+    # indentation come out before the sentence can be matched as one.
+    flattened = " ".join(
+        line.strip().lstrip("/").strip() for line in source.splitlines()
+    )
+    quoted = PREMIUM_CLAIM.search(flattened)
+    assert quoted is not None, (
+        "src/policies.rs no longer quotes a multiplier and the counts it moves "
+        "in the form this reads; either the comment was reworded, in which case "
+        "update this pattern, or the measurement was dropped"
+    )
+
+    multiplier = float(quoted["multiplier"])
+    arguments = one_year_at_single_precision(
+        multiplier=multiplier, budget=41938160.0, charged=False
+    )
+    planned = policies.planned_cost(
+        arguments["length_ft"],
+        arguments["cost_per_ft"],
+        arguments["mobilization_per_segment"],
+    )
+    failure_probability = weibull.conditional_failure_probability(
+        arguments["age0"], arguments["shape"], arguments["scale"]
+    )
+    outage = arguments["outage_cost_per_failure"]
+    narrow = planned.dtype.type
+
+    # The reference's order, then the one the comment says gives a different
+    # answer: subtract in double and let NumPy narrow, against narrowing the
+    # multiplier first and subtracting at the working width.
+    after = planned * narrow(multiplier - 1.0)
+    before = planned * (narrow(multiplier) - narrow(1.0))
+    premiums = int((after != before).sum())
+    keys = int(
+        (
+            failure_probability * (outage + after)
+            != failure_probability * (outage + before)
+        ).sum()
+    )
+
+    assert (premiums, keys) == (
+        int(quoted["premiums"].replace(",", "")),
+        int(quoted["keys"].replace(",", "")),
+    ), (
+        f"src/policies.rs says a multiplier of {multiplier} moves "
+        f"{quoted['premiums']} premium terms and {quoted['keys']} rank keys on "
+        f"the shipped population; it moves {premiums:,} and {keys:,}. A "
+        f"multiplier single precision holds exactly moves neither, so a comment "
+        f"quoting one argues against itself"
+    )
 
 
 def test_every_implementation_charges_the_same_emergency_total(
@@ -283,16 +719,26 @@ def test_every_implementation_charges_the_same_emergency_total(
     )
 
     scales = np.where(fails, helpers.FAILS_AT_ONCE, helpers.NEVER_FAILS).astype(float)
-    arguments = {
-        **helpers.first_segments(deterministic_arguments, n_segments),
-        "length_ft": length_ft,
-        "cost_per_ft": np.full(n_segments, 10.0),
-        "mobilization_per_segment": 500.0,
-        "scale": scales,
-        "replacement_scale": scales,
-        "cost_escalation": np.ones(deterministic_arguments["n_years"]),
-        "emergency_charged_to_budget": True,
-    }
+    arguments = helpers.at_call_width(
+        {
+            # From new, so the half meant to fail actually does at both
+            # widths: a conditional draw on an aged segment loses the draw
+            # entirely in single precision, and the boundary this test
+            # constructs assumes every one of them fails.
+            **helpers.forced_lifetimes(
+                helpers.first_segments(deterministic_arguments, n_segments),
+                helpers.NEVER_FAILS,
+                from_new=True,
+            ),
+            "length_ft": length_ft,
+            "cost_per_ft": np.full(n_segments, 10.0),
+            "mobilization_per_segment": 500.0,
+            "scale": scales,
+            "replacement_scale": scales,
+            "cost_escalation": np.ones(deterministic_arguments["n_years"]),
+            "emergency_charged_to_budget": True,
+        }
+    )
     policy = helpers.resolved("worst_first")
 
     # The budget is put exactly on a funding boundary that the two totals
@@ -311,7 +757,9 @@ def test_every_implementation_charges_the_same_emergency_total(
         and (total + sequential) - pairwise < total
     )
     arguments["budget"] = np.full(
-        deterministic_arguments["n_years"], boundary + sequential
+        deterministic_arguments["n_years"],
+        boundary + sequential,
+        dtype=np.asarray(arguments["age0"]).dtype,
     )
 
     assert_identical(
@@ -520,25 +968,22 @@ def test_a_year_that_overruns_its_budget_funds_nothing_and_carries_no_debt(
     and no year's remainder carries to the next. Both must fund nothing, spend
     nothing, and agree on all seven arrays.
     """
-    n_segments = np.size(deterministic_arguments["age0"])
     n_years = deterministic_arguments["n_years"]
-    alternating = np.where(
-        np.arange(n_segments) % 2 == 0, helpers.FAILS_AT_ONCE, helpers.NEVER_FAILS
-    ).astype(float)
-    arguments = {
-        **deterministic_arguments,
-        "scale": alternating,
-        "replacement_scale": alternating,
-        "emergency_charged_to_budget": True,
-        "budget": np.full(n_years, 10.0),
-    }
+    arguments = helpers.at_call_width(
+        {
+            **helpers.alternating_lifetimes(deterministic_arguments),
+            "emergency_charged_to_budget": True,
+            "budget": np.full(n_years, 10.0),
+        }
+    )
     policy = helpers.resolved("age_threshold", threshold_years=45)
 
     overrun = simulate.run_chunk(**arguments, policy=policy)
 
     # The surviving half leaves candidates for the fill to refuse.
     eligible = simulate.run_chunk(
-        **{**arguments, "budget": np.full(n_years, 1e9)}, policy=policy
+        **helpers.at_call_width({**arguments, "budget": np.full(n_years, 1e9)}),
+        policy=policy,
     )
     assert eligible.planned_replacements.sum() > 0.0, (
         "the budget must be what stops this funding, not an empty candidate list"

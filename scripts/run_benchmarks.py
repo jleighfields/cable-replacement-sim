@@ -106,6 +106,26 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         help="directory to write the table and its provenance into",
     )
     parser.add_argument(
+        "--precision",
+        default=None,
+        choices=sorted(constants.PRECISIONS),
+        help=(
+            "the floating width every implementation computes in. It reaches "
+            "them as the dtype of the arrays, and it changes the numbers as "
+            "well as the timings, so it is recorded beside the table"
+        ),
+    )
+    parser.add_argument(
+        "--segments",
+        type=int,
+        default=None,
+        help=(
+            "population size, resized from the shipped one; the customer "
+            "denominator and the annual budget move with it. Without this the "
+            "configured size is used"
+        ),
+    )
+    parser.add_argument(
         "--reduced",
         action="store_true",
         help="run the smaller population, for a table while someone watches",
@@ -146,15 +166,27 @@ def main(argv: list[str] | None = None) -> None:
     arguments = parse_arguments(argv)
 
     settings = config.load_config(constants.DEFAULT_CONFIG_PATH)
+    if arguments.precision is not None:
+        # Only when asked. Defaulting the flag to a width and applying it
+        # unconditionally overrides the configured one, so a project that
+        # switched its shipped width would get tables at the old one — with
+        # provenance recording the width the flag imposed rather than the width
+        # the configuration names.
+        settings = config.with_overrides(
+            settings, {"simulation.precision": arguments.precision}
+        )
     if arguments.reduced:
         settings = config.resize_population(
             settings, run.REDUCED_SEGMENTS, n_reps=run.REDUCED_REPS
         )
+    if arguments.segments is not None:
+        settings = config.resize_population(settings, arguments.segments)
     log.info(
-        "timing %d segments over %d years under %s",
+        "timing %d segments over %d years under %s at %s",
         settings.population.n_segments,
         settings.simulation.n_years,
         arguments.policy,
+        settings.simulation.precision,
     )
 
     table = benchmarks.compare(
@@ -180,6 +212,9 @@ def main(argv: list[str] | None = None) -> None:
         **benchmarks.provenance(),
         "n_segments": settings.population.n_segments,
         "n_years": settings.simulation.n_years,
+        # The width changes the numbers as well as the timings, so two tables
+        # taken at different precisions are otherwise indistinguishable on disk.
+        "precision": settings.simulation.precision,
         "policy": arguments.policy,
         "repeats": arguments.repeats,
     }

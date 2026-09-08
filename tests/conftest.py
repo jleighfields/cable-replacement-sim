@@ -25,6 +25,8 @@ import pytest
 from cablesim import config as config_module
 from cablesim import constants, population, random_draws, run
 
+from tests import helpers
+
 DETERMINISTIC_SEGMENTS = 400
 """Population for the deterministic tests.
 
@@ -88,17 +90,24 @@ def simulation_arguments(settings: config_module.Config) -> dict[str, object]:
             f"implementations address their draws differently"
         )
 
-    segments = run.segment_arrays(population.generate(settings))
+    # Every float array carries the configured precision, which is how that
+    # choice reaches an implementation. Building any of them at the default
+    # instead makes a fixture parametrised on the precision produce the same
+    # arrays twice: the case ids say both widths and only one is ever run.
+    precision = simulation.precision
+    segments = run.segment_arrays(population.generate(settings), precision)
 
-    return {
+    built = {
         **segments,
         "draw_key": random_draws.draw_key(simulation.seed),
         "first_replication": 0,
         "n_reps": simulation.n_reps,
         "budget": settings.budget.annual
-        * run.escalation_series(settings.budget.escalation, simulation.n_years),
+        * run.escalation_series(
+            settings.budget.escalation, simulation.n_years, precision
+        ),
         "cost_escalation": run.escalation_series(
-            settings.costs.escalation_rate, simulation.n_years
+            settings.costs.escalation_rate, simulation.n_years, precision
         ),
         "emergency_multiplier": settings.costs.emergency_multiplier,
         "mobilization_per_segment": settings.costs.mobilization_per_segment,
@@ -107,34 +116,81 @@ def simulation_arguments(settings: config_module.Config) -> dict[str, object]:
         "n_years": simulation.n_years,
     }
 
+    # Asserted rather than trusted. A builder that forgot to pass the
+    # precision produces the same arrays for both parametrisations: the case
+    # ids say two widths, one runs twice, and everything passes. That happened
+    # here, and no comparison between implementations could have found it.
+    helpers.assert_at_width(built, simulation.precision)
+    return built
 
-@pytest.fixture(scope="session")
-def deterministic_arguments() -> dict[str, object]:
+
+@pytest.fixture(scope="session", params=sorted(constants.PRECISIONS), ids=str)
+def deterministic_arguments(request: pytest.FixtureRequest) -> dict[str, object]:
     """A small run's arguments, for the tests that force the lifetimes.
 
     Session-scoped and returned by reference: a test that alters the dictionary
     would alter it for every later test, so each one copies what it changes.
 
+    **Parametrised on the working precision**, so every test taking it runs once
+    per width. The precision travels as the dtype of these arrays, so this is
+    the whole of what the axis costs: no test names a width, and an
+    implementation that mishandled one would fail the comparison it already
+    runs. Comparing implementations cannot check that the width is the one
+    asked for, since every implementation would widen together, so
+    ``simulation_arguments`` asserts the dtype of every float array it built
+    before returning it.
+
+    Args:
+        request: Supplies the precision this run is parametrized on.
+
     Returns:
         Every argument of ``simulate.run_chunk`` except ``policy``.
     """
+    base = config_module.load_config(constants.DEFAULT_CONFIG_PATH)
     settings = config_module.resize_population(
-        config_module.load_config(constants.DEFAULT_CONFIG_PATH),
+        base.model_copy(
+            update={
+                "simulation": base.simulation.model_copy(
+                    update={"precision": request.param}
+                )
+            }
+        ),
         DETERMINISTIC_SEGMENTS,
         n_reps=DETERMINISTIC_REPS,
     )
     return simulation_arguments(settings)
 
 
-@pytest.fixture(scope="session")
-def statistical_arguments() -> dict[str, object]:
+@pytest.fixture(scope="session", params=sorted(constants.PRECISIONS), ids=str)
+def statistical_arguments(request: pytest.FixtureRequest) -> dict[str, object]:
     """A real population's arguments, for the paired comparison.
+
+    **Parametrised on the working precision**, and this is where the drawn
+    lifetimes reach the comparison rather than being forced to a constant. What
+    it establishes is that the drawn-lifetime path agrees between
+    implementations within Monte Carlo error at each width.
+
+    It does not catch a defect in how a draw is narrowed: the comparison here is
+    tolerance-based, and the difference narrowing makes fits inside it.
+    ``test_the_priority_draw_is_narrowed_where_the_state_it_ranks_meets_it`` is
+    what covers that, and covers only the draw that has an outcome to diverge
+    in.
+
+    Args:
+        request: Supplies the precision this run is parametrized on.
 
     Returns:
         Every argument of ``simulate.run_chunk`` except ``policy``.
     """
+    base = config_module.load_config(constants.DEFAULT_CONFIG_PATH)
     settings = config_module.resize_population(
-        config_module.load_config(constants.DEFAULT_CONFIG_PATH),
+        base.model_copy(
+            update={
+                "simulation": base.simulation.model_copy(
+                    update={"precision": request.param}
+                )
+            }
+        ),
         STATISTICAL_SEGMENTS,
         n_reps=STATISTICAL_REPS,
     )
