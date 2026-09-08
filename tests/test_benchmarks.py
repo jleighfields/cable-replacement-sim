@@ -31,6 +31,44 @@ def small_settings(n_segments: int = 200, n_reps: int = 2) -> config.Config:
     )
 
 
+@pytest.mark.parametrize("precision", sorted(constants.PRECISIONS))
+def test_every_float_an_implementation_is_handed_carries_the_precision(
+    precision: str,
+) -> None:
+    """A run at one precision hands its implementations nothing at the other.
+
+    **The parity tests cannot catch this and it is worth saying why.** The
+    precision travels as the dtype of the arrays, so an argument left at double
+    widens whatever it touches — and every implementation touches it the same
+    way, so all of them widen together and go on agreeing with each other in
+    every cell. Comparing implementations proves they compute the same thing,
+    not that they compute it at the width the run asked for.
+
+    This caught exactly that: the per-year budget and cost-escalation series
+    were built in double while the per-segment arrays were narrowed, so the
+    whole money path ran at double under a single-precision run.
+    """
+    settings = small_settings()
+    settings = settings.model_copy(
+        update={
+            "simulation": settings.simulation.model_copy(
+                update={"precision": precision}
+            )
+        }
+    )
+    arguments = benchmarks.chunk_arguments(settings, settings.simulation.n_reps)
+
+    wanted = constants.PRECISIONS[precision]
+    floats = {
+        name: value.dtype
+        for name, value in arguments.items()
+        if hasattr(value, "dtype") and value.dtype.kind == "f"
+    }
+    assert floats, "no float arrays were found, so this checked nothing"
+    wrong = {name: str(kind) for name, kind in floats.items() if kind != wanted}
+    assert not wrong, f"at {precision} these arrive as something else: {wrong}"
+
+
 def test_every_runnable_implementation_is_timed_and_matches() -> None:
     """The table covers what exists, and each row reproduces the reference.
 

@@ -121,14 +121,20 @@ def population_arguments(settings: config_module.Config) -> dict[str, object]:
         ``policy`` and ``threads``.
     """
     simulation = settings.simulation
-    segments = run.segment_arrays(population.generate(settings))
+    precision = simulation.precision
+    segments = run.segment_arrays(population.generate(settings), precision)
 
     return {
         **segments,
+        # The per-year series carry the precision too. Left in double they
+        # would widen the money path back, and every implementation would widen
+        # the same way, so nothing comparing them could see it.
         "budget": settings.budget.annual
-        * run.escalation_series(settings.budget.escalation, simulation.n_years),
+        * run.escalation_series(
+            settings.budget.escalation, simulation.n_years, precision
+        ),
         "cost_escalation": run.escalation_series(
-            settings.costs.escalation_rate, simulation.n_years
+            settings.costs.escalation_rate, simulation.n_years, precision
         ),
         "emergency_multiplier": settings.costs.emergency_multiplier,
         "mobilization_per_segment": settings.costs.mobilization_per_segment,

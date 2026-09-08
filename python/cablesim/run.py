@@ -214,17 +214,28 @@ def budget_grid(annual: float, levels: int = BUDGET_GRID_LEVELS) -> list[float]:
     return [0.0, *spaced.tolist()]
 
 
-def escalation_series(rate: float, n_years: int) -> np.ndarray:
+def escalation_series(
+    rate: float, n_years: int, precision: str = constants.DEFAULT_PRECISION
+) -> np.ndarray:
     """Compounds an annual rate into a per-year multiplier.
 
     Args:
         rate: Annual growth, as a fraction.
+        precision: The dtype to return at. Compounded in double whatever it is
+            and narrowed once, so the series does not accumulate the rounding
+            of the width it is returned at.
         n_years: Horizon.
 
     Returns:
         One multiplier per year, starting at 1.0 in year 0.
     """
-    return (1.0 + rate) ** np.arange(n_years, dtype=float)
+    floating = constants.PRECISIONS.get(precision)
+    if floating is None:
+        raise ValueError(
+            f"precision is {precision!r}, which names no dtype; "
+            f"the choices are {sorted(constants.PRECISIONS)}"
+        )
+    return ((1.0 + rate) ** np.arange(n_years, dtype=np.float64)).astype(floating)
 
 
 def segment_arrays(
@@ -341,11 +352,15 @@ def simulate_policy(
     # whichever chunk it landed in.
     key = random_draws.draw_key(simulation.seed)
     resolved = policies.resolve(spec)
+    # At the run's precision, like the per-segment arrays. A double-precision
+    # series multiplied into single-precision costs widens the whole money path
+    # back to double, and because every implementation would widen the same way
+    # the parity tests could not see it.
     budget = settings.budget.annual * escalation_series(
-        settings.budget.escalation, simulation.n_years
+        settings.budget.escalation, simulation.n_years, simulation.precision
     )
     cost_escalation = escalation_series(
-        settings.costs.escalation_rate, simulation.n_years
+        settings.costs.escalation_rate, simulation.n_years, simulation.precision
     )
 
     written = []
@@ -429,7 +444,7 @@ def run(
     run_id = results.new_run_id()
     segments_frame = population.generate(settings)
     class_names = [segment_class.name for segment_class in settings.population.classes]
-    segments = segment_arrays(segments_frame)
+    segments = segment_arrays(segments_frame, settings.simulation.precision)
     log.info(
         "run %s: %d segments, %d policies, %d replications, %d thread(s)",
         run_id,

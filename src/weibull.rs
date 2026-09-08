@@ -36,6 +36,23 @@
 //!   Python, where a leading underscore is a convention the interpreter does
 //!   not enforce.
 
+use num_traits::Float;
+
+/// The floating type an annual loop computes in.
+///
+/// `f64` and `f32` both satisfy it, and which one a run uses arrives as the
+/// dtype of the arrays the binding was handed rather than as an argument. The
+/// two produce different answers — that is the point of the choice — but two
+/// implementations at the same precision are held to agreeing in every cell,
+/// with no tolerance either way.
+///
+/// `num_traits::Float` is what supplies `powf`, `exp_m1` and `ln_1p` for both
+/// widths. It was already in the dependency tree beneath `ndarray`, so naming
+/// it directly costs no build time.
+pub trait Real: Float {}
+impl Real for f64 {}
+impl Real for f32 {}
+
 /// Probability of failing within a year, given survival to `age`.
 ///
 /// This is what a replacement policy ranks on:
@@ -59,13 +76,13 @@
 /// the largest value this returns anywhere in that horizon is 0.9999954. The
 /// closed upper bound is what the interval says rather than something the loop
 /// exercises.
-pub fn conditional_failure_probability(age: f64, shape: f64, scale: f64) -> f64 {
+pub fn conditional_failure_probability<T: Real>(age: T, shape: T, scale: T) -> T {
     // The hazard accumulated over this one year: a difference of two cumulative
     // hazards rather than a cumulative hazard itself. The name says "annual"
     // because the bound documented above is a threshold on this difference and
     // not on either of the two terms it subtracts, and the two thresholds fall
     // at very different ages.
-    let annual_hazard = ((age + 1.0) / scale).powf(shape) - (age / scale).powf(shape);
+    let annual_hazard = ((age + T::one()) / scale).powf(shape) - (age / scale).powf(shape);
     // The last expression in a Rust function is its return value, with no
     // `return` keyword and no semicolon — a semicolon here would discard the
     // value and return the empty tuple instead, which is what Rust uses where
@@ -84,8 +101,8 @@ pub fn conditional_failure_probability(age: f64, shape: f64, scale: f64) -> f64 
 /// # Returns
 ///
 /// Age at failure, in years.
-pub fn draw_lifetime(u: f64, shape: f64, scale: f64) -> f64 {
-    scale * (-((-u).ln_1p())).powf(1.0 / shape)
+pub fn draw_lifetime<T: Real>(u: T, shape: T, scale: T) -> T {
+    scale * (-((-u).ln_1p())).powf(T::one() / shape)
 }
 
 /// Samples remaining life for cable that has already survived to `age`.
@@ -109,13 +126,13 @@ pub fn draw_lifetime(u: f64, shape: f64, scale: f64) -> f64 {
 /// # Returns
 ///
 /// Remaining life from `age`, in years.
-pub fn draw_remaining_life(u: f64, age: f64, shape: f64, scale: f64) -> f64 {
+pub fn draw_remaining_life<T: Real>(u: T, age: T, shape: T, scale: T) -> T {
     // `let` binds a name. Bindings are immutable unless written `let mut`,
     // which is the reverse of Python's default and is why most of this crate
     // has no `mut` on it: a name that is never reassigned says so in the
     // declaration rather than in a comment.
     let accumulated = (age / scale).powf(shape);
-    let total = scale * (accumulated - (-u).ln_1p()).powf(1.0 / shape);
+    let total = scale * (accumulated - (-u).ln_1p()).powf(T::one() / shape);
     total - age
 }
 
