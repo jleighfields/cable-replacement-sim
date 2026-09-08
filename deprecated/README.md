@@ -9,6 +9,29 @@ assertion.
 |---|---|
 | `batched_polars.py` | The annual loop over a polars frame, in Python. Competitive on one policy and slower on the rest, and beaten 20–80× by the Rust kernel. |
 | `batched.rs` | The same loop in Rust. Answered its question — there is no interop penalty to recover — and charged 2m22s of every Rust edit to keep asking it. |
+| `compiled_numba.py` | The scalar reference's algorithm compiled by Numba. Answered its question and reached the kernel; retired because reaching it is not a reason to maintain a fourth implementation of the model, and numba pulls LLVM into every install to do it. |
+
+## What the compiled implementation established
+
+Its measurement is in
+[docs/compiled-and-threaded-python.md](../docs/compiled-and-threaded-python.md),
+and it is the reason the benchmark table no longer claims what it used to. The
+published speedup compared **one Python thread against forty-eight Rust
+threads**, because every Python implementation refused a larger count. This one
+did not, and separating the three effects gave: threads worth 25–35x and
+dominating everything, compiling worth 5–6x where a policy makes few segments
+eligible, and the language worth 1.2–1.4x on one thread and about nothing on
+forty-eight.
+
+It reproduced the reference exactly in every cell, under all five policies and
+at every thread count, so those figures compare one computation rather than
+several.
+
+**Reproducing it** needs `uv add --optional compiled "numba>=0.60"`, the file
+moved back to `python/cablesim/compiled.py`, and `"numba"` restored to
+`run.RUNNABLE`, `run.CONCURRENT` and `results.IMPLEMENTATIONS`. The parity tests
+pick it up from the registry with no further change, which is what they are
+written that way for.
 
 ## Why a column store is the wrong shape for this simulation
 

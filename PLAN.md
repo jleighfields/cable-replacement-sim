@@ -2070,17 +2070,19 @@ and `risk_ranked` makes every segment a candidate.
 | Scalar Python reference | 0.00746 | 0.02033 | 0.04405 |
 | Batched NumPy, 1 thread | 0.00459 | 0.02468 | 0.04479 |
 | Batched NumPy, 48 threads | 0.01792 | 0.04335 | 0.03564 |
-| Numba, 1 thread | 0.00273 | 0.00314 | 0.04893 |
-| **Numba, 48 threads** | **0.00014** | **0.00011** | **0.00134** |
 | Rust kernel, 1 thread | 0.00202 | 0.00266 | 0.04058 |
-| Rust kernel, 48 threads | **0.00014** | 0.00019 | 0.00148 |
+| Rust kernel, 48 threads | 0.00014 | 0.00019 | 0.00148 |
+| Fastest Python, beaten by | 33.0x | 107.6x | 24.1x |
 
 Retaken at 96 replications, with each configuration warmed before the clock
-starts. The row that read "fastest Python, beaten by 18.5x, 78.4x and 22.6x" is
-gone: it compared one Python thread against forty-eight Rust ones, because every
-Python implementation refused a larger count until one was added that could use
-it. `docs/compiled-and-threaded-python.md` separates the three effects that
-figure was carrying.
+starts, which is why these differ from the figures they replace. Under
+`run_to_failure` and `age_threshold` the fastest Python is single-threaded, so
+those two ratios compare one thread against forty-eight — a Numba implementation
+built and measured for this reached the kernel at forty-eight threads before
+being retired, so the gap is the thread count rather than the language.
+`docs/compiled-and-threaded-python.md` separates the three effects the ratio
+carries: threads 25-35x, compiling 5-6x where few segments are eligible, and the
+language 1.2-1.4x on one thread.
 
 **Measured once at 100,000 segments**, which is eight times the shipped
 population and further than anything in the test suite goes. Ten replications,

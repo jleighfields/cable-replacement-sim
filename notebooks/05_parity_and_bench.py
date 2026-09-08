@@ -287,8 +287,6 @@ def _(benchmarks, kernel, settings):
         benchmarks.Configuration("reference", 1, reps),
         benchmarks.Configuration("batched_numpy", 1, reps),
         benchmarks.Configuration("batched_numpy", threads, reps),
-        benchmarks.Configuration("numba", 1, reps),
-        benchmarks.Configuration("numba", threads, reps),
         benchmarks.Configuration("kernel", 1, reps),
         benchmarks.Configuration("kernel", threads, reps),
     ]
@@ -322,15 +320,19 @@ def _(mo):
 
     Three questions it answers, none of which a single ranking would:
 
-    * **Does the language matter?** Compare the two compiled implementations on
-      one thread. Both are the reference's algorithm compiled; only the
-      compiler differs.
-    * **Does compiling matter?** Compare either compiled implementation against
-      the scalar reference it is a translation of, on one thread.
+    * **Does the array form pay off?** Compare the batched loop against the
+      scalar reference it vectorises, on one thread. It wins where a policy
+      funds nothing or everything and loses where few segments are eligible,
+      because vectorising costs the ability to skip.
+    * **Does the language matter?** Compare the kernel against the batched loop,
+      both on one thread.
     * **Do threads matter, and can Python have them?** Compare each
       implementation against itself at one thread and at many. The batched loop
       is the interesting case: its arrays are operated on one at a time, and
-      only some of those operations release the interpreter lock.
+      only some of those operations release the interpreter lock — which turns
+      out not to be enough. A compiled Python implementation was measured here
+      and reached the kernel; `deprecated/README.md` has that measurement and
+      why it is not in this table.
     """
     )
     return
@@ -347,25 +349,22 @@ def _(pl, timings):
 
     widest = timings["threads"].max()
 
-    language = per_replication("numba") / per_replication("kernel")
-    compiling = per_replication("reference") / per_replication("numba")
+    array_form = per_replication("reference") / per_replication("batched_numpy")
+    language = per_replication("batched_numpy") / per_replication("kernel")
     threads_kernel = per_replication("kernel") / per_replication("kernel", widest)
-    threads_numba = per_replication("numba") / per_replication("numba", widest)
     threads_numpy = per_replication("batched_numpy") / per_replication(
         "batched_numpy", widest
     )
 
-    print(f"Rust against Numba, both on one thread: {language:>7.2f}x")
-    print(f"Numba against the reference it compiles:{compiling:>7.2f}x")
-    print(f"threads, within the kernel:             {threads_kernel:>7.2f}x")
-    print(f"threads, within Numba:                  {threads_numba:>7.2f}x")
-    print(f"threads, within the batched loop:       {threads_numpy:>7.2f}x")
+    print(f"the array form against the reference: {array_form:>7.2f}x")
+    print(f"Rust against Python, both one thread: {language:>7.2f}x")
+    print(f"threads, within the kernel:           {threads_kernel:>7.2f}x")
+    print(f"threads, within the batched loop:     {threads_numpy:>7.2f}x")
     return (
-        compiling,
+        array_form,
         language,
         per_replication,
         threads_kernel,
-        threads_numba,
         threads_numpy,
         widest,
     )

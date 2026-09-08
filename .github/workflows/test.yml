@@ -76,17 +76,14 @@ jobs:
       # not claim.
       # --extra plots because `cablesim.plots` imports plotly at module scope
       # and its tests would otherwise be untestable here, which is the half of
-      # an optional dependency that usually goes unchecked. --extra compiled
-      # for the same reason: `cablesim.compiled` imports numba at module scope,
-      # and it is one of the implementations the parity tests compare, so
-      # without it those tests would silently cover one fewer.
+      # an optional dependency that usually goes unchecked.
       # --no-install-project because maturin is the build backend, so without
       # it this step compiles the extension module in debug and the next step
       # immediately rebuilds it in release over the top. Nothing ever loads the
       # debug copy. That was invisible while the crate built in seconds; with
       # the polars dependency it was measured at 9 minutes of a 17-minute job.
       - name: Install dependencies
-        run: uv sync --locked --extra plots --extra compiled --no-install-project
+        run: uv sync --locked --extra plots --no-install-project
 
       # --release because the parity tests run many replications, and a debug
       # build is slow enough that they dominate the job. Any timing measured

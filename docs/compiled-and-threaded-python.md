@@ -1,5 +1,12 @@
 # Numba and threaded NumPy, measured against the Rust kernel
 
+**The Numba implementation this measures is retired.** It reached the kernel and
+was moved to `deprecated/compiled_numba.py` rather than kept, because reaching
+it is not a reason to maintain a fourth implementation of the model. The
+findings below are why the benchmark table says what it now says, and they hold
+whether or not that code ships. Threaded NumPy is still in the package, as a
+thread count `batched.run_chunk_numpy` accepts.
+
 Every figure below is seconds per replication, release build, on a 48-core
 machine. Every configuration reproduced the scalar reference **exactly, in every
 cell of every array** — forty-two rows, no tolerance anywhere — so the times
