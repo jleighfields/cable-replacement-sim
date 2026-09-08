@@ -100,8 +100,19 @@ anywhere.** An earlier reading of this plan said otherwise and was wrong.
 
 ## Steps
 
-- [ ] 1. The transcendental agreement test, in Rust and NumPy, over the three
-      functions. **Stop and report if it fails.**
+- [x] 1. The transcendental agreement test, in Rust and NumPy, over the three
+      functions. **Passes.** Identical over 2,000,000 samples of ages 0-90 and
+      uniforms on `[0, 1)`; identical again across all 160 distinct
+      (shape, scale) pairs the shipped fleet carries, at 50,000 samples each;
+      identical at the edges — a zero uniform, the smallest and largest a draw
+      can produce, and age zero. The comparison is known to discriminate:
+      computing the hazard with `exp` instead of `exp_m1` on the Rust side
+      makes 76% of it differ.
+
+      The likely reason it agrees is structural rather than lucky. Both sides
+      appear to evaluate single-precision `expm1`, `log1p` and `pow` by
+      widening to double, computing there, and rounding once — which is exact
+      over these ranges and leaves nothing for the two to disagree about.
 - [ ] 2. `precision` on the config model, taking effect in `population.py`, so
       the arrays carry the choice and nothing else needs an argument.
 - [ ] 3. The scalar reference and the batched loop read the dtype they are
