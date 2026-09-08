@@ -65,16 +65,19 @@ UNBOUNDED_BATCH: int | None = None
 """What an implementation that holds no such arrays is batched at: nothing.
 
 The reference runs one replication at a time and the kernel gives each worker
-scratch sized by *segments*, so neither holds anything that grows with the batch
-except the results — 5 MB for a thousand replications, against the 250 KB a
-chunk of fifty would hold. Chunking them buys that difference and costs the axis
-the kernel parallelises over: fifty replications across forty-eight workers is
-one each, repeated, with a pool built per chunk.
+scratch sized by *segments*, so neither holds a working set that grows with the
+batch. What does grow is the results and the rows built from them, and chunking
+those turns out to save nothing: measured, the chunked run peaks *higher* — 431
+MB against 386 at 12,000 segments, 652 against 626 at 50,000 — because twenty
+chunks hold twenty parquet parts where one holds one. So chunking these two buys
+no memory and costs the axis the kernel parallelises over: fifty replications
+across forty-eight workers is one each, repeated, with a pool built per chunk.
 
 Measured through `run.run` on the kernel at 1,000 replications over five
 policies, release build, 48 workers: 5.54 s chunked at fifty against 3.34 s
 whole at 12,000 segments, over six runs each, and 24.85 s against 14.90 s at
-50,000, over twelve. That is **1.66x and 1.67x** — the same cost at both sizes.
+50,000, over twelve. So **chunking costs the kernel 1.66x at 12,000 segments
+and 1.67x at 50,000** — the same cost at both.
 
 **Each figure needs its repeat count to mean anything, and the chunked one at
 50,000 needs the most**: it spans 23.1 s to 27.9 s across those twelve runs,
@@ -82,16 +85,34 @@ while its unchunked denominator stays inside 14.7 to 16.0. A single run of that
 cell lands anywhere in a 20% band, which is wide enough to make the two sizes
 look as though they cost differently.
 
-The reference is indifferent, as its own loop predicts: 8.26 s and 230.8 MB
-chunked at fifty against 8.20 s and 230.6 MB whole, three runs each at 2,000
-segments and 200 replications on one thread — a difference smaller than the
-spread within either column.
+The reference is close to indifferent, as its one-replication-at-a-time loop
+predicts, though less cleanly than a single measurement suggested. Two
+independent runs of three at 2,000 segments and 200 replications on one thread:
+8.26 s chunked against 8.20 s whole, and 8.23 s against 7.83 s. So the cost of
+chunking it is somewhere between under 1% and about 5% — in the second, every
+chunked run was slower than every whole one — against the 66% the kernel pays.
+Memory does not move at all, 230.8 MB against 230.6 MB. Which of the two gaps is
+right does not change what the number is used for: the reference needs no bound,
+and it loses little by not having one.
 
-**The results array grows with the replication count and nothing caps it** —
-seven arrays of `(replications, years, classes)`, so 5 MB at a thousand
-replications and 500 MB at a hundred thousand. No run has been taken at that
-count, and a cap picked without one would be a number with no measurement behind
-it, so the growth is stated here rather than bounded.
+**What a run holds grows with the replication count and nothing caps it.** The
+seven result arrays of `(replications, years, classes)` are the visible part —
+5 MB at a thousand replications — but they are not the figure to plan against:
+`results.rows_from_chunk` builds a frame from them and holds it while they are
+still live, and the peak carries both. Measured through `run` on the kernel
+over five policies, one process per point, above a 125 MB interpreter:
+220 MB at 1,000 replications, 867 MB at 10,000, 1,415 MB at 20,000 and 2,499 MB
+at 40,000. That is about 58 MB per thousand, some twelve times what the arrays
+alone account for, and it is close enough to linear over that range to expect
+several gigabytes at a hundred thousand rather than the 500 MB the arrays
+suggest. The count is what someone raises to narrow a confidence interval, so
+this is the growth that would be met first.
+
+It is stated rather than bounded because no run has been taken near the top of
+that range, and a cap chosen without one would be a number with no measurement
+behind it. The figures above are at 200 segments; the result arrays and the rows
+frame are shaped by replications, years and classes, so the population size
+moves them little.
 """
 
 BATCH_SIZES: dict[str, int | None] = {
@@ -214,6 +235,19 @@ def batch_size_for(implementation: str, n_reps: int) -> int:
     return n_reps if bounded is None else bounded
 
 
+def missing_names(names: Iterable[str], known: Iterable[str]) -> set[str]:
+    """Names among these that ``known`` does not cover.
+
+    Args:
+        names: The names to check.
+        known: The names that exist.
+
+    Returns:
+        Those that are not in ``known``.
+    """
+    return set(names) - set(known)
+
+
 def unbatched_implementations(names: Iterable[str]) -> set[str]:
     """Names among these that no batch size is declared for.
 
@@ -228,7 +262,7 @@ def unbatched_implementations(names: Iterable[str]) -> set[str]:
     Returns:
         Those that ``BATCH_SIZES`` does not cover.
     """
-    return set(names) - set(BATCH_SIZES)
+    return missing_names(names, BATCH_SIZES)
 
 
 def unthreadable_implementations(names: Iterable[str]) -> set[str]:
@@ -245,7 +279,7 @@ def unthreadable_implementations(names: Iterable[str]) -> set[str]:
     Returns:
         Those that name nothing in ``RUNNABLE``.
     """
-    return set(names) - set(RUNNABLE)
+    return missing_names(names, RUNNABLE)
 
 
 UNBATCHED = unbatched_implementations(RUNNABLE)
@@ -278,7 +312,7 @@ def unknown_implementations(names: Iterable[str]) -> set[str]:
     Returns:
         Those that are not in the closed set a manifest accepts.
     """
-    return set(names) - set(results.IMPLEMENTATIONS)
+    return missing_names(names, results.IMPLEMENTATIONS)
 
 
 UNRUNNABLE = unknown_implementations(RUNNABLE)

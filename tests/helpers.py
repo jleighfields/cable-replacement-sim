@@ -5,6 +5,7 @@ belong in `conftest.py`.
 """
 
 import contextlib
+import functools
 import importlib.util
 import pathlib
 import re
@@ -159,14 +160,22 @@ REPEATED_FIGURES: dict[str, str] = {
     "how many of the six columns threading NumPy was slower in": (
         r"([a-z]+) of (?:the )?six columns"
     ),
+    "what chunking the kernel costs": (
+        r"costs the kernel ([0-9.]+)x at 12,000 segments and ([0-9.]+)x at "
+        r"50,000"
+    ),
 }
 """Figures the benchmark study quotes in more than one document, by pattern.
 
 Each is a measurement read off the tables in
-``docs/compiled-and-threaded-python.md`` and then restated in prose elsewhere.
-A value written in two places drifts, and here the drift is silent: every copy
-stays well-formed markdown, and only a reader who recomputes the ratio notices
-that two documents disagree about what was measured.
+``docs/compiled-and-threaded-python.md`` and then restated in prose elsewhere,
+or — for the cost of chunking the kernel — taken through ``run.run`` and
+restated in a module docstring and in the plan. A value written in two places
+drifts, and here the drift is silent: every copy stays well-formed prose,
+nothing recomputes it, and only a reader who goes back to the tables notices
+that two files disagree about what was measured. **Source files are scanned
+alongside the documents**, because one of these figures lives in a docstring
+and a scan of markdown alone would compare a document against nothing.
 
 The patterns capture the number rather than matching a literal, so correcting a
 figure needs no edit here — what is asserted is that the copies agree, not what
@@ -499,6 +508,13 @@ def recorded_batches(implementation: str) -> Iterator[list[int]]:
     called: list[int] = []
     wrapped = run.RUNNABLE[implementation]
 
+    # Carrying the wrapped loop's identity, ``__module__`` above all: ``run.run``
+    # reads the Rust build profile from the module the loop was defined in, so a
+    # wrapper defined here makes a kernel run record no profile — as ``None``
+    # rather than as a refusal, which is the shape that goes unnoticed. Every
+    # manifest written inside this block would then be missing the one field a
+    # timing has to be read against.
+    @functools.wraps(wrapped)
     def recording(*, n_reps: int, **arguments: object) -> simulate.Results:
         called.append(n_reps)
         return wrapped(n_reps=n_reps, **arguments)

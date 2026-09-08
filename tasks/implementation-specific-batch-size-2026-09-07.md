@@ -3,7 +3,9 @@
 ## The finding
 
 `run.run` splits a run's replications into chunks of `DEFAULT_BATCH_SIZE = 50`
-and calls the named implementation once per chunk. One number currently serves
+and calls the named implementation once per chunk. (That constant is the
+pre-change state this plan sets out to fix; `BATCH_SIZES` replaced it, and the
+name `DEFAULT_BATCH_SIZE` no longer exists.) One number currently serves
 two implementations whose constraints point in opposite directions.
 
 **What batching saves each implementation**, computed from what each allocates:
@@ -27,14 +29,20 @@ memory sees and a size calculation does not.
 
 **What it costs the kernel**, measured end to end through `run.run` at 1,000
 replications over five policies, release build, 48 workers. These are the
-figures that motivated the change, each a single run; step 5 retakes them as
-means and lands at 1.66x and 1.67x, so the size-dependence they appear to show
-is not real:
+figures that motivated the change, each a single run:
 
 | Segments | Chunks of 50 | One chunk | |
 |---|---|---|---|
 | 12,000 | 6.71 s | 3.82 s | **1.76x** |
 | 50,000 | 30.43 s | 19.96 s | **1.52x** |
+
+**Superseded by step 5, and not comparable to it cell by cell.** Step 5 lands at
+1.66x and 1.67x, so the size-dependence this table appears to show is not there.
+But every absolute cell moved as well, by 14% to 34% — more than either
+measurement's own spread accounts for — and the two were taken in different
+sessions on a shared machine, so nothing here says how much of that is load and
+how much is anything else. The table is kept because it is what the decision was
+made on. **Read step 5's numbers, not these.**
 
 Replications are the axis the kernel parallelises over, so a chunk of 50 across
 48 workers is about one replication each, twenty times in sequence, with a pool
@@ -91,8 +99,10 @@ table did not move" reads as an error otherwise.
 - `notebooks/04_policy_explorer.py` — three `run.run` calls at the reduced size.
   No published timing, but the notebook suite's wall time moves.
 - `scripts/budget_sweep.py` — its `--batch-size` default is
-  `run.DEFAULT_BATCH_SIZE`, which becomes `None`. A sweep is eight budget levels
-  times five policies, so this is where the change is worth the most.
+  `DEFAULT_BATCH_SIZE`, the single constant this change replaces, and it becomes
+  `None`. Eight budget levels times five policies looked like where the change
+  would be worth the most; step 5 measured it unchanged, because the sweep's
+  reduced defaults run 40 replications and that is one chunk at either size.
 - The notebook suite's runtime, which gates nothing but is the number someone
   waits for.
 
@@ -126,8 +136,11 @@ table did not move" reads as an error otherwise.
       version of this table reported single runs and its 50,000 row did not
       reproduce — read at 24.25 s once and at 23.22 s by a second measurement,
       against a mean of 24.85 s over twelve. **That cell is the noisy one**,
-      spanning 23.1 s to 27.9 s, while its unchunked denominator stays inside
-      14.7 to 16.0 s and the whole 12,000 row reproduces to within 3%. What
+      spanning 23.1 s to 27.9 s within these runs, while its unchunked
+      denominator stays inside 14.7 to 16.0 s and the 12,000 row varies by
+      under 3% across its six. Those spreads describe the runs behind this
+      table and say nothing about the earlier single ones above, which do not
+      fall inside them. What
       moved with the repeat count is the *shape* of the result: the two sizes
       cost the same 1.66x rather than 1.76x falling to 1.52x.
 
@@ -137,11 +150,14 @@ table did not move" reads as an error otherwise.
       twenty chunks hold twenty parts where one holds one, and that outweighs
       the 4.8 MB the larger results array costs.
 
-      **The scalar reference is indifferent on both counts**, which is what its
-      one-replication-at-a-time loop predicts and is now measured rather than
-      argued: 8.26 s and 230.8 MB chunked at fifty against 8.20 s and 230.6 MB
-      whole, three runs each at 2,000 segments and 200 replications on one
-      thread — a gap smaller than the spread inside either column.
+      **The scalar reference is close to indifferent on both counts**, which is
+      what its one-replication-at-a-time loop predicts and is now measured
+      rather than argued. Two independent runs of three at 2,000 segments and
+      200 replications on one thread disagree about how close: 8.26 s chunked
+      against 8.20 s whole, and 8.23 s against 7.83 s, the second separating
+      completely. So chunking costs it between under 1% and about 5%, against
+      the 66% the kernel pays, and memory does not move — 230.8 MB against
+      230.6 MB. Either figure supports the same decision.
 
       Notebook 06 is not a measurement of this change and its timing is not
       quoted as one. It passed `batch_size=N_REPS` by hand before and resolves
@@ -171,15 +187,31 @@ table did not move" reads as an error otherwise.
 - [x] 6. `PLAN.md` had two: a paragraph deriving the batch's useful range from
       one number, and a claim of twenty boundary crossings per policy, which is
       now one. `README.md` had none.
-- [ ] 7. Review passes. The first found the 50,000-segment timing row did not
-      reproduce and that every figure in step 5 was a single run. All of them
-      are retaken above as means with their repeat counts, which changed the
-      conclusion: the cost is the same at both population sizes rather than
-      falling with size. It also found that both batching assertions read the
-      manifest, which records what was resolved and not what the run did — two
+- [x] 7. Review passes, two of them. The first found the 50,000-segment timing
+      row did not reproduce, and that every figure in step 5 was a single run.
+      All of them are retaken above as means with their repeat counts, which
+      changed the conclusion: the cost is the same at both population sizes
+      rather than falling with size. It also found that both batching
+      assertions read the manifest, which records what was resolved and not
+      what the run did — two
       mutations that made a run record one size and perform another left the
       suite green, and the test now wraps the registry entry and asserts on the
       calls.
+
+      The second found that repair incomplete in two more places: the
+      explicit override and the sweep script's default were asserted through
+      the manifest and through the parsed flag, and both were green against a
+      mutation that made the run chunk at some other size. Both now assert on
+      the calls. It also found that the recorder changed what it watched: the
+      wrapper's module is not the annual loop's, so `run.run` recorded no build
+      profile for any run made inside it, and `functools.wraps` is what fixes
+      that. Two claims here were wrong and are corrected above: the growth of
+      an unbatched run counted the result arrays and not the rows frame built
+      from them, understating the peak about twelvefold, and the reference's
+      indifference was measured once at 0.7% where a second measurement put it
+      at 5%. The bounded batch size is pinned as a memory bound, which an
+      earlier round argued was not possible; the measurement it is pinned
+      against is the one this change took.
 
 ## Open questions
 
@@ -212,9 +244,16 @@ population arrives where 710 MB matters; the measurement above is what to
 revisit it against.
 
 **Should the kernel resolve to the whole chunk, or to a large fixed number?**
-**The whole chunk**, which is what the measurement supports: 5 MB of results at
-1,000 replications, and the peak went *down* rather than up, because twenty
-chunks each write a parquet part. The unbounded growth is real and is stated
-where the constant is declared — 100,000 replications would hold 500 MB — but
-nobody has run one, and a fixed cap chosen now would be a number with no
-measurement behind it.
+**The whole chunk**, which is what the measurement supports: at the 1,000
+replications this project runs, the peak went *down* rather than up, because
+twenty chunks each write a parquet part.
+
+The unbounded growth is real and larger than this plan first said. Measured
+through `run.run` over five policies, a run peaks 220 MB above the interpreter
+at 1,000 replications and 2,499 MB at 40,000 — about 58 MB per thousand, where
+the result arrays alone account for 5. The rows frame is built from those arrays
+and held while they are still live, and the peak carries both. So a hundred
+thousand replications would be several gigabytes rather than the 500 MB the
+arrays suggest. It is stated where the constant is declared rather than capped,
+because nobody has run one and a cap chosen without that run would be a number
+with no measurement behind it.

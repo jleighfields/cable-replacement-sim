@@ -17,6 +17,7 @@ import pytest
 from cablesim import (
     config,
     constants,
+    kernel,
     metrics,
     population,
     random_draws,
@@ -259,6 +260,80 @@ def test_the_escalation_series_compounds_in_double_and_narrows_once() -> None:
     )
 
 
+AFFORDABLE_REPLICATIONS = 200
+"""Replications this file will run a whole simulation for.
+
+Not a property of the model — a ceiling on what a test costs, so that raising
+``run.BOUNDED_BATCH_SIZE`` reports rather than hangs. Two tests here derive
+their replication count from that constant, which is what makes them follow a
+change to the value; without a ceiling they also follow a change that makes the
+value absurd, and a suite whose runtime is linear in the constant under review
+stops being able to report on it. ``replications_past_the_bound`` applies it.
+"""
+
+WORKING_ARRAY_BOUND_MB = 10.0
+"""How large one `(batch, segments)` array may be at the shipped population.
+
+The bound the batched loop's batch size exists to impose, stated as something
+that can be checked. Measured, that loop carries twelve to twenty times one such
+array, so this admits a peak of roughly 60 to 100 MB above the interpreter — at
+the shipped 12,000 segments the batch of fifty makes one array 4.8 MB and peaks
+at 225 MB, and a batch of 250 makes it 24 MB and peaks at 475. The value is a
+ceiling with room under it, not a measured optimum; what it exists to refuse is
+a batch size raised until it bounds nothing.
+"""
+
+
+def replications_past_the_bound() -> int:
+    """More replications than the bounded batch, if a test can afford that many.
+
+    Two tests need a run the bounded size would cut in two, and both derive the
+    count from the constant so that they follow a change to it rather than
+    breaking on one. Following it that faithfully also follows it upwards, and
+    the cost of both tests is linear in the count — so a constant raised far
+    enough stops reddening them and starts hanging the suite instead.
+
+    Returns:
+        Two more replications than the bounded batch size.
+
+    Raises:
+        AssertionError: If that is more than this file will run, which says the
+            constant needs looking at rather than that either caller is wrong.
+    """
+    n_reps = run.BOUNDED_BATCH_SIZE + 2
+    assert n_reps <= AFFORDABLE_REPLICATIONS, (
+        f"BOUNDED_BATCH_SIZE is {run.BOUNDED_BATCH_SIZE}, and these tests run "
+        f"whole simulations of two more replications than that; "
+        f"test_the_bounded_batch_is_small_enough_to_bound_a_working_set is "
+        f"where the constant itself is pinned"
+    )
+    return n_reps
+
+
+def test_the_bounded_batch_is_small_enough_to_bound_a_working_set() -> None:
+    """The bounded batch size still bounds something at the shipped population.
+
+    ``BOUNDED_BATCH_SIZE`` is documented as untuned, and nothing here claims
+    fifty is optimal. What is claimed is narrower and is the reason the constant
+    exists: an implementation holding every replication of a chunk in flight has
+    its memory bounded by the chunk, and a chunk large enough that one
+    `(batch, segments)` array stops being small has given that up.
+
+    Checked against the shipped population rather than a test one, because the
+    memory this bounds is the memory of a real run.
+    """
+    shipped = config.load_config(constants.DEFAULT_CONFIG_PATH)
+    one_array_mb = (
+        run.BOUNDED_BATCH_SIZE * shipped.population.n_segments * 8 / 1e6
+    )
+
+    assert one_array_mb < WORKING_ARRAY_BOUND_MB, (
+        f"a batch of {run.BOUNDED_BATCH_SIZE} makes one (batch, segments) "
+        f"array {one_array_mb:.1f} MB at {shipped.population.n_segments} "
+        f"segments, and the batched loop carries twelve to twenty of them"
+    )
+
+
 def test_each_implementation_is_batched_at_its_own_size_and_records_it(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -283,7 +358,7 @@ def test_each_implementation_is_batched_at_its_own_size_and_records_it(
     invisible. It is taken from the constant rather than written as a number so
     that the two cannot drift apart.
     """
-    n_reps = run.BOUNDED_BATCH_SIZE + 2
+    n_reps = replications_past_the_bound()
     settings = config.with_overrides(small_config(), {"simulation.n_reps": n_reps})
     policy_count = len(settings.policies)
     resolved = {}
@@ -312,25 +387,75 @@ def test_each_implementation_is_batched_at_its_own_size_and_records_it(
     )
 
 
-def test_the_sweep_script_defaults_to_no_batch_size_of_its_own() -> None:
+def test_watching_the_batch_sizes_does_not_change_what_the_run_records(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The recorder must leave the provenance of the run it watches alone.
+
+    ``run.run`` reads the Rust build profile from the module the annual loop was
+    defined in, so a wrapper defined anywhere else makes a kernel run record no
+    profile at all — as ``None`` rather than as a refusal, which is the shape
+    that goes unnoticed. Every batching assertion that also reads the manifest
+    reads one written under that wrapper, and a timing read off such a manifest
+    cannot say whether a release build produced it.
+    """
+    settings = small_config()
+
+    with helpers.recorded_batches("kernel") as recorded:
+        directory = run.run(settings, tmp_path, implementation="kernel")
+
+    assert recorded, "no call was recorded, so the run did not go through it"
+    manifest = json.loads((directory / results.MANIFEST_NAME).read_text())
+    assert manifest["build_profile"] == kernel.BUILD_PROFILE, (
+        "recording the batch sizes changed the provenance the run wrote down; "
+        "the wrapper has to carry the wrapped loop's module for the build "
+        "profile to be found"
+    )
+
+
+def test_the_sweep_script_defaults_to_no_batch_size_of_its_own(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The command line defers to the implementation rather than fixing a number.
 
-    A sweep is every budget level times every policy, so it is where the batch
-    size is worth the most and where a fixed one would cost the most. The
-    default is the whole point of the flag being optional: naming a size on the
-    command line is still honoured, and naming none has to reach ``run.run`` as
-    ``None`` so that each implementation resolves its own.
+    The default is the whole point of the flag being optional: naming a size on
+    the command line is still honoured, and naming none has to reach ``run.run``
+    as ``None`` so that each implementation resolves its own.
 
-    Asserted here because a script's argument defaults are reached by nothing
-    else in this suite — the sweep itself is minutes of work — and because
-    ``None`` is the value that carries the behaviour. A default of fifty would
-    run, produce correct numbers, and quietly chunk the kernel twenty times.
+    **Where a fixed default would cost something is a full-size sweep, not the
+    reduced one the script runs by default.** ``--full`` is 1,000 replications
+    per budget level, so a default of fifty would run, produce correct numbers,
+    and chunk the kernel twenty times per level. At ``run.REDUCED_REPS`` it
+    would change nothing at all, because 40 replications are a single chunk at
+    either size.
+
+    **The flag's default and what the sweep does with it are two claims**, and
+    parsing the arguments checks only the first. Passing a fixed fifty at the
+    call site leaves the default at ``None`` and chunks every sweep anyway, so
+    the sweep is run here — into ``tmp_path``, since ``--out`` otherwise
+    defaults inside the repository, over a single budget level and at more
+    replications than the bound, because at ``run.REDUCED_REPS`` neither size
+    would cut the run in two and there would be nothing to see.
     """
-    arguments = helpers.script("budget_sweep").parse_arguments(["--out", "."])
+    sweep = helpers.script("budget_sweep")
+    n_reps = replications_past_the_bound()
+    monkeypatch.setattr(run, "REDUCED_REPS", n_reps)
+    monkeypatch.setattr(run, "REDUCED_SEGMENTS", 200)
+    monkeypatch.setattr(run, "budget_grid", lambda annual, **_: [annual])
+    policy_count = len(config.load_config(constants.DEFAULT_CONFIG_PATH).policies)
 
-    assert arguments.batch_size is None, (
+    assert sweep.parse_arguments(["--out", "."]).batch_size is None, (
         "the sweep names a batch size, so every implementation gets that one "
         "rather than the one it declared"
+    )
+
+    with helpers.recorded_batches("kernel") as recorded:
+        sweep.main(["--out", str(tmp_path), "--threads", "1"])
+
+    assert recorded == [n_reps] * policy_count, (
+        "the sweep chunked the kernel; its flag defaults to deferring, so the "
+        "size has to reach the runner as None and resolve to the whole run"
     )
 
 
@@ -343,11 +468,24 @@ def test_an_explicit_batch_size_still_overrides_the_implementation(
     caller who does — because the machine is small, or because they are
     measuring the effect of the batch itself — has to be able to, and the
     manifest has to say what they chose.
+
+    **Asserted on the calls first.** Resolving the size and doing the chunking
+    are separate steps, so a run can record the size it was given and chunk at
+    the implementation's own — which makes ``batch_size`` decorative while
+    every equivalence test goes on passing, since chunking changes no number.
+    The manifest is checked as well, because a caller who names a size needs
+    the saved run to say so.
     """
     settings = small_config()
 
-    directory = run.run(settings, tmp_path, implementation="kernel", batch_size=2)
+    with helpers.recorded_batches("kernel") as recorded:
+        directory = run.run(settings, tmp_path, implementation="kernel", batch_size=2)
 
+    chunks = [2] * (settings.simulation.n_reps // 2) * len(settings.policies)
+    assert recorded == chunks, (
+        "an explicitly named batch size did not reach the chunking; the run "
+        "was cut at some other size while recording the one it was given"
+    )
     manifest = json.loads((directory / results.MANIFEST_NAME).read_text())
     assert manifest["batch_size"] == 2, (
         "an explicitly named batch size was replaced by the implementation's"

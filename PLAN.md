@@ -1021,10 +1021,13 @@ avoids that, and passing an array is the simplest way to be indexed.
   is twelve to twenty times one `(replications, segments)` array, which at 1,000
   replications over 100,000 segments is ten gigabytes and at a chunk of fifty is
   836 MB. The kernel holds nothing shaped that way — its per-worker scratch is
-  sized by segments — so chunking buys it about five megabytes and costs it the
-  axis it parallelises over, measured at 1.66x through the run path at 12,000
-  segments and 1.67x at 50,000, means of six and twelve runs. Each
-  implementation therefore carries its own default rather than sharing one.
+  sized by segments — so chunking saves it no memory at all: the chunked run
+  peaks *higher*, 431 MB against 386 at 12,000 segments, because twenty chunks
+  hold twenty parquet parts where one holds one. What chunking costs it is the
+  axis it parallelises over: measured through the run path, chunking costs the
+  kernel 1.66x at 12,000 segments and 1.67x at 50,000, means of six and twelve
+  runs. Each implementation therefore carries its own default rather than
+  sharing one.
   Crossing the boundary per chunk costs nothing either way — the rule that
   matters is never calling back into Python *inside* the loop, and that
   still holds.
