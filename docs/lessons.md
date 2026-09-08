@@ -15,10 +15,24 @@ because the next one does the same.
 file when the completion notification arrives. That is what the notification is
 for, and it costs nothing while waiting.
 
-If a wait is genuinely unavoidable, match on something that cannot match the
-waiter — `pgrep -f "[r]emeasure.py"`, or the interpreter rather than the script.
-And note the harness kills a foreground command at ten minutes, so a loop
-longer than that is doubly wrong.
+**The `[r]emeasure.py` bracket trick does not fix this, and recommending it here
+was wrong.** It stops `pgrep` matching its own process, which is a different
+problem. The waiter's command line still contains the plain literal — the launch
+line that started the job has it — so `pgrep -f` matches the waiter whatever the
+pattern is bracketed to. A task written that way ran for an hour after its work
+finished, and the bracket was in it.
+
+If a wait is genuinely unavoidable, wait on the process rather than on a
+pattern:
+
+```bash
+uv run python remeasure.py > out.log 2>&1 &
+wait $!
+```
+
+`wait` on a captured PID cannot match the wrong process, because it matches no
+text at all. Note also that the harness kills a foreground command at ten
+minutes, so a loop longer than that is doubly wrong.
 
 ## Never `git add -A` while a review agent is editing
 
