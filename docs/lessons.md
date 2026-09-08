@@ -245,3 +245,47 @@ from and quoted elsewhere before anyone finds out which cells were noise. Here
 the chunked 50,000-segment cell varies 20% run to run, and the single-run
 reading of it made the cost look as though it fell with population size. It does
 not — it is the same at both sizes, and twelve runs are what says so.
+
+## A measurement that will not reproduce has conditions you have not read yet
+
+The peak-memory series in `run.py` was reported as unreproducible, twice, and
+recorded as a defect in a plan review and a pull-request body. It reproduced.
+The docstring named its population size one sentence after the figures, and the
+measurement had been retaken at sixty times that. A second figure in the same
+docstring was called a contradiction of it; the two are at different population
+sizes and never disagreed.
+
+Even after reading that sentence the series was still short by a hundred
+megabytes, and the missing condition was the polars thread pool, which sizes
+itself from the core count: 166 MB with one thread, 219 with four, 327 with
+forty-eight, for the same run. The figure had been taken somewhere with a small
+pool and had never said so.
+
+So the rule is in two halves. Before calling a recorded number wrong, read the
+whole passage for the conditions it does state — they are often in the next
+sentence rather than the same one. And when a figure genuinely will not come
+back, the answer is a condition nobody wrote down, not a defect: find it and
+write it down beside the retaken number, because the next person to check will
+otherwise repeat the same two hours.
+
+## Ask what a failing check is protecting before building anything to explain it
+
+Four tests failed intermittently in the required check, on unrelated diffs, for
+a whole day. The response was to diagnose: a run header fingerprinting the
+processor and the C library, a failure message naming which inputs disagreed by
+how many representable steps, tests for the diagnostic itself, each watched
+failing. All of it worked. None of it was wanted, and it was closed unmerged.
+
+The cheaper question was never asked: **is this property one the project needs
+at all?** The tests asserted bit-for-bit agreement at single precision, which
+depends on NumPy and the C library rounding identically — not a property of
+this repository, and not one anything downstream relied on. Deciding to check
+single precision to four significant figures instead deleted five tests and
+about four hundred lines, and removed the failure permanently rather than
+explaining it.
+
+Diagnosis is the right move when a check guards something you intend to keep.
+When a check is intermittent, ask what breaks if it is deleted *before* asking
+why it fails — and put the machinery in only if the answer is "something I
+care about". Building the explanation first makes deletion feel like waste and
+biases the decision toward keeping the thing.
