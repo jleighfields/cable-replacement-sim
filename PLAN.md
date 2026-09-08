@@ -2409,7 +2409,7 @@ notebook needs a function, it belongs in the package.
 | Notebook | Purpose |
 |----------|---------|
 | `01_population.py` | Generate and inspect a synthetic population. Sliders for `n_segments` and class shares; show length, customer, and install-year distributions by class. Sanity check that main feeders carry far more customers than laterals. |
-| `03_weibull_fitting.py` | Censored MLE walkthrough. Slider for censoring fraction; show the likelihood surface, fitted vs true survival curve, and the recovery test result. Demonstrates *why* censoring must be handled. |
+| `03_weibull_fitting.py` | Censored MLE walkthrough. Slider for censoring fraction; show the likelihood surface, fitted vs true survival curve, and the recovery test result. Demonstrates *why* censoring must be handled. Closes with the failure-time regression fitted on the shipped fleet, where the geometry coefficients are checked against their closed forms and the per-technology shapes are not identifiable. |
 | `02_effective_scale.py` | The effective-scale reduction derived and made visual (2.3). Numbered ahead of the fitting notebook because the fitting notebook's third rung tests what this one establishes. Sliders for `k`, `lambda`, `n` and length; overlay conductor-level and segment-level survival curves against the empirical minimum of sampled draws, and against draws for a longer segment. Shows scale shrinking by `(n * L/L_ref)^(-1/k)` while shape holds, which is the claim the recovery ladder's rung 3 tests numerically. |
 | `04_policy_explorer.py` | Sliders for annual budget, policy, and policy params; plot SAIDI/SAIFI trajectories over 30 years, spend, and failures by class. **This is the reliability-vs-budget curve** — the deliverable the original work produced. |
 | `06_production_run.py` | The shipped configuration run end to end on the kernel, at its full replication count, with every stage timed. Exposes the population size and replication count as the two parameters, so the same demonstration runs at a larger fleet; `resize_population` carries the customer denominator and the annual budget with it. Asserts what a timing has to be read against — the build profile, and that the manifest records the implementation and thread count that actually ran — and that the saved rows factor as policies times replications times years times classes, which no check on the values would catch. It is the only notebook that goes through `run.run`, so it is where the batch size is visible. |
@@ -3033,11 +3033,15 @@ the argument belongs beside the model it constrains.
    raising the sample does not help.** Technology follows install year, so the
    newest one is also the youngest cable: `tr_xlpe` exists from 2005 and is at
    most 21 years old at the study end, against a median life near 85. Observed
-   failures for it run 0 at 20,000 segments, 4 at 60,000 and 10 at 180,000 —
-   proportional to the sample and never near the several hundred per cell a
-   shape estimate needs. **The binding constraint is exposure time, not sample
-   size**, so `records.n_segments` is the wrong knob, and asking whether it
-   survived the calibration was the wrong question.
+   failures for it run 2 at 20,000 segments, 15 at 80,000, 55 at 320,000 and
+   158 at a million — proportional to the sample and never near the several
+   hundred per cell a shape estimate needs. **The binding constraint is
+   exposure time, not sample size**, so `records.n_segments` is the wrong knob,
+   and asking whether it survived the calibration was the wrong question. It is
+   the wrong knob rather than an inert one: fitting at those four sizes narrows
+   the technology's shape interval from 1.11 to 0.39, 0.22 and 0.12, which is
+   the `1/sqrt(failures)` the counts predict and no faster, while it stays
+   about five times worse identified than the next technology at every size.
 
    Real data has the same problem: a utility fitting a technology introduced
    fifteen years ago has fifteen years of exposure whatever its asset count.
@@ -3047,6 +3051,14 @@ the argument belongs beside the model it constrains.
    one is chosen belongs to the point where the fit meets a population. The
    recovery ladder sidesteps it with a fixture that gives every technology
    equal exposure, and that is a fixture rather than a claim about any fleet.
+
+   **The evidence a choice needs now exists.** Notebook 03 closes by fitting
+   the regression on the shipped fleet and reporting each technology's
+   interval, and it shows more than this item claimed: the *reference*
+   technology's shape interval is wider than the spread between the three
+   configured shapes, so no technology here is distinguishable from another by
+   shape. The weak identification is the whole per-technology shape story
+   rather than a tail on the newest one. Which way out to take is still open.
 1. **Value-of-lost-load figures by customer type.** The values in
    `configs/base.yaml` are placeholders. They need sourcing to published
    interruption-cost estimates, recorded with the source and the outage

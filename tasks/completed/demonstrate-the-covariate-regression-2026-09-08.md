@@ -2,7 +2,8 @@
 
 ## The gap
 
-`PLAN.md` section 2.4 specifies a failure-time regression: two geometry
+The standing plan, on the censored MLE and the failure-time regression,
+specifies one: two geometry
 covariates, `log(n)` and `log(L / L_ref)`, never one composite; technology as
 indicators in both the location and the ancillary terms so shape can vary. The
 package implements all of it — `records.geometry_covariates`,
@@ -31,7 +32,8 @@ test.
 
 **The demonstration that does not exist anywhere is what the regression does on
 the fleet this project ships**, where exposure is not equal because technology
-follows install year. `PLAN.md` section 13.2 records that as an open question
+follows install year. The standing plan's open question about identifying
+the newest technology records that
 and says the ladder "sidesteps it with a fixture that gives every technology
 equal exposure, and that is a fixture rather than a claim about any fleet." The
 notebook is where that claim gets made or withheld honestly.
@@ -73,7 +75,8 @@ layers them:
 **The interesting part is step 4, and it is where the honesty is.** The
 configuration ships three technologies at shapes 6.2, 6.5 and 6.8, on vintages
 1965–1985, 1986–2004 and 2005–2020. The newest is also the youngest cable, and
-`PLAN.md` section 13.2 argues its shape is weakly identified because the
+The standing plan's open question about the newest technology argues its
+shape is weakly identified because the
 binding constraint is exposure time rather than sample size. So the notebook
 should report each technology's interval and let the width say which
 coefficients the fleet can support — including, if it turns out that way, that
@@ -129,7 +132,7 @@ because either would be a package finding rather than a notebook one:
 
 It does not answer whether the newest technology's parameters should be
 reported, pooled with the previous technology, or carried from a prior — the
-three ways out that `PLAN.md` section 13.2 lists. It shows which of them the
+three ways out the standing plan's open question lists. It shows which of them the
 fleet forces, which is what that decision has been waiting for.
 
 
@@ -149,7 +152,8 @@ whether there was a seam here. There was.
 | `xlpe` | 1986–2004 | 6,802 | 335 |
 | `tr_xlpe` | 2005–2020 | 12,876 | **2** |
 
-The newest technology is the most numerous in the fleet by a factor of seven
+The newest technology has more cable in the ground than the other two put
+together
 and contributes two failures. Its shape interval is `[-0.468, +0.639]` as a log
 ratio, six times wider than the middle technology's, and it covers the
 configured value the way an interval that admits everything covers anything.
@@ -188,3 +192,53 @@ report it as weakly identified, pool it with the previous technology, or carry
 a prior from accelerated-life testing — is left open, which is where the
 standing plan has it. What this adds is the numbers that decision was waiting
 for.
+
+
+## What the branch review changed
+
+The section shipped with a claim that measurement contradicts, and the review
+caught it. The closing prose said the binding constraint is exposure rather
+than sample size **and that raising the segment count would not move the
+interval**. It does move it: fitted at 20,000, 80,000, 320,000 and a million
+segments, the newest technology's shape interval narrows 1.11, 0.39, 0.22,
+0.12 — the `1/sqrt(failures)` its counts predict. Reproduced here before
+correcting it.
+
+The defensible claim, which the standing plan already made and this section
+overstated, is that the knob is the wrong one rather than an inert one: the
+sizes needed are a fleet no utility owns, and the disparity between
+technologies holds at every size. What makes this worth recording is that the
+section's *own code comment* said the ratio is stable while the width moves,
+sixty lines from prose saying the width does not move. Two statements of the
+same measurement, one right, and nothing compared them.
+
+Six other things followed from the same pass:
+
+- Both fit cells displayed the shape and the reference scale — the reference
+  scale moves 0.02% between the two fits, while a technology's scale ratio
+  moves 10% and was displayed nowhere. The prose claiming a common shape
+  "biases every scale" had no support on screen. Both fits now print every
+  location parameter.
+- The width-ratio assertion was a threshold picked against one observation.
+  Across fifteen seeds the ratio runs 1.3 to 16.5, so its failure message
+  would have blamed the fleet for sampling noise. The section now asserts the
+  failure counts, which held on 15 of 15, and reports the ratio as an
+  observation at this seed.
+- Technologies were named by string literal and picked by list position, and
+  the configuration schema does not constrain that order — a reordered file
+  would have made the newest technology the reference silently. Both are
+  derived by vintage now.
+- Three numbers were hardcoded into the closing markdown, one of them wrong:
+  the study window is 28 years, not thirty. It is an interpolated cell now.
+- The per-technology coverage assertion had never been watched failing, and it
+  is a 95% interval, so about one miss in twenty is expected. Both facts are
+  recorded beside it.
+- Intervals were printed as log ratios while the prose argued in shape units.
+  The implied shape range is printed beside them.
+
+**Two findings were left for a decision rather than fixed.** The record table
+is generated from technology shapes alone and ignores the per-class shape
+override that the simulated population applies, so the two disagree on that
+axis — pre-existing, and the notebook now says so rather than papering over
+it. And `records.technology_indicators`' docstring gives a failure range for
+the newest technology that measurement puts wider than it claims.

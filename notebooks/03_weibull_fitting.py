@@ -1022,7 +1022,12 @@ def _(fleet, np, records, settings):
     )
     # The oldest technology is the reference: every other coefficient is a log
     # ratio against it, and it is the one the fleet has the most failures for.
-    reference_technology = settings.population.technologies[0]
+    # Chosen by vintage rather than by position in the list — the schema
+    # validates that the vintages partition the install years without
+    # constraining the order they are written in, so a reordered configuration
+    # would silently make the newest technology the reference.
+    by_vintage = sorted(settings.population.technologies, key=lambda t: t.vintage[0])
+    reference_technology = by_vintage[0]
     technology_columns, technology_names = records.technology_indicators(
         fleet, reference=reference_technology.name
     )
@@ -1030,6 +1035,7 @@ def _(fleet, np, records, settings):
     design_names = [*_geometry_names, *technology_names]
     design_names
     return (
+        by_vintage,
         design,
         design_names,
         reference_technology,
@@ -1040,7 +1046,12 @@ def _(fleet, np, records, settings):
 
 @app.cell
 def _():
-    def with_interval(label, value, bounds, places=3):
+    def with_interval(
+        label: str,
+        value: float,
+        bounds: tuple[float, float],
+        places: int = 3,
+    ) -> str:
         """One estimate beside the interval around it, as a line to print.
 
         Every number this section reports is read against its interval rather
@@ -1066,28 +1077,59 @@ def _():
 
 
 @app.cell
+def _(np, technology_names, with_interval):
+    def fit_lines(fit) -> str:
+        """Every location parameter of a fit, each beside its interval.
+
+        The technology coefficients are shown as **scale ratios** rather than
+        as the log ratios they are fitted on, because that is the quantity the
+        model consumes and the one a reader can compare against a configured
+        scale. Showing the shape and the reference scale alone would leave the
+        two fits below looking identical: the reference scale moves 0.02%
+        between them and a technology's scale ratio moves 10%, and the second
+        is what "a common shape biases every scale" is about.
+
+        Args:
+            fit: What ``weibull.fit_regression`` returned.
+
+        Returns:
+            One line per parameter, newline-joined.
+        """
+        lines = [
+            with_interval("shape", fit.shape, fit.shape_interval),
+            with_interval(
+                "reference scale", fit.reference_scale, fit.reference_scale_interval,
+                places=2,
+            ),
+        ]
+        for name in technology_names:
+            bounds = dict(fit.coefficient_intervals)[name]
+            lines.append(
+                with_interval(
+                    f"{name.removeprefix('technology_')} scale x",
+                    np.exp(float(dict(fit.coefficients)[name])),
+                    tuple(np.exp(float(bound)) for bound in bounds),
+                )
+            )
+        return "\n".join(lines)
+
+    return (fit_lines,)
+
+
+@app.cell
 def _(
     design,
     design_names,
     fleet_end,
     fleet_entry,
     fleet_observed,
+    fit_lines,
     weibull,
-    with_interval,
 ):
     common_shape = weibull.fit_regression(
         fleet_end, fleet_entry, fleet_observed, design, design_names
     )
-    print(
-        with_interval("shape", common_shape.shape, common_shape.shape_interval)
-        + "\n"
-        + with_interval(
-            "reference scale",
-            common_shape.reference_scale,
-            common_shape.reference_scale_interval,
-            places=2,
-        )
-    )
+    print(fit_lines(common_shape))
     return (common_shape,)
 
 
@@ -1097,12 +1139,12 @@ def _(common_shape, settings):
     # than from the configured one: the closed forms are statements about the
     # model, so they have to be evaluated at the model the fit is standing on.
     _k = float(common_shape.shape)
-    predicted = {
+    _predicted = {
         "log_n_conductors": -1.0 / _k,
         "log_length_ratio": -settings.population.length_exponent / _k,
     }
     _rows = []
-    for _name, _want in predicted.items():
+    for _name, _want in _predicted.items():
         _got = float(dict(common_shape.coefficients)[_name])
         _bounds = dict(common_shape.coefficient_intervals)[_name]
         _low, _high = (float(v) for v in _bounds)
@@ -1116,7 +1158,7 @@ def _(common_shape, settings):
                      f"  predicted {_want:+.4f}")
     print("\n".join(_rows))
     f"both geometry coefficients cover their closed forms at shape {_k:.3f}"
-    return (predicted,)
+    return
 
 
 @app.cell
@@ -1147,8 +1189,8 @@ def _(
     fleet_observed,
     technology_columns,
     technology_names,
+    fit_lines,
     weibull,
-    with_interval,
 ):
     varying_shape = weibull.fit_regression(
         fleet_end,
@@ -1159,16 +1201,7 @@ def _(
         ancillary=technology_columns,
         ancillary_names=technology_names,
     )
-    print(
-        with_interval("shape", varying_shape.shape, varying_shape.shape_interval)
-        + "\n"
-        + with_interval(
-            "reference scale",
-            varying_shape.reference_scale,
-            varying_shape.reference_scale_interval,
-            places=2,
-        )
-    )
+    print(fit_lines(varying_shape))
     return (varying_shape,)
 
 
@@ -1200,9 +1233,18 @@ def _(reference_technology, varying_shape):
 
 @app.cell
 def _(np, reference_technology, settings, technology_names, varying_shape):
-    # Each ancillary coefficient is the log ratio of that technology's shape to
-    # the reference's, so the configured truth it is checked against is the log
-    # of the configured ratio.
+    # Each ancillary coefficient is the log ratio of that technology's shape
+    # to the reference's, so the configured truth it is checked against is the
+    # log of the configured ratio — and the shape range it implies is printed
+    # beside it, because the argument below is about shapes and nobody reads a
+    # log ratio as one.
+    #
+    # This is a 95% interval, so a single technology falling outside it is
+    # expected about one time in twenty and is evidence of nothing on its own;
+    # over fifteen seeds it happened twice in thirty. What makes it a live
+    # check rather than a coin toss is that dropping the truncation correction
+    # reddens it — measured, that puts xlpe at [-0.1540, +0.0205] against a
+    # configured +0.0473.
     widths = {}
     _lines = []
     for _name in technology_names:
@@ -1219,39 +1261,33 @@ def _(np, reference_technology, settings, technology_names, varying_shape):
             f"{_label}'s shape interval [{_low:+.4f}, {_high:+.4f}] excludes "
             f"the configured log ratio {_truth:+.4f}"
         )
+        _reference_shape = reference_technology.weibull.shape
         _lines.append(
             f"  {_label:10} [{_low:+.4f}, {_high:+.4f}]  width {_high - _low:.4f}"
             f"  configured {_truth:+.4f}"
+            f"   implies shape [{np.exp(_low) * _reference_shape:.2f}, "
+            f"{np.exp(_high) * _reference_shape:.2f}]"
         )
     print("\n".join(_lines))
     return (widths,)
 
 
 @app.cell
-def _(exposure, pl, widths):
-    # Every interval above covers its configured value, and for the newest
-    # technology that is worth nothing: it covers a shape well below the
-    # reference's and one well above it alike, so the fleet cannot say the
-    # newest technology differs from the reference at all.
+def _(by_vintage, exposure, widths):
+    # What this section is written around, asserted on the quantity that holds
+    # rather than on the one that reads best. The newest technology's interval
+    # is several times the middle one's here — but that ratio is two widths
+    # each driven by a handful of failures, and across seeds it runs from about
+    # 1.3 to 16. Asserting a threshold on it would give a failure message
+    # blaming the fleet for what is sampling noise.
     #
-    # Asserted as a ratio of widths rather than an absolute one, because the
-    # absolute width moves with the study window and the population size while
-    # the disparity between the two does not.
-    _newest = "tr_xlpe"
-    _middle = "xlpe"
-    _ratio = widths[_newest] / widths[_middle]
-    assert _ratio > 3.0, (
-        f"{_newest}'s shape interval is only {_ratio:.1f} times "
-        f"{_middle}'s, so this fleet identifies it better than the exposure "
-        f"argument predicts and the paragraph below is describing something "
-        f"that is no longer true"
-    )
-
-    # And the mechanism, in one number: exposure rather than sample size.
-    _failures = dict(
-        exposure.select("technology", "failures").iter_rows()
-    )
+    # The failure counts are what is stable: over fifteen seeds the newest
+    # technology drew between zero and seven, against several hundred for the
+    # others, and it is the most numerous either way.
+    _newest, _middle = by_vintage[-1].name, by_vintage[-2].name
+    _failures = dict(exposure.select("technology", "failures").iter_rows())
     _episodes = dict(exposure.select("technology", "episodes").iter_rows())
+
     assert _failures[_newest] < 10, (
         f"{_newest} has {_failures[_newest]} failures, so it is no longer the "
         f"weakly-identified case this section is written around"
@@ -1263,16 +1299,22 @@ def _(exposure, pl, widths):
     )
     (
         f"{_newest}: {_episodes[_newest]:,} episodes, "
-        f"{_failures[_newest]} failures, shape interval {_ratio:.1f}x wider "
-        f"than {_middle}'s"
+        f"{_failures[_newest]} failures, shape interval "
+        f"{widths[_newest] / widths[_middle]:.1f}x wider than {_middle}'s "
+        f"at this seed"
     )
     return
 
 
 @app.cell
-def _(mo):
+def _(by_vintage, exposure, mo, settings, varying_shape):
+    _window = settings.records.study_end - settings.records.monitoring_start
+    _low, _high = (float(_v) for _v in varying_shape.shape_interval)
+    _shapes = [_t.weibull.shape for _t in by_vintage]
+    _newest = by_vintage[-1]
+    _failures = dict(exposure.select("technology", "failures").iter_rows())
     mo.md(
-        r"""
+        f"""
     ### What this fleet can and cannot identify
 
     **The geometry coefficients come back.** Both cover the closed forms the
@@ -1281,28 +1323,45 @@ def _(mo):
     length enter the scale.
 
     **The reference technology comes back**, because it is the oldest cable and
-    has had thirty years of the study window to fail in. Its shape interval
-    still spans 0.68, against a spread of 0.6 between the three configured
-    shapes — so even the best-identified technology here has an interval wider
-    than the differences the model is trying to resolve. Recovering the
-    reference is evidence the fit works, not evidence this fleet can tell the
-    three technologies apart.
+    has had all {_window} years of the study window to fail in. Its shape
+    interval still spans {_high - _low:.2f}, against a spread of
+    {max(_shapes) - min(_shapes):.1f} between the {len(_shapes)} configured
+    technology shapes — so even the best-identified technology here has an
+    interval wider than the differences the model is trying to resolve.
+    Recovering the reference is evidence the fit works, not evidence this fleet
+    can tell the technologies apart.
 
-    **The newest technology does not.** Its shape interval is wide enough to
-    admit a shape well below the reference's and well above it, so the fit
-    covering the configured value is not evidence of anything — an interval
-    that admits everything covers the truth by construction. It is the most
-    numerous technology in the fleet and it has a handful of failures, so
-    **the binding constraint is exposure time, not sample size**, and raising
-    the segment count would not move it. A real utility fitting a technology
+    **The newest technology does not.** Its shape interval admits a shape well
+    below the reference's and well above it, so the fit covering the configured
+    value is not evidence of anything — an interval that admits everything
+    covers the truth by construction. `{_newest.name}` is the most numerous
+    technology in the fleet and drew {_failures[_newest.name]} failures.
+
+    **Sample size does move it, and not far enough to matter.** Failures scale
+    with the fleet, so the interval narrows — measured, its width goes 1.11 at
+    the shipped 20,000 segments to 0.39 at 80,000 and 0.12 at a million, which
+    is the `1/sqrt(failures)` the counts predict and no faster. Reaching the
+    several hundred failures a shape estimate wants would take a fleet no
+    utility owns, and at every one of those sizes the newest technology stays
+    roughly five times worse identified than the middle one. **The knob is the
+    wrong one rather than a stuck one**: a real utility fitting a technology
     introduced fifteen years ago has fifteen years of exposure however many
-    assets it owns.
+    assets it owns, and buying more cable does not buy more of them.
 
     The recovery ladder under `tests/` fits this same regression on a fixture
     that gives every technology equal exposure, and recovers all of it. That is
     the estimator being correct. This is the fleet being uninformative, and the
     two are different findings — which is why the ladder is not the place this
     question gets answered.
+
+    Two things to know before reseeding this notebook. The record table is
+    generated from the {len(_shapes)} **technology** shapes alone — the
+    per-class shape override the configuration also carries reaches the
+    simulated population and not this table — so "configured shapes" here means
+    those {len(_shapes)} and not every shape in the file. And on some seeds the
+    newest technology draws no failures at all, at which point the fit is
+    refused rather than fudged: the error comes from building its indicator
+    column, and it is this same finding arriving as an exception.
 
     Three ways out, none taken here: report the newest technology as weakly
     identified with an interval that says so, pool it with the previous
