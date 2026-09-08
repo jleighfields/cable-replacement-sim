@@ -2075,18 +2075,25 @@ a candidate.
 **Measured once at 100,000 segments**, which is eight times the shipped
 population and further than anything in the test suite goes. Ten replications,
 30 years, `risk_ranked`: the scalar reference 0.418 s per replication, the
-batched loop 0.436, the kernel 0.445 on one thread and 0.048 on forty-eight,
+batched loop 0.432, the kernel 0.386 on one thread and 0.044 on forty-eight,
 **and every one of them reproduced the reference exactly.** That last is the
 part worth having: the parity tests run at 400 and 2,000 segments, so a defect
 that only appears at scale — an index overflowing, a reduction reordering —
 would be invisible to the whole suite.
 
-Peak memory for the process was **0.28 GB**. The same run under the design that
-passed draws in as an array would have needed about 1.2 GB for the draws alone.
+Peak memory was **0.32 GB** for a process that ran all four implementations in
+turn. The same run under the design that passed draws in as an array would have
+needed about 1.2 GB for the draws alone.
 
-The threading ratio there is 8.7 and not 20, and the population is not the
+The threading ratio there is 8.8 and not 20, and the population is not the
 reason: replications are the axis being parallelised, so ten of them cap the
-speedup at ten however many threads exist. 8.7 is 87% of that ceiling.
+speedup at ten however many threads exist. 8.8 is 88% of that ceiling.
+
+**On one thread at that size the kernel is 12% ahead of the batched loop**,
+0.386 against 0.432, where at 12,000 segments under the same policy the two are
+level. Almost all of the kernel's advantage at scale is the threads rather than
+the port, which is the comparison the single-thread row exists to make
+visible.
 
 **Draw generation is inside the timed region**, because a run pays for it once
 per chunk and an implementation producing only what it reads deserves the
@@ -2098,8 +2105,10 @@ Bold marks the fastest Python implementation in each column, which is the
 denominator of the last row. **It is not the same implementation in every
 column**, which is exactly why that row exists rather than a fixed baseline: the
 batched loop wins where a policy funds nothing or everything, and the scalar
-reference wins under `age_threshold`, where two percent of segments are
-eligible and the batched form still sorts every one of them.
+reference wins under `age_threshold`, where 655 of 12,000 segments are
+eligible in the first year — rising to 7,235 by the last, as the population
+ages past the 45-year threshold — and the batched form sorts all 12,000 every
+year regardless.
 
 The two swapped places twice while this was being built — once when the batched
 loop was written with a wasted pass in it, and once when computing draws made

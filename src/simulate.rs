@@ -179,8 +179,9 @@ struct Scratch {
     /// The fixed per-segment priority the random policy ranks on.
     ///
     /// Filled once per replication rather than read per candidate per year. It
-    /// does not depend on the year, so drawing it inside the year loop produced
-    /// the same twelve thousand values thirty times over.
+    /// does not depend on the year, so drawing it inside the year loop would
+    /// recompute the same twelve thousand values once for every year of the
+    /// horizon.
     priority: Vec<f64>,
 }
 

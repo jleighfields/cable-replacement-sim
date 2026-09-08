@@ -66,13 +66,20 @@ much as about the runtime.
 
 ## Steps
 
-- [ ] 1. `uniforms_over` through NumPy's Philox, with the equality against the
+- [x] 1. `uniforms_over` through NumPy's Philox, with the equality against the
       vectorised one asserted in `test_draws.py` rather than assumed.
-- [ ] 2. `uniforms_at` takes the run-and-gather path when every position shares
+      `test_a_run_starting_mid_block_drops_the_words_before_it` carries the
+      direct assertion, over the block offsets no production caller reaches.
+- [x] 2. `uniforms_at` takes the run-and-gather path when every position shares
       a replication, with the measurement in the comment that justifies
-      producing draws nobody reads.
-- [ ] 3. Re-measure both loops and the whole table.
-- [ ] 4. Check what remains: `order_by_rank` and
+      producing draws nobody reads. Bounded by `MAX_RUN_DRAWS`: the run is
+      charged for the largest segment asked for, so above about 17,000 it
+      costs more than the scattered path it replaces, and at the largest
+      segment a draw index can carry it would ask for 32 GB.
+- [x] 3. Re-measure both loops and the whole table, at 12,000 segments and
+      again at 100,000.
+- [x] 4. Check what remains: `order_by_rank` and
       `conditional_failure_probability` are the next largest and are the model
-      rather than the plumbing.
-- [ ] 5. Review passes.
+      rather than the plumbing. Left alone — changing the model to make it
+      faster is a different decision from changing the plumbing.
+- [x] 5. Review passes.

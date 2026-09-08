@@ -12,6 +12,10 @@ NumPy. What is worth testing is the part this project could get wrong: whether
 its implementation is the same algorithm, indexed the same way.
 """
 
+import subprocess
+import sys
+import textwrap
+
 import numpy as np
 import pytest
 from cablesim import _cablesim, random_draws
@@ -210,6 +214,62 @@ def test_the_dense_and_sparse_paths_agree_with_each_other() -> None:
     )
 
 
+def test_a_run_starting_mid_block_drops_the_words_before_it() -> None:
+    """A run is asked for by position, and a block holds four of them.
+
+    ``uniforms_over`` reaches the position by producing the whole block it sits
+    in and discarding what comes before it. Every production caller happens to
+    start on a block boundary — the segment field is at shift 0 and the other
+    fields are multiples of four — so nothing else here asks for a run that
+    starts one, two or three positions in, and the discard is unexercised.
+    """
+    key = random_draws.draw_key(11)
+    lanes = np.uint64(random_draws.PHILOX_LANES)
+    for first in (0, 1, 2, 3, 4, 7, 4097):
+        run = random_draws.uniforms_over(key, first, 6)
+
+        # The scattered generator, which reaches a position by producing its
+        # block alone and so shares none of the run's offset arithmetic.
+        index = np.arange(first, first + 6, dtype=np.uint64)
+        words = random_draws.philox(index // lanes + np.uint64(1), key)
+        one_at_a_time = random_draws.to_double(
+            words[np.arange(index.size), (index % lanes).astype(np.intp)]
+        )
+
+        assert np.array_equal(run, one_at_a_time), f"run starting at {first}"
+
+
+def test_asking_for_no_positions_gives_nothing() -> None:
+    """The sparse path is reached with nothing to draw and must not read.
+
+    Both callers guard it behind a test that something was replaced, so this is
+    the only thing holding the guard down. Without it the branch that decides
+    whether the positions share a replication indexes element zero of an empty
+    array.
+    """
+    key = random_draws.draw_key(13)
+    empty_reps = np.empty(0, dtype=np.uint32)
+    empty_segments = np.empty(0, dtype=np.uint32)
+
+    drawn = random_draws.uniforms_at(
+        key, random_draws.PURPOSE["records"], empty_reps, empty_segments, 4
+    )
+
+    assert drawn.shape == (0,)
+    assert drawn.dtype == np.float64
+    assert np.array_equal(
+        drawn,
+        _cablesim.uniforms_at(
+            key[0],
+            key[1],
+            random_draws.PURPOSE["records"],
+            empty_reps,
+            empty_segments,
+            4,
+        ),
+    )
+
+
 def test_a_chunk_draws_the_same_numbers_wherever_it_sits() -> None:
     """Chunking must change no number, which is why the offset is an argument.
 
@@ -342,3 +402,69 @@ def test_a_purpose_too_large_for_its_field_is_refused_rather_than_aliased() -> N
         )
     with pytest.raises(ValueError, match="purpose"):
         random_draws.uniforms_at(key, past_the_field, replications, segments, 0)
+
+
+# A child process capped at this much address space. One draw needs a few
+# kilobytes; a run up to the segment asked for needs thirty-two gigabytes, so
+# the cap is what turns "produces far more than it was asked for" into an
+# observable failure instead of a machine that swaps for a minute.
+CAPPED_ADDRESS_SPACE = 2 * 1024**3
+
+ONE_DRAW_HIGH_IN_THE_SEGMENT_FIELD = """
+import resource
+resource.setrlimit(
+    resource.RLIMIT_AS, ({limit}, {limit})
+)
+
+import numpy as np
+from cablesim import _cablesim, random_draws
+
+key = random_draws.draw_key(1)
+purpose = random_draws.PURPOSE["lifetimes"]
+# The largest segment the index carries, which `check_positions` accepts.
+random_draws.check_positions(0, random_draws.MAX_SEGMENT, 0, purpose)
+
+replications = np.zeros(1, dtype=np.uint32)
+segments = np.array([random_draws.MAX_SEGMENT], dtype=np.uint32)
+
+from_rust = _cablesim.uniforms_at(key[0], key[1], purpose, replications, segments, 0)
+from_python = random_draws.uniforms_at(key, purpose, replications, segments, 0)
+assert from_python == from_rust, (from_python, from_rust)
+"""
+
+
+def test_one_draw_high_in_the_segment_field_costs_one_draw() -> None:
+    """Asking for one position must not produce every position below it.
+
+    ``uniforms_at`` answers scattered positions, and ``check_positions``
+    accepts any segment up to ``MAX_SEGMENT``, so both implementations have to
+    answer anywhere in that range — the packing is what decides which draw a
+    position gets, and a position one side can reach and the other cannot is
+    the two languages disagreeing about the stream.
+
+    The run-and-gather path produces every position from segment 0 up to the
+    largest one asked for, so a single draw high in the field asks for a
+    thirty-two gigabyte array. Run under a two gigabyte cap that shows up as a
+    ``MemoryError``; without the cap it is a machine that swaps rather than a
+    test that reports.
+    """
+    result = subprocess.run(  # noqa: S603
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent(
+                ONE_DRAW_HIGH_IN_THE_SEGMENT_FIELD.format(
+                    limit=CAPPED_ADDRESS_SPACE
+                )
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+
+    assert result.returncode == 0, (
+        "one draw at the largest segment the index carries did not come back:"
+        f"\n{result.stderr[-2000:]}"
+    )
