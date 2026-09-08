@@ -99,23 +99,6 @@ def plan_citations(text: str) -> list[str]:
     return re.findall(pattern, text)
 
 
-def phase_citations(text: str) -> list[str]:
-    """Finds citations of a numbered phase of the standing plan's roadmap.
-
-    The roadmap renumbers whenever a phase is inserted, exactly as the numbered
-    sections do, so a phase number quoted anywhere else goes stale the same way
-    and with nothing to report it. Matched case-insensitively because prose
-    writes both "Phase 6" and "phase 6".
-
-    Args:
-        text: The file contents to scan.
-
-    Returns:
-        Every citation found, in document order.
-    """
-    return re.findall(r"[Pp]hase [0-9]+", text)
-
-
 def tracked_documents(suffix: str = ".md") -> list[pathlib.Path]:
     """Every tracked document, minus the finished plans under ``tasks/``.
 
