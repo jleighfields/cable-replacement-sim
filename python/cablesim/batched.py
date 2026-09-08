@@ -341,6 +341,11 @@ def run_chunk_numpy(
     planned_at_par = policies.planned_cost(
         length_ft, cost_per_ft, mobilization_per_segment
     )
+    # The working precision, read off the arrays this was handed rather than
+    # passed down. Draws are produced in double whatever it is, and narrowed
+    # where they meet the state.
+    floating = age0.dtype
+
     # The fixed per-segment priority the random policy ranks on, read for every
     # segment of every replication, so there is nothing to select.
     priorities = random_draws.uniforms_dense(
@@ -350,7 +355,7 @@ def run_chunk_numpy(
         n_reps,
         n_segments,
         0,
-    )
+    ).astype(floating)
     # Each replication's class bins offset into its own block, so one
     # `bincount` covers the chunk and still adds in segment order within a
     # class.
@@ -359,7 +364,7 @@ def run_chunk_numpy(
     # `(replications, segments)` state, which is the whole difference from the
     # reference. Broadcast rather than tiled where the starting value is the
     # same for every replication, then copied so the copies can diverge.
-    age = np.broadcast_to(age0.astype(float), (n_reps, n_segments)).copy()
+    age = np.broadcast_to(age0, (n_reps, n_segments)).copy()
     current_shape = np.broadcast_to(shape, (n_reps, n_segments)).copy()
     current_scale = np.broadcast_to(scale, (n_reps, n_segments)).copy()
     failure_time = weibull.draw_remaining_life(
@@ -370,7 +375,7 @@ def run_chunk_numpy(
             n_reps,
             n_segments,
             0,
-        ),
+        ).astype(floating),
         age,
         current_shape,
         current_scale,
@@ -411,7 +416,7 @@ def run_chunk_numpy(
         replaced = failed.copy()
 
         # 2. Planned replacement, funded greedily down the ranked order.
-        available = np.full(n_reps, budget[year])
+        available = np.full(n_reps, budget[year], dtype=planned_at_par.dtype)
         if emergency_charged_to_budget:
             # Left negative where a year's failures cost more than the budget,
             # for the reason the reference leaves it negative: every planned
@@ -426,7 +431,7 @@ def run_chunk_numpy(
             # cumulative sums, which is not the same arithmetic. The full-width
             # pass is paid only when the budget is charged, which the shipped
             # configuration does not do.
-            charged = np.zeros((n_reps, n_segments))
+            charged = np.zeros((n_reps, n_segments), dtype=planned_at_par.dtype)
             charged[failed_rows, failed_columns] = failed_cost
             available -= np.cumsum(charged, axis=1)[:, -1]
 
@@ -496,7 +501,7 @@ def run_chunk_numpy(
                     rows + first_replication,
                     columns,
                     year + 1,
-                ),
+                ).astype(floating),
                 replacement_shape[columns],
                 replacement_scale[columns],
             )

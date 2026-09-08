@@ -227,22 +227,38 @@ def escalation_series(rate: float, n_years: int) -> np.ndarray:
     return (1.0 + rate) ** np.arange(n_years, dtype=float)
 
 
-def segment_arrays(frame: pl.DataFrame) -> dict[str, np.ndarray]:
+def segment_arrays(
+    frame: pl.DataFrame, precision: str = constants.DEFAULT_PRECISION
+) -> dict[str, np.ndarray]:
     """Extracts the per-segment arrays an implementation reads.
 
     A segment's position in these arrays is its identifier, and the tie-break
     that decides which of two equally ranked candidates is funded reads that
     position, so the frame is sorted before anything is taken from it.
 
+    **The dtype of these arrays is how the working precision reaches every
+    implementation.** None of them takes a precision argument; each reads what
+    it is handed, which is why a run at single precision needs nothing passed
+    down a signature that already carries twenty-odd arguments.
+
     Args:
         frame: The population, one row per segment.
+        precision: ``"f64"`` or ``"f32"``, naming the dtype every per-segment
+            float array is built at.
 
     Returns:
         The arrays, keyed by the argument name each is passed as.
 
     Raises:
         KeyError: If the population is missing a column the loop reads.
+        ValueError: If the precision names no dtype.
     """
+    floating = constants.PRECISIONS.get(precision)
+    if floating is None:
+        raise ValueError(
+            f"precision is {precision!r}, which names no dtype; "
+            f"the choices are {sorted(constants.PRECISIONS)}"
+        )
     ordered = frame.sort("segment_id")
     missing = [name for name in SEGMENT_COLUMNS if name not in ordered.columns]
     if missing:
@@ -250,8 +266,13 @@ def segment_arrays(frame: pl.DataFrame) -> dict[str, np.ndarray]:
     arrays = {name: ordered[name].to_numpy() for name in SEGMENT_COLUMNS}
     # The loop names the starting age `age0`, because it holds a current age
     # that moves; the population column is the age at year 0.
-    arrays["age0"] = arrays.pop("age").astype(float)
+    arrays["age0"] = arrays.pop("age")
+    # The class index keys into the result axis and is not part of the
+    # arithmetic, so it keeps its own width whatever the floats are doing.
     arrays["class_index"] = arrays["class_index"].astype(np.uint8)
+    for name, array in arrays.items():
+        if name != "class_index":
+            arrays[name] = array.astype(floating)
     return arrays
 
 

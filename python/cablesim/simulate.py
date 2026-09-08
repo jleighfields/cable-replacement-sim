@@ -415,6 +415,12 @@ def run_chunk(
         """
         return np.bincount(bins[selected], weights=weights, minlength=n_classes)
 
+    # The working precision, read off the arrays this was handed rather than
+    # passed down. Draws are produced in double whatever it is — the generator
+    # is validated against NumPy's own Philox and narrowing it would break that
+    # for no gain — and are narrowed where they meet the state, below.
+    floating = age0.dtype
+
     # The two draws every segment takes whatever happens to it: the fixed
     # priority the random policy ranks on, and the left-truncated lifetime at
     # the start of the run. Both are read for every segment of every
@@ -426,7 +432,7 @@ def run_chunk(
         n_reps,
         n_segments,
         0,
-    )
+    ).astype(floating)
     initial = random_draws.uniforms_dense(
         draw_key,
         random_draws.PURPOSE["lifetimes"],
@@ -434,12 +440,15 @@ def run_chunk(
         n_reps,
         n_segments,
         0,
-    )
+    ).astype(floating)
 
     for replication in range(n_reps):
-        age = age0.astype(float, copy=True)
-        current_shape = shape.astype(float, copy=True)
-        current_scale = scale.astype(float, copy=True)
+        # Copied rather than cast: the dtype of the arrays this was handed is
+        # the working precision, and casting to `float` here would silently
+        # widen a single-precision run back to double.
+        age = age0.copy()
+        current_shape = shape.copy()
+        current_scale = scale.copy()
         priority = priorities[replication]
         # Conditional on survival to age0: a population that starts partway
         # through its life must not behave as though it were new.
@@ -536,7 +545,7 @@ def run_chunk(
                         np.full(renewing.size, first_replication + replication),
                         renewing,
                         year + 1,
-                    ),
+                    ).astype(floating),
                     replacement_shape[replaced],
                     replacement_scale[replaced],
                 )
