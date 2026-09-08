@@ -189,16 +189,18 @@ def test_every_implementation_matches_when_failures_crowd_out_prevention(
     scales = np.where(
         np.arange(n_segments) % 2 == 0, helpers.FAILS_AT_ONCE, helpers.NEVER_FAILS
     ).astype(float)
-    arguments = {
-        **deterministic_arguments,
-        "scale": scales,
-        "replacement_scale": scales,
-        "length_ft": np.full(n_segments, 100.0),
-        "cost_per_ft": np.full(n_segments, 10.0),
-        "mobilization_per_segment": 500.0,
-        "cost_escalation": np.ones(n_years),
-        "emergency_charged_to_budget": True,
-    }
+    arguments = helpers.at_call_width(
+        {
+            **deterministic_arguments,
+            "scale": scales,
+            "replacement_scale": scales,
+            "length_ft": np.full(n_segments, 100.0),
+            "cost_per_ft": np.full(n_segments, 10.0),
+            "mobilization_per_segment": 500.0,
+            "cost_escalation": np.ones(n_years),
+            "emergency_charged_to_budget": True,
+        }
+    )
 
     assert_identical(
         simulate.run_chunk(**arguments, policy=policy),
@@ -224,14 +226,16 @@ def test_every_implementation_funds_a_candidate_costing_the_remainder(
     n_years = deterministic_arguments["n_years"]
     funded_exactly = 10
     planned = 100.0 * 10.0 + 500.0
-    arguments = {
-        **helpers.forced_lifetimes(deterministic_arguments, helpers.NEVER_FAILS),
-        "length_ft": np.full(n_segments, 100.0),
-        "cost_per_ft": np.full(n_segments, 10.0),
-        "mobilization_per_segment": 500.0,
-        "cost_escalation": np.ones(n_years),
-        "budget": np.full(n_years, funded_exactly * planned),
-    }
+    arguments = helpers.at_call_width(
+        {
+            **helpers.forced_lifetimes(deterministic_arguments, helpers.NEVER_FAILS),
+            "length_ft": np.full(n_segments, 100.0),
+            "cost_per_ft": np.full(n_segments, 10.0),
+            "mobilization_per_segment": 500.0,
+            "cost_escalation": np.ones(n_years),
+            "budget": np.full(n_years, funded_exactly * planned),
+        }
+    )
     policy = helpers.resolved("worst_first")
 
     reference = simulate.run_chunk(**arguments, policy=policy)
@@ -283,16 +287,18 @@ def test_every_implementation_charges_the_same_emergency_total(
     )
 
     scales = np.where(fails, helpers.FAILS_AT_ONCE, helpers.NEVER_FAILS).astype(float)
-    arguments = {
-        **helpers.first_segments(deterministic_arguments, n_segments),
-        "length_ft": length_ft,
-        "cost_per_ft": np.full(n_segments, 10.0),
-        "mobilization_per_segment": 500.0,
-        "scale": scales,
-        "replacement_scale": scales,
-        "cost_escalation": np.ones(deterministic_arguments["n_years"]),
-        "emergency_charged_to_budget": True,
-    }
+    arguments = helpers.at_call_width(
+        {
+            **helpers.first_segments(deterministic_arguments, n_segments),
+            "length_ft": length_ft,
+            "cost_per_ft": np.full(n_segments, 10.0),
+            "mobilization_per_segment": 500.0,
+            "scale": scales,
+            "replacement_scale": scales,
+            "cost_escalation": np.ones(deterministic_arguments["n_years"]),
+            "emergency_charged_to_budget": True,
+        }
+    )
     policy = helpers.resolved("worst_first")
 
     # The budget is put exactly on a funding boundary that the two totals
@@ -311,7 +317,9 @@ def test_every_implementation_charges_the_same_emergency_total(
         and (total + sequential) - pairwise < total
     )
     arguments["budget"] = np.full(
-        deterministic_arguments["n_years"], boundary + sequential
+        deterministic_arguments["n_years"],
+        boundary + sequential,
+        dtype=np.asarray(arguments["age0"]).dtype,
     )
 
     assert_identical(
@@ -525,20 +533,23 @@ def test_a_year_that_overruns_its_budget_funds_nothing_and_carries_no_debt(
     alternating = np.where(
         np.arange(n_segments) % 2 == 0, helpers.FAILS_AT_ONCE, helpers.NEVER_FAILS
     ).astype(float)
-    arguments = {
-        **deterministic_arguments,
-        "scale": alternating,
-        "replacement_scale": alternating,
-        "emergency_charged_to_budget": True,
-        "budget": np.full(n_years, 10.0),
-    }
+    arguments = helpers.at_call_width(
+        {
+            **deterministic_arguments,
+            "scale": alternating,
+            "replacement_scale": alternating,
+            "emergency_charged_to_budget": True,
+            "budget": np.full(n_years, 10.0),
+        }
+    )
     policy = helpers.resolved("age_threshold", threshold_years=45)
 
     overrun = simulate.run_chunk(**arguments, policy=policy)
 
     # The surviving half leaves candidates for the fill to refuse.
     eligible = simulate.run_chunk(
-        **{**arguments, "budget": np.full(n_years, 1e9)}, policy=policy
+        **helpers.at_call_width({**arguments, "budget": np.full(n_years, 1e9)}),
+        policy=policy,
     )
     assert eligible.planned_replacements.sum() > 0.0, (
         "the budget must be what stops this funding, not an empty candidate list"

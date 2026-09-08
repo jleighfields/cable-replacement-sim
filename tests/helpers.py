@@ -276,16 +276,54 @@ def first_segments(
     return {**arguments, **kept}
 
 
-FAILS_AT_ONCE = 1e-6
+FAILS_AT_ONCE = 1e-3
 """A Weibull scale that puts every segment's remaining life inside year one.
 
 Randomness is removed through the ordinary ``scale`` and ``replacement_scale``
 arrays rather than through an argument only tests pass, so a test using this
 exercises the shipped path rather than a branch nothing else reaches.
+
+**Bounded below by what single precision can represent, not by what forces the
+outcome.** The hazard is a difference of two ``(age / scale) ** shape`` terms,
+and at the horizon's oldest age and the fleet's largest shape that term is
+``(120 / scale) ** 6.5``. Single precision tops out at 3.4e38, so a scale under
+about 1.4e-4 overflows it, both terms become infinite, and their difference is
+a NaN the ranking refuses — while double precision, with room to 1.8e308,
+carries the same fixture without noticing. This value is three orders of
+magnitude inside that bound and still puts every remaining life at about a
+thousandth of a year. No population this project generates comes near it: the
+shipped scales are decades, where the same term is around a thousand.
 """
 
 NEVER_FAILS = 1e6
 """A scale that puts the first failure hundreds of thousands of years out."""
+
+
+def at_call_width(arguments: dict[str, object]) -> dict[str, object]:
+    """Casts every float array in a call to the width its population carries.
+
+    A test that overrides an argument builds the replacement at NumPy's default
+    width, and an implementation reads the run's precision off the dtype of what
+    it is handed — so a call mixing widths is a call at neither. The kernel's
+    binding refuses one outright, naming the array; a Python implementation
+    would widen everything the wider array touched and go on agreeing with the
+    others, which is the failure that has no symptom.
+
+    Args:
+        arguments: A call's arguments, some of them possibly rebuilt.
+
+    Returns:
+        The same arguments with every float array at the width ``age0`` carries.
+    """
+    width = np.asarray(arguments["age0"]).dtype
+    return {
+        name: (
+            value.astype(width)
+            if isinstance(value, np.ndarray) and value.dtype.kind == "f"
+            else value
+        )
+        for name, value in arguments.items()
+    }
 
 
 def forced_lifetimes(
@@ -304,11 +342,19 @@ def forced_lifetimes(
         because the fixture it usually comes from is shared by every test in
         the session.
     """
-    segments = np.shape(arguments["age0"])
+    # At the width the rest of the call carries. An implementation reads the
+    # precision off the dtype of the arrays it is handed, so a replacement
+    # array built at the default would hand it two widths at once — which the
+    # kernel's binding refuses outright rather than converting, and which would
+    # make a Python implementation quietly widen everything it touched.
+    reference = np.asarray(arguments["age0"])
+    segments = reference.shape
     return {
         **arguments,
-        "scale": np.full(segments, scale),
+        "scale": np.full(segments, scale, dtype=reference.dtype),
         "replacement_scale": np.full(
-            segments, scale if replacement is None else replacement
+            segments,
+            scale if replacement is None else replacement,
+            dtype=reference.dtype,
         ),
     }
