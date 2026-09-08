@@ -571,6 +571,50 @@ def test_the_parity_fixture_refuses_a_single_replication() -> None:
 
 
 @pytest.mark.parametrize("policy", POLICIES, ids=lambda spec: str(spec.kind))
+def test_a_chunk_gives_the_same_rows_wherever_it_starts(
+    deterministic_arguments: dict[str, object],
+    policy: policies.Resolved,
+) -> None:
+    """Splitting a run into chunks changes no number in it.
+
+    A chunk is told where it starts, and every draw it takes is computed from
+    that position, so running four replications at once and running two chunks
+    of two have to give the same eight rows. This is what lets a long run be
+    divided across calls, and it is the only assertion here that varies
+    ``first_replication`` — every fixture otherwise starts a run at zero, which
+    leaves an implementation free to ignore the offset entirely and still agree
+    with the reference everywhere else.
+    """
+    whole = simulate.run_chunk(**deterministic_arguments, policy=policy)
+    n_reps = deterministic_arguments["n_reps"]
+    split = n_reps // 2
+
+    for implementation in sorted(run.RUNNABLE):
+        loop = run.RUNNABLE[implementation]
+        pieces = [
+            loop(
+                **{
+                    **deterministic_arguments,
+                    "first_replication": deterministic_arguments["first_replication"]
+                    + start,
+                    "n_reps": stop - start,
+                },
+                policy=policy,
+            )
+            for start, stop in ((0, split), (split, n_reps))
+        ]
+        joined = simulate.Results(
+            *(np.concatenate(arrays) for arrays in zip(*pieces, strict=True))
+        )
+        for name, wanted, actual in zip(
+            simulate.Results._fields, whole, joined, strict=True
+        ):
+            assert np.array_equal(wanted, actual), (
+                f"{implementation}, {name}: two chunks disagree with one run"
+            )
+
+
+@pytest.mark.parametrize("policy", POLICIES, ids=lambda spec: str(spec.kind))
 def test_every_thread_count_gives_the_reference_answer(
     deterministic_arguments: dict[str, object],
     policy: policies.Resolved,
@@ -593,16 +637,19 @@ def test_every_thread_count_gives_the_reference_answer(
     replication comes apart.
     """
     expected = simulate.run_chunk(**deterministic_arguments, policy=policy)
-    for threads in (1, 2, 3, kernel.AVAILABLE_THREADS):
-        produced = kernel.run_chunk(
-            **deterministic_arguments, policy=policy, threads=threads
-        )
-        for name, wanted, actual in zip(
-            simulate.Results._fields, expected, produced, strict=True
-        ):
-            assert np.array_equal(wanted, actual), (
-                f"{name}: {threads} threads disagrees with the reference"
+    for implementation in sorted(run.CONCURRENT):
+        loop = run.RUNNABLE[implementation]
+        for threads in (1, 2, 3, kernel.AVAILABLE_THREADS):
+            produced = loop(
+                **deterministic_arguments, policy=policy, threads=threads
             )
+            for name, wanted, actual in zip(
+                simulate.Results._fields, expected, produced, strict=True
+            ):
+                assert np.array_equal(wanted, actual), (
+                    f"{implementation}, {name}: {threads} threads disagrees "
+                    f"with the reference"
+                )
 
 
 def test_threading_a_real_population_changes_no_value(

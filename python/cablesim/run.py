@@ -138,6 +138,28 @@ refused only at the write.
 """
 
 
+CONCURRENT: frozenset[str] = frozenset({"batched_numpy", "numba", "kernel"})
+"""The implementations that spread a chunk's replications over workers.
+
+Declared rather than discovered, because the alternative is calling each one
+with two threads and seeing which raises — a test of the refusal rather than of
+the capability, which would quietly pass an implementation that accepted the
+argument and ignored it.
+
+The reference is the only one absent: it runs a replication at a time by
+construction, being the version written to be checkable by reading. Every name
+here must be one ``RUNNABLE`` holds, which ``UNTHREADABLE`` below checks.
+"""
+
+
+UNTHREADABLE = CONCURRENT - set(RUNNABLE)
+if UNTHREADABLE:
+    raise ValueError(
+        f"{sorted(UNTHREADABLE)} claim to spread replications but name no "
+        f"implementation; the runnable set is {sorted(RUNNABLE)}"
+    )
+
+
 def unknown_implementations(names: Iterable[str]) -> set[str]:
     """Names among these that no saved result may claim.
 

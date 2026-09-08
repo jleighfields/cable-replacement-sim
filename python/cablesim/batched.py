@@ -45,6 +45,8 @@ down that order — need a form of their own, and they are the two functions
 below.
 """
 
+import concurrent.futures
+
 import numpy as np
 
 from cablesim import policies, random_draws, simulate, weibull
@@ -189,6 +191,67 @@ def gathered(values: np.ndarray, columns: np.ndarray) -> np.ndarray:
     return values[columns]
 
 
+def spread_over_threads(
+    arguments: dict[str, object], threads: int
+) -> simulate.Results:
+    """Runs contiguous blocks of the replications on a pool, and joins them.
+
+    Worth doing in an implementation whose arrays NumPy operates on one at a
+    time: of the operations this loop uses, ``lexsort`` costs more than all the
+    others together and releases the interpreter lock while it runs, as do
+    ``argsort``, ``cumsum``, ``where`` and the elementwise arithmetic. The three
+    that hold it — ``nonzero``, ``bincount``, ``isnan`` — are together about a
+    fiftieth of the work.
+
+    Splitting by replication is safe because a draw is computed from the run key
+    and the position being read: a block produces its own draws with no
+    coordination, and a replication reads identical values whichever worker runs
+    it. The blocks are contiguous and joined in order, so the answer does not
+    depend on the thread count or on which block finished first.
+
+    Args:
+        arguments: Every argument of ``run_chunk_numpy``, keyed by name, as
+            ``locals()`` gives them on its first line.
+        threads: Blocks to split into. More than there are replications would
+            leave workers with nothing, so the count is capped at the
+            replication count.
+
+    Returns:
+        The seven per-year, per-class arrays for the whole chunk.
+    """
+    n_reps = arguments["n_reps"]
+    first_replication = arguments["first_replication"]
+    blocks = min(threads, n_reps)
+    edges = np.linspace(0, n_reps, blocks + 1).astype(int)
+
+    def block(start: int, stop: int) -> simulate.Results:
+        """Runs the replications in ``[start, stop)`` of this chunk.
+
+        Args:
+            start: First replication of the block, counted within the chunk.
+            stop: One past its last.
+
+        Returns:
+            That block's seven arrays.
+        """
+        return run_chunk_numpy(
+            **{
+                **arguments,
+                "first_replication": first_replication + start,
+                "n_reps": stop - start,
+                "threads": 1,
+            }
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=blocks) as pool:
+        produced = list(
+            pool.map(block, edges[:-1], edges[1:])
+        )
+    return simulate.Results(
+        *(np.concatenate(arrays) for arrays in zip(*produced, strict=True))
+    )
+
+
 def run_chunk_numpy(
     length_ft: np.ndarray,
     customers: np.ndarray,
@@ -254,8 +317,9 @@ def run_chunk_numpy(
             the planned budget before scoring planned work.
         n_classes: Number of segment classes.
         n_years: Horizon, in years.
-        threads: Workers to spread the replications over. This implementation
-            has one and refuses any other value.
+        threads: Workers to spread the replications over. Above one, the
+            chunk is split into that many contiguous blocks of replications and
+            each is run by ``spread_over_threads``.
 
     Returns:
         The seven per-year, per-class arrays for this chunk.
@@ -266,7 +330,10 @@ def run_chunk_numpy(
             a rank key that is not a number.
         TypeError: If ``policy.kind`` is not an integer.
     """
-    n_segments = simulate.check_arguments(locals())
+    arguments = locals()
+    n_segments = simulate.check_arguments(arguments, concurrent=True)
+    if threads > 1:
+        return spread_over_threads(arguments, threads)
 
     results = simulate.Results(
         *(np.zeros((n_reps, n_years, n_classes)) for _ in simulate.Results._fields)
