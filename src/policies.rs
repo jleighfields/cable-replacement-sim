@@ -211,21 +211,17 @@ pub fn rank_key<T: Real>(
             // Narrowed *after* the subtraction, not before. The reference
             // computes `emergency_multiplier - 1.0` in Python's own double
             // arithmetic and NumPy narrows the result to meet the array, so
-            // subtracting a narrowed one here gives a different premium for any
-            // multiplier not exactly representable at this width — about two
-            // fifths of them at single precision. At a multiplier of
-            // 2.942645377983026, 8,883 of the shipped population's 12,000 premium
-            // terms differ between the two orders and 7,012 of its rank keys
-            // follow. The shipped 2.5 is exactly representable and moves none
-            // of them, which is why the parity tests that use it are silent
-            // here.
+            // subtracting a narrowed one here would give a different premium
+            // for any multiplier this width cannot hold exactly — about two
+            // fifths of them at single precision, where at double there is no
+            // narrowing and the order cannot matter.
             //
-            // `test_the_emergency_premium_is_narrowed_where_the_reference_narrows_it`
-            // holds this, on the shipped population at single precision, where
-            // the two orders fund 181 candidates and 180. It needs that
-            // population: on a few hundred segments the ordering moves without
-            // the funded set changing, and the shipped multiplier of 2.5 is
-            // exactly representable and cannot show it at any size.
+            // Nothing in the suite exercises it: the shipped multiplier of 2.5
+            // is exactly representable, so both orders agree on it, and single
+            // precision is compared to four significant figures rather than
+            // exactly. Keeping the order is therefore a matter of writing the
+            // reference's arithmetic down here rather than of passing a
+            // check — change it and every test stays green.
             let avoided = planned * T::from_double(emergency_multiplier - 1.0);
             failure_probability * (outage_cost_per_failure + avoided)
         }
