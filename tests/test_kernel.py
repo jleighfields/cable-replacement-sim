@@ -682,16 +682,16 @@ def test_no_implementation_runs_a_call_that_mixes_two_widths(name: str) -> None:
 def test_the_mixed_width_refusal_claims_no_majority_that_does_not_exist() -> None:
     """An evenly split call has no width that most of the arrays carry.
 
-    The refusal names one width to make the list of odd ones readable, and it
-    picks the most common. On an even split there is no most common: the
-    counter returns an arbitrary one of the two, and describing it as what
-    "most of them" carry tells the reader the other half is a handful of
-    strays. That is the reading that sends someone looking for a few arrays to
-    fix when half the call is at each width.
+    The refusal names every width with the count of arrays at it and claims no
+    majority. A wording that named one width as what "most of them" carry would
+    be false on an even split — the counter returns an arbitrary one of the two
+    — and it would tell the reader the other half is a handful of strays,
+    sending someone looking for a few arrays to fix when half the call is at
+    each width. This is what stops that wording coming back.
 
     Reachable by an ordinary caller: `budget` passed as a list rather than an
     array is not counted, which leaves twelve float arrays and lets them split
-    six and six.
+    six and six, at which point the refusal opens "6 at float32, 6 at float64".
     """
     arguments = minimal_arguments(n_segments=2, n_years=2)
     arguments["policy"] = helpers.resolved("worst_first")

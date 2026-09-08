@@ -131,13 +131,13 @@ not a constraint on a machine with 251 GB.
 
 **Single precision has a narrower dynamic range, and the model can reach it.**
 The hazard is a difference of two `(age / scale) ** shape` terms. At the
-horizon's oldest age and the fleet's largest shape that is `(120 / scale) **
-6.5`, which passes single precision's 3.4e38 ceiling once the scale falls below
-about 1.4e-4. Both terms become infinite, their difference is a NaN, and the
+horizon's oldest age and the fleet's largest shape that is `(90 / scale) **
+6.8`, which passes single precision's 3.4e38 ceiling once the scale falls below
+about 1.9e-4. Both terms become infinite, their difference is a NaN, and the
 ranking refuses it — where double precision, with room to 1.8e308, carries the
 same input without noticing. No population this project generates comes near
-it: the shipped scales are decades, where that term is around a thousand. A test
-fixture did, and had to be changed.
+it: at the shipped scales that term peaks at 178. A test fixture did come near
+it, and had to be changed.
 
 **Parity between implementations cannot check the width.** The precision
 travels as the dtype of the arrays, so an argument left at double widens

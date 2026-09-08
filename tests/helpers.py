@@ -291,13 +291,20 @@ exercises the shipped path rather than a branch nothing else reaches.
 **Bounded below by what single precision can represent, not by what forces the
 outcome.** The hazard is a difference of two ``(age / scale) ** shape`` terms,
 and at the horizon's oldest age and the fleet's largest shape that term is
-``(120 / scale) ** 6.5``. Single precision tops out at 3.4e38, so a scale under
-about 1.4e-4 overflows it, both terms become infinite, and their difference is
+``(90 / scale) ** 6.8``. Single precision tops out at 3.4e38, so a scale under
+about 1.9e-4 overflows it, both terms become infinite, and their difference is
 a NaN the ranking refuses — while double precision, with room to 1.8e308,
-carries the same fixture without noticing. This value is three orders of
-magnitude inside that bound and still puts every remaining life at about a
-thousandth of a year. No population this project generates comes near it: the
-shipped scales are decades, where the same term is around a thousand.
+carries the same fixture without noticing. This value clears that bound by a
+factor of 5.2 and no more, so lowering it is the change to refuse: two orders
+of magnitude below it, most of the shipped population scores NaN at its own age.
+It needs no lowering, because 1e-3 puts every remaining life at about a
+thousandth of a year already. No population this project generates comes near
+it: at the shipped scales the same term peaks at 178.
+
+``tests/test_weibull.py::test_the_forced_scale_stays_inside_single_precision``
+recomputes the age, the shape, the bound and the margin from the fleet, because
+a margin quoted in prose is what a later edit reads before deciding how far it
+may lower this.
 """
 
 NEVER_FAILS = 1e6

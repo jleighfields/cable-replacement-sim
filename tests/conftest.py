@@ -165,11 +165,16 @@ def deterministic_arguments(request: pytest.FixtureRequest) -> dict[str, object]
 def statistical_arguments(request: pytest.FixtureRequest) -> dict[str, object]:
     """A real population's arguments, for the paired comparison.
 
-    **Parametrised on the working precision, and this is the fixture where that
-    matters most.** The deterministic fixture forces the lifetimes, so the draws
-    do not decide its outcome and a defect in how a draw is narrowed to the
-    working width leaves every one of its assertions green. Here the lifetimes
-    are drawn, so the narrowing is on the path to every number compared.
+    **Parametrised on the working precision**, and this is where the drawn
+    lifetimes reach the comparison rather than being forced to a constant. What
+    it establishes is that the drawn-lifetime path agrees between
+    implementations within Monte Carlo error at each width.
+
+    It does not catch a defect in how a draw is narrowed: the comparison here is
+    tolerance-based, and the difference narrowing makes fits inside it.
+    ``test_the_priority_draw_is_narrowed_where_the_state_it_ranks_meets_it`` is
+    what covers that, and covers only the draw that has an outcome to diverge
+    in.
 
     Args:
         request: Supplies the precision this run is parametrized on.

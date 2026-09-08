@@ -8,12 +8,15 @@ in only one way.
 
 import ctypes
 import ctypes.util
+import re
 
 import numpy as np
 import pytest
-from cablesim import random_draws, weibull
+from cablesim import config, constants, population, random_draws, run, weibull
 from numpy.random import SeedSequence
 from scipy import stats
+
+from tests import helpers
 
 KS_DRAWS: int = 100_000
 KS_ALPHA: float = 0.001
@@ -238,3 +241,120 @@ def test_a_censored_episode_of_zero_age_does_not_poison_the_likelihood() -> None
             6.0, 50.0, age, entry, np.array([1.0, 1.0, 1.0])
         )
     assert not np.isfinite(degenerate)
+
+
+FORCED_SCALE_BOUND = re.compile(
+    r"that term is ``\((?P<age>[0-9.]+) / scale\) \*\* (?P<shape>[0-9.]+)``\."
+    r".*?a scale under about (?P<bound>[0-9.e-]+) overflows it"
+    r".*?clears that bound by a factor of (?P<margin>[0-9.]+)"
+    r".*?the same term peaks at (?P<peak>[0-9.]+)",
+    re.DOTALL,
+)
+"""The arithmetic ``helpers.FAILS_AT_ONCE`` quotes for its own lower bound.
+
+Read out of the docstring rather than restated here, so this fails when the
+prose and the fleet disagree rather than when someone forgets a second copy —
+the same arrangement ``test_parity.py`` uses for the premium comment in
+``src/policies.rs``.
+"""
+
+
+def test_the_forced_scale_stays_inside_single_precision() -> None:
+    """The margin ``helpers.FAILS_AT_ONCE`` quotes is the one the fleet gives.
+
+    That constant is a Weibull scale small enough to force a failure inside
+    year one, and how small it may go is bounded by single precision rather
+    than by the outcome: the hazard is a difference of two ``(age / scale) **
+    shape`` terms, and past the ceiling both terms are infinite and their
+    difference is a NaN the ranking refuses. The docstring states that bound by
+    naming an age and a shape, then quotes how far the constant sits above it.
+
+    Both inputs are facts about the shipped configuration, so both can go stale
+    without anything reporting it — a vintage added to the class table moves
+    the largest shape, and a longer horizon moves the oldest age. A margin
+    quoted in prose is what a later edit reads before deciding how far it may
+    lower the constant, and this is the only thing that reads it back.
+
+    The age is the oldest the hazard is evaluated at: a segment never replaced
+    reaches ``max(age0) + n_years``, since the year's hazard reads ``age + 1``.
+    The shape is the largest any segment carries, in the ground or after
+    replacement. Pairing the two overstates the bound, because no one segment
+    has both — which is the direction a lower bound should err in.
+    """
+    settings = config.load_config(constants.DEFAULT_CONFIG_PATH)
+    segments = run.segment_arrays(
+        population.generate(settings), constants.DEFAULT_PRECISION
+    )
+    oldest = float(segments["age0"].max()) + settings.simulation.n_years
+    largest_shape = float(
+        max(segments["shape"].max(), segments["replacement_shape"].max())
+    )
+    # The scale at which ``(oldest / scale) ** largest_shape`` reaches the
+    # single-precision ceiling; anything smaller overflows it.
+    bound = oldest / float(np.finfo(np.float32).max) ** (1.0 / largest_shape)
+
+    source = (constants.PROJECT_ROOT / "tests" / "helpers.py").read_text(
+        encoding="utf-8"
+    )
+    quoted = FORCED_SCALE_BOUND.search(" ".join(source.split()).replace("` `", "``"))
+    assert quoted is not None, (
+        "tests/helpers.py no longer states FAILS_AT_ONCE's lower bound in the "
+        "form this reads; either the docstring was reworded, in which case "
+        "update this pattern, or the bound was dropped"
+    )
+
+    assert (float(quoted["age"]), float(quoted["shape"])) == (
+        oldest,
+        largest_shape,
+    ), (
+        f"FAILS_AT_ONCE's docstring bounds itself with "
+        f"({quoted['age']} / scale) ** {quoted['shape']}, but the shipped "
+        f"fleet's oldest evaluated age is {oldest:g} and its largest shape is "
+        f"{largest_shape:g}; the bound it derives is not this fleet's"
+    )
+    assert float(quoted["bound"]) == pytest.approx(bound, rel=0.05), (
+        f"the docstring says a scale under {quoted['bound']} overflows single "
+        f"precision; from this fleet the bound is {bound:.3g}"
+    )
+    assert float(quoted["margin"]) == pytest.approx(
+        helpers.FAILS_AT_ONCE / bound, rel=0.05
+    ), (
+        f"the docstring says {helpers.FAILS_AT_ONCE:g} clears that bound by "
+        f"{quoted['margin']}x; it clears {bound:.3g} by "
+        f"{helpers.FAILS_AT_ONCE / bound:.3g}x"
+    )
+
+
+    # Per segment, each against the oldest age it reaches, which is the term
+    # the model computes — not every segment paired with the fleet's oldest.
+    reached = segments["age0"] + settings.simulation.n_years
+    peak = float(((reached / segments["scale"]) ** segments["shape"]).max())
+    assert float(quoted["peak"]) == pytest.approx(peak, rel=0.05), (
+        f"the docstring says the hazard term peaks at {quoted['peak']} at the "
+        f"shipped scales; over this fleet it peaks at {peak:.3g}"
+    )
+
+    # The bound is a claim about arithmetic, so it is run as well as compared.
+    # At the constant the hazard is finite everywhere; two orders of magnitude
+    # below it, it is not, which is the refusal the docstring asks for. One
+    # order is not enough, because the bound pairs an age and a shape no single
+    # segment has — the oldest segments carry neither of the largest shapes.
+    narrow = np.float32
+    at_own_age = segments["age0"].astype(narrow)
+    shapes = segments["shape"].astype(narrow)
+    with np.errstate(over="ignore", invalid="ignore"):
+        finite = weibull.conditional_failure_probability(
+            at_own_age, shapes, narrow(helpers.FAILS_AT_ONCE)
+        )
+        overflowed = weibull.conditional_failure_probability(
+            at_own_age, shapes, narrow(helpers.FAILS_AT_ONCE / 100.0)
+        )
+    assert np.isfinite(finite).all(), (
+        f"{helpers.FAILS_AT_ONCE:g} already overflows single precision "
+        f"somewhere in this fleet, so it sits below its own documented bound"
+    )
+    assert np.isnan(overflowed).mean() > 0.5, (
+        f"two orders of magnitude below {helpers.FAILS_AT_ONCE:g} leaves "
+        f"{np.isnan(overflowed).mean():.0%} of the fleet at NaN; the docstring "
+        f"says most of it, which is the reason it gives for not lowering this"
+    )

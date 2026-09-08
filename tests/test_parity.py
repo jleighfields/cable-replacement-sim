@@ -407,6 +407,10 @@ BOUNDARY_CASES = {
         {"multiplier": 2.942645377983026, "budget": 41938160.0, "charged": False},
         lambda produced: (produced.planned_replacements.sum(),),
     ),
+    "priority_narrowing": (
+        {"multiplier": 2.5, "budget": 215960000.0, "charged": False},
+        lambda produced: (produced.planned_replacements.sum(),),
+    ),
     "emergency_bill": (
         {"multiplier": 2.5, "budget": 80962232.0, "charged": True},
         # Both quantities its guard reads. The funded count alone does not move
@@ -424,6 +428,48 @@ constants belong to which. The second element reads back exactly what that
 test's guard reads, so the check below is a check on the guard rather than on
 something adjacent to it.
 """
+
+
+def test_the_priority_draw_is_narrowed_where_the_state_it_ranks_meets_it(
+    implementation: run.Implementation,
+) -> None:
+    """A draw is produced in double and narrowed where it meets the state.
+
+    The generator computes at one width whatever the run's precision is,
+    because it is held to agreeing with NumPy's own Philox. What reaches the
+    model has to be narrowed, and narrowing collapses eight of the shipped
+    population's twelve thousand priorities into ties — which the greedy fill
+    then breaks on segment identifier. An implementation that skipped the
+    narrowing would rank those eight differently and fund a different segment
+    last.
+
+    Nothing else here can see that. The deterministic fixtures force the
+    lifetimes, so their draws do not decide the outcome; the statistical one
+    compares within a tolerance the difference fits inside. Removing any of the
+    three narrowings in the reference left the whole suite green.
+
+    The `random` policy is used because it ranks on the priority draw alone, so
+    the divergence is not buried under a score computed from anything else.
+
+    **This covers the priority draw and not the two lifetime draws**, and the
+    reason is that those two have no outcome to diverge in: a lifetime decides
+    a failure *year*, and narrowing moves no segment of the shipped population
+    across a year boundary — measured, zero of twelve thousand. What they
+    protect is the width of the state that carries them onward, which no
+    comparison between implementations observes, so a test that appeared to
+    cover them would be asserting something else.
+    """
+    arguments = one_year_at_single_precision(**BOUNDARY_CASES["priority_narrowing"][0])
+    reference = simulate.run_chunk(**arguments, policy=helpers.resolved("random"))
+
+    assert reference.planned_replacements.sum() == 2578, (
+        "the funded count moved, so the budget no longer sits where the tied "
+        "priorities decide it; this was searched against a particular "
+        "population and needs searching again"
+    )
+    assert_identical(
+        reference, implementation(**arguments, policy=helpers.resolved("random"))
+    )
 
 
 def test_the_emergency_premium_is_narrowed_where_the_reference_narrows_it(
