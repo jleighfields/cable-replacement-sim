@@ -436,12 +436,12 @@ pub fn run_chunk<T: Real>(
                 // its `bincount` widens the result totals to double. Both of those
                 // were checked rather than assumed.
                 //
-                // `test_the_emergency_bill_totals_at_the_width_the_budget_compares_at`
-                // holds this. It needs a budget landing between what the two
-                // widths total to: at single precision on the shipped
-                // population the running sum is 79,962,480 against 79,962,488
-                // for a double total narrowed once, and one candidate falls
-                // either side.
+                // Nothing in the suite exercises it. At double there is
+                // no narrowing, and single precision is compared to four
+                // significant figures, which is far coarser than the gap the
+                // two accumulator widths open — so this, like the narrowing
+                // order in `policies.rs`, is the reference's arithmetic
+                // written down rather than a rule a test enforces.
                 let mut emergency_total = T::zero();
                 let year_start = T::from_double(year as f64);
                 for segment in 0..n_segments {

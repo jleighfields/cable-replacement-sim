@@ -165,3 +165,37 @@ everywhere over a test that is skipped somewhere.
 2. **Is a skipped test acceptable in this suite?** There is currently no
    platform-conditional skip anywhere in it, so this would be the first, and it
    is the kind of thing that quietly spreads.
+
+---
+
+## What was actually done, and why not this
+
+None of the above. The plan proposed diagnosing the mechanism on a failing
+runner and then choosing a remedy from what it showed. The diagnostic was
+built and it worked — a run header naming the processor, the C library and
+NumPy's dispatch set, and a failure message naming which inputs disagreed by
+how many representable steps. It was then closed unmerged as more machinery
+than the problem warranted, which was the right call: it added infrastructure
+to explain a property nobody intended to depend on.
+
+**The decision taken instead was to stop depending on it.** Double precision is
+compared exactly, cell for cell, and that is where the mirror is validated.
+Single precision is compared to four significant figures. The five tests that
+existed only to support bit-for-bit agreement at single precision are gone: the
+four boundary fixtures searched to a knife edge, and the check that NumPy and
+the system C library return the same bits. That removed about 420 lines of
+`test_parity.py` and 75 of `test_weibull.py` against 136 added, and it removes
+the intermittent red permanently rather than explaining it.
+
+The open questions the plan listed were answered on the way. Single precision
+is not portable and is no longer claimed to be. No platform predicate exists,
+so the suite gets no conditional skip after all — the second question stopped
+applying once the first was answered by deleting the claim rather than
+guarding it.
+
+**What this gave up is recorded where it matters** rather than only here: in
+`docs/single-precision.md`, in the comparison's own docstring, and in the two
+Rust comments where an intermediate's width is chosen deliberately and now says
+that no test enforces it. Measured, a defect of one part in a million in the
+batched loop's emergency spend reddens 26 of its 34 parity cases at double and
+12 at single; anything finer is caught at double alone.
