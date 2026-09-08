@@ -171,9 +171,14 @@ def test_the_deliverable_draws_one_line_per_policy_against_the_budget() -> None:
 def frontier_frames() -> tuple[pl.DataFrame, pl.DataFrame]:
     """Mean and per-replication horizon totals for two policies at two levels.
 
-    The means are not the midpoints of the replications they summarize, so a
-    figure that drew the cloud where the means belong, or averaged the cloud
-    itself, does not pass by coincidence.
+    Three things are deliberate. The means are not the midpoints of the
+    replications they summarize, so a figure that drew the cloud where the
+    means belong, or averaged the cloud itself, does not pass by coincidence.
+    The nominal columns carry different values from their discounted twins, so
+    a figure reading the undiscounted pair does not pass either. And
+    ``risk_ranked``'s rows are in descending budget order, so a figure that
+    joined its points in row order draws the curve backwards — with the levels
+    already ascending, sorting and not sorting cannot be told apart.
 
     Returns:
         The policy means, and the replications behind them.
@@ -181,9 +186,11 @@ def frontier_frames() -> tuple[pl.DataFrame, pl.DataFrame]:
     totals = pl.DataFrame(
         {
             "policy": ["run_to_failure"] * 2 + ["risk_ranked"] * 2,
-            "annual_budget": [0.0, 2e6] * 2,
-            "planned_spend": [0.0, 0.0, 0.0, 1.8e6],
-            "failure_cost": [9e6, 9e6, 9e6, 6e6],
+            "annual_budget": [0.0, 2e6, 2e6, 0.0],
+            "planned_spend": [0.0, 0.0, 4.0e6, 0.0],
+            "planned_spend_discounted": [0.0, 0.0, 1.8e6, 0.0],
+            "failure_cost": [1.4e7, 1.4e7, 1.0e7, 1.4e7],
+            "failure_cost_discounted": [9e6, 9e6, 6e6, 9e6],
         }
     )
     per_replication = pl.DataFrame(
@@ -191,8 +198,10 @@ def frontier_frames() -> tuple[pl.DataFrame, pl.DataFrame]:
             "policy": ["run_to_failure"] * 4 + ["risk_ranked"] * 4,
             "replication": [0, 1] * 4,
             "annual_budget": [0.0, 0.0, 2e6, 2e6] * 2,
-            "planned_spend": [0.0] * 6 + [1.7e6, 1.9e6],
-            "failure_cost": [8e6, 1e7, 8e6, 1e7, 8e6, 1e7, 5e6, 7e6],
+            "planned_spend": [0.0] * 6 + [3.8e6, 4.2e6],
+            "planned_spend_discounted": [0.0] * 6 + [1.7e6, 1.9e6],
+            "failure_cost": [1.3e7, 1.5e7] * 3 + [9e6, 1.1e7],
+            "failure_cost_discounted": [8e6, 1e7, 8e6, 1e7, 8e6, 1e7, 5e6, 7e6],
         }
     )
     return totals, per_replication
@@ -224,6 +233,10 @@ def test_the_frontier_plots_spend_incurred_rather_than_the_budget_offered() -> N
     points sit at zero on the x-axis. Plotting the budget instead would walk
     it rightwards across a figure whose whole subject is what the money
     bought.
+
+    The points are also asserted in budget order, which the fixture does not
+    supply: ``risk_ranked``'s rows descend, so a curve joined in row order
+    runs from the funded point back to the unfunded one.
     """
     totals, per_replication = frontier_frames()
 
@@ -257,9 +270,71 @@ def test_a_frontier_frame_missing_its_columns_is_refused() -> None:
     """An empty figure looks exactly like a policy that bought nothing."""
     totals, per_replication = frontier_frames()
 
-    with pytest.raises(KeyError, match="failure_cost"):
+    with pytest.raises(KeyError, match="totals"):
         plots.cost_frontier(
-            totals.drop("failure_cost"), per_replication, "annual_budget"
+            totals.drop(plots.FAILURE_AXIS), per_replication, "annual_budget"
+        )
+    # Both frames are checked, and each names itself. Checking only the means
+    # leaves the cloud to raise from inside a trace loop, naming a column and
+    # not which of two frames of the same shape was short.
+    with pytest.raises(KeyError, match="per_replication"):
+        plots.cost_frontier(
+            totals, per_replication.drop(plots.FAILURE_AXIS), "annual_budget"
         )
     with pytest.raises(KeyError, match="annual_budget"):
         plots.cost_frontier(totals, per_replication, "annual_budget_offered")
+
+
+def test_the_frontier_is_drawn_in_present_value_dollars() -> None:
+    """Thirty-year totals are compared across policies, so they are discounted.
+
+    An undiscounted total weights a year-29 dollar the same as a year-0 one,
+    which is the reason ``metrics.discount`` exists and the reason
+    ``metrics.against_baseline`` measures additional spend on the discounted
+    column. The frontier is the same kind of comparison — one thirty-year
+    total against another, across policies and budget levels — so it reads the
+    present-value pair.
+
+    The two pairs differ here by more than a scale factor, and they do in a
+    real sweep too: measured over the shipped budget grid, the nominal totals
+    run 1.8 to 2.5 times the discounted ones, and the ratio differs between
+    the two axes at the same point, so the curve's shape moves and not only
+    its scale.
+
+    The frame carries both pairs because that is what ``horizon_totals``
+    leaves: the nominal columns are what the run accumulated and the
+    ``_discounted`` ones are what ``metrics.discount`` derived from them.
+    """
+    totals = pl.DataFrame(
+        {
+            "policy": ["risk_ranked"],
+            "annual_budget": [2e6],
+            "planned_spend": [4.0e6],
+            "planned_spend_discounted": [1.8e6],
+            "failure_cost": [9.0e6],
+            "failure_cost_discounted": [4.0e6],
+        }
+    )
+    per_replication = pl.DataFrame(
+        {
+            "policy": ["risk_ranked"] * 2,
+            "replication": [0, 1],
+            "annual_budget": [2e6, 2e6],
+            "planned_spend": [3.8e6, 4.2e6],
+            "planned_spend_discounted": [1.7e6, 1.9e6],
+            "failure_cost": [8.0e6, 1.0e7],
+            "failure_cost_discounted": [3.5e6, 4.5e6],
+        }
+    )
+
+    figure = plots.cost_frontier(totals, per_replication, "annual_budget")
+
+    curve = next(trace for trace in figure.data if trace.mode == "lines+markers")
+    cloud = next(trace for trace in figure.data if trace.mode == "markers")
+    assert (list(curve.x), list(curve.y)) == ([1.8e6], [4.0e6]), (
+        "the mean point is at the nominal totals, so the axes are undiscounted"
+    )
+    assert (list(cloud.x), list(cloud.y)) == (
+        [1.7e6, 1.9e6],
+        [3.5e6, 4.5e6],
+    ), "the cloud is at the nominal totals, so it disagrees with its own means"

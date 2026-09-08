@@ -145,7 +145,11 @@ def discount(frame: pl.LazyFrame, rate: float) -> pl.LazyFrame:
         rate: Annual discount rate, as a fraction.
 
     Returns:
-        The frame with a discounted counterpart for each spend column.
+        The frame with a discounted counterpart for each dollar column —
+        ``planned_spend``, ``emergency_spend``, ``total_spend``, ``voll`` and
+        ``failure_cost``. The last two are not spend: the value of lost load is
+        customer value destroyed, and it is discounted because it is dated
+        dollars like the rest, not because the utility pays it.
     """
     factor = (1.0 + rate) ** (-pl.col("year").cast(pl.Float64))
     return frame.with_columns(

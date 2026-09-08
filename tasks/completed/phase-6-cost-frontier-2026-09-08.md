@@ -256,6 +256,35 @@ is not a straightforward `run.run` at the shipped population, and the
 conditions were not written down beside it. Re-taking that series under a
 recorded driver is its own piece of work.
 
+**The branch review found the figure drawn in the wrong dollars.** The
+frontier read `planned_spend` and `failure_cost` while the notebook cell above
+it said the axes were present values — and this branch had added
+`voll_discounted` and `failure_cost_discounted` to `replication_totals` for
+exactly this figure and then read the nominal pair, so nothing anywhere read
+either column. Over the shipped budget grid the nominal totals run 1.8 to 2.5
+times the discounted ones and the ratio differs between the two axes at the
+same point, so the curve's shape moved and not only its scale. The axes are
+now `plots.SPEND_AXIS` and `plots.FAILURE_AXIS`, both present values, and the
+notebook's own assertions read the same two constants so an axis moved to
+another quantity moves them with it.
+
+**Four of the new tests were weaker than they read.** Each of these mutations
+left the suite green when the review ran them, and reddens now: only the means
+frame guarded rather than both; the curve joined in row order rather than
+sorted along the budget axis; a present-value twin that is present and
+undiscounted; and `voll` dropped from the reduction that feeds the figure. The
+fixture supplied one policy's levels already ascending, which is why the sort
+could not be told from its absence, and the twin test asserted column names
+where the failure mode is a column whose contents are nominal.
+
+**Two Consider findings were waived.** `CLOUD_OPACITY` has no test because the
+property it carries — the curve staying legible through the cloud — is visual,
+and an assertion on the constant would restate it rather than check it. A
+policy present in the means and absent from the replications draws an empty
+cloud silently, and is left alone because both frames come from one reduction
+of one frame in every caller, so the mismatch needs frames built by hand, which
+the column guard already covers for the shape mistakes a real caller makes.
+
 **The naming seam stands as planned.** The result is `voll`; the per-segment
 column it totals is still `outage_cost_per_failure`, and
 `reliability.voll_per_customer_hour` is still the rate. Each says which it is

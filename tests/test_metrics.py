@@ -147,9 +147,16 @@ def test_every_dollar_column_gets_a_present_value_twin() -> None:
     The names are written out rather than read off the frame: deriving them
     from what ``discount`` produced would pass for any column set, including
     one that had quietly lost a column at both ends.
+
+    The value is asserted as well as the name. A twin that is present and
+    undiscounted is a column whose name promises a present value and whose
+    contents are the nominal total, which is invisible to a check on the
+    columns alone — and the figures that read these are drawn from the twin,
+    so nothing downstream would report it either. Year 2 rather than year 0,
+    because at year 0 the factor is one and an undiscounted twin is correct.
     """
     result = metrics.discount(
-        metrics.indices_per_replication(rows(), TOTAL_CUSTOMERS), rate=0.06
+        metrics.indices_per_replication(rows(year=2), TOTAL_CUSTOMERS), rate=0.06
     ).collect()
 
     for name in (
@@ -160,6 +167,10 @@ def test_every_dollar_column_gets_a_present_value_twin() -> None:
         "failure_cost",
     ):
         assert f"{name}_discounted" in result.columns, name
+        assert result[name].item() > 0.0, f"{name} is zero, so its twin proves nothing"
+        assert result[f"{name}_discounted"].item() == pytest.approx(
+            result[name].item() / 1.06**2
+        ), name
 
 
 def test_a_horizon_total_sums_each_replication_before_averaging() -> None:
@@ -195,7 +206,11 @@ def test_a_horizon_total_sums_each_replication_before_averaging() -> None:
     ).collect()
 
     assert totals["planned_spend"].item() == pytest.approx(1_000.0)
-    # Lost load reaches the horizon totals too: 20,000 in each of three years.
+    # Lost load reaches the horizon totals too, both on its own and inside the
+    # cost of failure: 20,000 in each of three years. Asserted separately
+    # because the reduction lists its columns by name, and a name dropped from
+    # that list is a column the frontier reads and this frame no longer has.
+    assert totals["voll"].item() == pytest.approx(60_000.0)
     assert totals["failure_cost"].item() == pytest.approx(60_000.0)
 
 

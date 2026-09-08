@@ -83,9 +83,9 @@ likely to look redundant is the count of customers interrupted, which is not
 recoverable from the customer-minutes beside it once restoration time varies by
 class.
 
-``voll`` is the one dollar column that is not money the utility spends. It is
-customer value destroyed by the interruptions, so it sits beside the spend
-columns and is summed into none of them.
+``voll`` is the value of lost load, and the one dollar column that is not money
+the utility spends. It is customer value destroyed by the interruptions, so it
+sits beside the spend columns and is summed into none of them.
 
 The counts are stored as floats rather than cast to integers: they are exactly
 what the implementation returned, and a cast would be the place a non-integral

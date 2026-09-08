@@ -569,7 +569,8 @@ def _(mo):
     bars on each axis would state the two margins and hide exactly that lean.
 
     The dollars are present values at the configured discount rate, and the
-    value of lost load rests on placeholder figures — section 80 says which.
+    value of lost load rests on placeholder figures — section 80, What this is
+    and is not, says which.
     """
     )
     return
@@ -582,33 +583,37 @@ def _(plots, sweep, sweep_replications):
 
 
 @app.cell
-def _(pl, sweep):
+def _(pl, plots, sweep):
+    # Asserted on the columns the figure draws, named from the module that
+    # draws them, so an axis moved to a different quantity moves these too.
+    _spend, _failure = plots.SPEND_AXIS, plots.FAILURE_AXIS
+
     # Run-to-failure funds nothing at any level, so its curve is one point
     # repeated: if it ever moved along the spend axis, the axis would be
     # showing the budget offered rather than the money spent.
     _baseline = sweep.filter(pl.col("policy") == "run_to_failure")
-    assert _baseline["planned_spend"].sum() == 0.0, (
-        "run_to_failure spent planned capital"
-    )
+    assert _baseline[_spend].sum() == 0.0, "run_to_failure spent planned capital"
 
     # Every policy must reach the same cost of failure where nothing is funded.
     # Not exact equality, which the customer-minutes check above does get:
     # these dollars are summed over years by a group-by free to add in any
     # order, and the value of lost load — unlike the round construction costs
     # beside it — does not come to the same last bit under two orders. The
-    # spread measured here is two ulps, so the tolerance is relative and four
-    # orders tighter than any difference the model could produce.
+    # spread measured here is one to two units in the last place of the total,
+    # so the tolerance is relative: 1e-12 sits about four orders of magnitude
+    # above that spread, and far below any difference the model could produce,
+    # since the smallest real one is a whole segment's failure cost.
     _at_zero = sweep.filter(pl.col("annual_budget") == 0.0)
-    _costs = _at_zero["failure_cost"]
+    _costs = _at_zero[_failure]
     _spread = (_costs.max() - _costs.min()) / _costs.max()
     assert _spread < 1e-12, (
         "policies differ in what failures cost them at zero budget: "
-        f"{_at_zero.select('policy', 'failure_cost')}"
+        f"{_at_zero.select('policy', _failure)}"
     )
 
     # The frontier is worth drawing only if prevention moves the vertical axis.
-    _best = sweep["failure_cost"].min()
-    _lost = _at_zero["failure_cost"][0]
+    _best = sweep[_failure].min()
+    _lost = _at_zero[_failure][0]
     assert _best < _lost, "no budget level bought down the cost of failure"
     f"cost of failure falls from {_lost:,.0f} unfunded to {_best:,.0f} at best"
     return

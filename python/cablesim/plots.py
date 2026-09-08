@@ -24,6 +24,17 @@ from cablesim import metrics
 BAND_OPACITY = 0.18
 """How solid the shaded interval is behind its line."""
 
+SPEND_AXIS = "planned_spend_discounted"
+"""The horizontal quantity of the cost frontier, in present value."""
+
+FAILURE_AXIS = "failure_cost_discounted"
+"""The vertical quantity of the cost frontier, in present value.
+
+``metrics.indices_per_replication`` derives ``failure_cost`` as emergency
+spend plus the value of lost load, and ``metrics.discount`` gives it this
+present-value counterpart.
+"""
+
 CLOUD_OPACITY = 0.10
 """How faint one replication is behind the policy means it contributed to.
 
@@ -264,6 +275,15 @@ def cost_frontier(
     the value of lost load, which is what a year of failures costs between the
     utility and its customers.
 
+    **Both axes are present values**, the ``_discounted`` columns rather than
+    the nominal ones. This compares one thirty-year total against another
+    across policies, which is the comparison an undiscounted total gets wrong:
+    it weights a year-29 dollar the same as a year-0 one. Nor is the choice a
+    rescaling that leaves the picture alone — over the shipped budget grid the
+    nominal totals run 1.8 to 2.5 times the discounted ones, and the ratio
+    differs between the two axes at the same point, so the curve's shape moves
+    with it.
+
     **Every replication is drawn faintly behind the policy means**, rather than
     error bars on each axis. The two costs are correlated within a
     replication — a year of many failures raises both — and a pair of error
@@ -278,7 +298,8 @@ def cost_frontier(
 
     Args:
         totals: One row per policy and budget level, as ``horizon_totals``
-            leaves them, carrying ``planned_spend`` and ``failure_cost``.
+            leaves them, carrying ``planned_spend_discounted`` and
+            ``failure_cost_discounted``.
         per_replication: The same two quantities before averaging, one row per
             policy, replication and budget level, from
             ``metrics.replication_totals``.
@@ -291,10 +312,13 @@ def cost_frontier(
         behind every curve.
 
     Raises:
-        KeyError: If either frame is missing a column this reads, which would
-            otherwise draw an empty figure that looks like a result.
+        KeyError: If either frame is missing a column this reads. Polars raises
+            on the missing column by itself, from inside whichever trace loop
+            reached it first; checking here is what names the frame as well as
+            the column, and a caller holding two frames of the same shape needs
+            to be told which of them was short.
     """
-    needed = ("policy", "planned_spend", "failure_cost")
+    needed = ("policy", SPEND_AXIS, FAILURE_AXIS)
     for frame, name in ((totals, "totals"), (per_replication, "per_replication")):
         missing = [column for column in needed if column not in frame.columns]
         if missing:
@@ -312,8 +336,8 @@ def cost_frontier(
         cloud = per_replication.filter(pl.col("policy") == policy)
         figure.add_trace(
             go.Scattergl(
-                x=cloud["planned_spend"].to_list(),
-                y=cloud["failure_cost"].to_list(),
+                x=cloud[SPEND_AXIS].to_list(),
+                y=cloud[FAILURE_AXIS].to_list(),
                 mode="markers",
                 marker={"color": colors[policy], "size": 3},
                 opacity=CLOUD_OPACITY,
@@ -326,8 +350,8 @@ def cost_frontier(
         rows = totals.filter(pl.col("policy") == policy).sort(budget_column)
         figure.add_trace(
             go.Scatter(
-                x=rows["planned_spend"].to_list(),
-                y=rows["failure_cost"].to_list(),
+                x=rows[SPEND_AXIS].to_list(),
+                y=rows[FAILURE_AXIS].to_list(),
                 mode="lines+markers",
                 line={"color": colors[policy]},
                 marker={"size": 9, "line": {"color": "#FFFFFF", "width": 1}},
@@ -342,7 +366,9 @@ def cost_frontier(
         )
     figure.update_layout(
         title="What each policy buys: planned spend against the cost of failure",
-        xaxis_title="Planned spend incurred (dollars)",
-        yaxis_title="Emergency spend plus value of lost load (dollars)",
+        xaxis_title="Planned spend incurred (present value, dollars)",
+        yaxis_title=(
+            "Emergency spend plus value of lost load (present value, dollars)"
+        ),
     )
     return figure
