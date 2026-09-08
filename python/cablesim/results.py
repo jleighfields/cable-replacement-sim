@@ -44,6 +44,7 @@ MANIFEST_NAME = "manifest.json"
 IMPLEMENTATIONS: tuple[str, ...] = (
     "reference",
     "batched_numpy",
+    "numba",
     "kernel",
 )
 """The implementations of the annual loop a result can come from.
@@ -54,7 +55,9 @@ because a misspelled implementation in a manifest is provenance that reads as
 fact and is not.
 
 ``batched_numpy`` and ``kernel`` are the same algorithm in the two languages,
-which is the comparison this project exists to make.
+which is the comparison this project exists to make. ``numba`` is the reference's
+algorithm compiled, and it is here to say how much of that comparison is the
+language and how much is compiling anything at all.
 
 Two frame implementations were here and are not: they are in ``deprecated/``,
 with the measurement that retired them.

@@ -97,9 +97,32 @@ the kernel's binding has to mirror, since every call here is by keyword.
 """
 
 
+def run_chunk_numba(**arguments: object) -> simulate.Results:
+    """Calls the Numba implementation, importing it at the call.
+
+    ``cablesim.compiled`` imports numba at module scope, and numba is the
+    ``compiled`` extra rather than a dependency every install carries. Importing
+    it here rather than above keeps a compute-only install able to import this
+    module, while leaving the name in ``RUNNABLE`` so the parity tests hold this
+    implementation to the same bar as the others. Without the extra the import
+    raises here and says what is missing, which is the alternative to quietly
+    testing one implementation fewer.
+
+    Args:
+        **arguments: ``simulate.run_chunk``'s arguments, by keyword.
+
+    Returns:
+        The seven per-year, per-class arrays for the chunk.
+    """
+    from cablesim import compiled
+
+    return compiled.run_chunk_numba(**arguments)
+
+
 RUNNABLE: dict[str, Implementation] = {
     "reference": simulate.run_chunk,
     "batched_numpy": batched.run_chunk_numpy,
+    "numba": run_chunk_numba,
     "kernel": kernel.run_chunk,
 }
 """The annual loops that exist, by the name a manifest records them under.
