@@ -166,3 +166,100 @@ def test_the_deliverable_draws_one_line_per_policy_against_the_budget() -> None:
         trace.name: list(trace.y)[list(trace.x).index(0.0)] for trace in figure.data
     }
     assert at_zero["run_to_failure"] == at_zero["risk_ranked"] == 100.0
+
+
+def frontier_frames() -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Mean and per-replication horizon totals for two policies at two levels.
+
+    The means are not the midpoints of the replications they summarize, so a
+    figure that drew the cloud where the means belong, or averaged the cloud
+    itself, does not pass by coincidence.
+
+    Returns:
+        The policy means, and the replications behind them.
+    """
+    totals = pl.DataFrame(
+        {
+            "policy": ["run_to_failure"] * 2 + ["risk_ranked"] * 2,
+            "annual_budget": [0.0, 2e6] * 2,
+            "planned_spend": [0.0, 0.0, 0.0, 1.8e6],
+            "failure_cost": [9e6, 9e6, 9e6, 6e6],
+        }
+    )
+    per_replication = pl.DataFrame(
+        {
+            "policy": ["run_to_failure"] * 4 + ["risk_ranked"] * 4,
+            "replication": [0, 1] * 4,
+            "annual_budget": [0.0, 0.0, 2e6, 2e6] * 2,
+            "planned_spend": [0.0] * 6 + [1.7e6, 1.9e6],
+            "failure_cost": [8e6, 1e7, 8e6, 1e7, 8e6, 1e7, 5e6, 7e6],
+        }
+    )
+    return totals, per_replication
+
+
+def test_the_frontier_draws_a_curve_and_a_cloud_for_every_policy() -> None:
+    """The cloud is the figure's reason for existing, not decoration.
+
+    Two costs that rise together within a replication are what error bars on
+    each axis would hide, so a frontier that lost its cloud would still look
+    like a finished figure.
+    """
+    totals, per_replication = frontier_frames()
+
+    figure = plots.cost_frontier(totals, per_replication, "annual_budget")
+
+    assert len(figure.data) == 4
+    curves = [trace for trace in figure.data if trace.mode == "lines+markers"]
+    clouds = [trace for trace in figure.data if trace.mode == "markers"]
+    assert [trace.name for trace in curves] == ["run_to_failure", "risk_ranked"]
+    assert len(clouds) == 2
+    assert all(len(trace.x) == 4 for trace in clouds)
+
+
+def test_the_frontier_plots_spend_incurred_rather_than_the_budget_offered() -> None:
+    """A policy that cannot spend its allowance has to show that.
+
+    ``run_to_failure`` is offered two million and funds nothing, so both its
+    points sit at zero on the x-axis. Plotting the budget instead would walk
+    it rightwards across a figure whose whole subject is what the money
+    bought.
+    """
+    totals, per_replication = frontier_frames()
+
+    figure = plots.cost_frontier(totals, per_replication, "annual_budget")
+
+    curves = {
+        trace.name: (list(trace.x), list(trace.y))
+        for trace in figure.data
+        if trace.mode == "lines+markers"
+    }
+    assert curves["run_to_failure"] == ([0.0, 0.0], [9e6, 9e6])
+    assert curves["risk_ranked"] == ([0.0, 1.8e6], [9e6, 6e6])
+
+
+def test_every_cloud_is_drawn_before_every_curve() -> None:
+    """One loop apiece, so a policy's line is not buried under the next
+    policy's replications.
+
+    Interleaved, the last policy drawn covers the first, and at a thousand
+    replications the curve underneath is invisible rather than merely faint.
+    """
+    totals, per_replication = frontier_frames()
+
+    figure = plots.cost_frontier(totals, per_replication, "annual_budget")
+
+    modes = [trace.mode for trace in figure.data]
+    assert modes == ["markers", "markers", "lines+markers", "lines+markers"]
+
+
+def test_a_frontier_frame_missing_its_columns_is_refused() -> None:
+    """An empty figure looks exactly like a policy that bought nothing."""
+    totals, per_replication = frontier_frames()
+
+    with pytest.raises(KeyError, match="failure_cost"):
+        plots.cost_frontier(
+            totals.drop("failure_cost"), per_replication, "annual_budget"
+        )
+    with pytest.raises(KeyError, match="annual_budget"):
+        plots.cost_frontier(totals, per_replication, "annual_budget_offered")

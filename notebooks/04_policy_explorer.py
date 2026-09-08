@@ -364,20 +364,23 @@ def _(config, metrics, pathlib, results, run, settings, tempfile):
     # are summed together: nothing raises, and the frame keeps the shape of a
     # legitimate result.
     _keys = ("annual_budget",)
-    sweep = metrics.horizon_totals(
-        metrics.discount(
-            metrics.indices_per_replication(
-                results.read_sweep(_root),
-                settings.population.total_customers,
-                by=_keys,
-            ),
-            settings.costs.discount_rate,
+    _discounted = metrics.discount(
+        metrics.indices_per_replication(
+            results.read_sweep(_root),
+            settings.population.total_customers,
+            by=_keys,
         ),
-        by=_keys,
-    ).collect()
+        settings.costs.discount_rate,
+    )
+    sweep = metrics.horizon_totals(_discounted, by=_keys).collect()
+    # The same totals before they are averaged. The frontier below draws them
+    # behind its mean points, because the emergency bill and the value of lost
+    # load rise together within a replication and an averaged point cannot
+    # show that.
+    sweep_replications = metrics.replication_totals(_discounted, by=_keys).collect()
     _sweep_dir.cleanup()
     sweep.select("annual_budget", "policy", "customer_minutes", "failures").head(10)
-    return (sweep,)
+    return sweep, sweep_replications
 
 
 @app.cell
@@ -540,6 +543,74 @@ def _(pl, sweep):
         f"risk-ranked policy's: {_last_step}"
     )
     _wide
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+    ## 73 · The cost frontier
+
+    The same sweep read a second way. **Planned spend actually incurred on the
+    horizontal axis, not the budget offered** — run-to-failure is given every
+    level in the grid and funds nothing, so it stays pinned at zero however far
+    right the others move, and a ranking policy that cannot find enough
+    eligible work stops short of its allowance in the same way.
+
+    **The cost of failure on the vertical axis**: emergency replacement spend
+    plus the value of lost load, which is the quantity the run now accumulates
+    and the reason this figure can be drawn at all. The two are added because
+    they fall on different people — one is the utility's bill, the other is
+    what its customers lost — and a policy is chosen against their sum.
+
+    **Every replication is behind the means.** A year of many failures raises
+    the emergency bill and the lost load together, so the cloud leans; error
+    bars on each axis would state the two margins and hide exactly that lean.
+
+    The dollars are present values at the configured discount rate, and the
+    value of lost load rests on placeholder figures — section 80 says which.
+    """
+    )
+    return
+
+
+@app.cell
+def _(plots, sweep, sweep_replications):
+    plots.cost_frontier(sweep, sweep_replications, "annual_budget")
+    return
+
+
+@app.cell
+def _(pl, sweep):
+    # Run-to-failure funds nothing at any level, so its curve is one point
+    # repeated: if it ever moved along the spend axis, the axis would be
+    # showing the budget offered rather than the money spent.
+    _baseline = sweep.filter(pl.col("policy") == "run_to_failure")
+    assert _baseline["planned_spend"].sum() == 0.0, (
+        "run_to_failure spent planned capital"
+    )
+
+    # Every policy must reach the same cost of failure where nothing is funded.
+    # Not exact equality, which the customer-minutes check above does get:
+    # these dollars are summed over years by a group-by free to add in any
+    # order, and the value of lost load — unlike the round construction costs
+    # beside it — does not come to the same last bit under two orders. The
+    # spread measured here is two ulps, so the tolerance is relative and four
+    # orders tighter than any difference the model could produce.
+    _at_zero = sweep.filter(pl.col("annual_budget") == 0.0)
+    _costs = _at_zero["failure_cost"]
+    _spread = (_costs.max() - _costs.min()) / _costs.max()
+    assert _spread < 1e-12, (
+        "policies differ in what failures cost them at zero budget: "
+        f"{_at_zero.select('policy', 'failure_cost')}"
+    )
+
+    # The frontier is worth drawing only if prevention moves the vertical axis.
+    _best = sweep["failure_cost"].min()
+    _lost = _at_zero["failure_cost"][0]
+    assert _best < _lost, "no budget level bought down the cost of failure"
+    f"cost of failure falls from {_lost:,.0f} unfunded to {_best:,.0f} at best"
     return
 
 

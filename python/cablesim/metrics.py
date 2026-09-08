@@ -200,21 +200,23 @@ def summarize_replications(
     )
 
 
-def horizon_totals(frame: pl.LazyFrame, by: tuple[str, ...] = ()) -> pl.LazyFrame:
-    """Sums each replication over the whole horizon, then averages.
+def replication_totals(frame: pl.LazyFrame, by: tuple[str, ...] = ()) -> pl.LazyFrame:
+    """Sums each replication over the whole horizon, keeping them apart.
 
-    Summing before averaging is what keeps the replication as the unit: the
-    mean of a total is not the total of a mean once a policy's spend varies
-    between replications.
+    The scatter behind the frontier is drawn from these: one point per
+    replication, showing that a year of many failures raises the emergency
+    bill and the value of lost load together. That correlation is the thing a
+    pair of error bars on the averaged point would hide, so the axis it lives
+    on has to survive as far as the figure.
 
     Args:
         frame: Per-replication rows, already discounted.
         by: Extra columns to keep as grouping keys, as in ``indices_per_replication``.
 
     Returns:
-        One row per policy, and per extra grouping key.
+        One row per policy and replication, and per extra grouping key.
     """
-    summed = frame.group_by(["policy", "replication", *by]).agg(
+    return frame.group_by(["policy", "replication", *by]).agg(
         pl.col(
             "failures",
             "customer_minutes",
@@ -232,6 +234,23 @@ def horizon_totals(frame: pl.LazyFrame, by: tuple[str, ...] = ()) -> pl.LazyFram
             "failure_cost_discounted",
         ).sum()
     )
+
+
+def horizon_totals(frame: pl.LazyFrame, by: tuple[str, ...] = ()) -> pl.LazyFrame:
+    """Averages the per-replication totals.
+
+    Summing before averaging is what keeps the replication as the unit: the
+    mean of a total is not the total of a mean once a policy's spend varies
+    between replications.
+
+    Args:
+        frame: Per-replication rows, already discounted.
+        by: Extra columns to keep as grouping keys, as in ``indices_per_replication``.
+
+    Returns:
+        One row per policy, and per extra grouping key.
+    """
+    summed = replication_totals(frame, by)
     return (
         summed.group_by(["policy", *by])
         .agg(pl.exclude("policy", "replication", *by).mean())
