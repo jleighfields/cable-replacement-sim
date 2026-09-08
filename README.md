@@ -15,11 +15,11 @@ The configuration schema and its validators, the counter-based generator every
 uniform is drawn from, the Weibull forms and the synthetic population generator
 exist, along with the synthetic failure history and the censored, left-truncated
 maximum-likelihood fit that recovers the parameters it was generated from.
-Four marimo notebooks walk them. Every rung of the recovery ladder fits data
-generated at parameters the configuration states, and checks the estimates come
-back at them rather than checking that the generator and the estimator agree
-with each other; the confidence intervals have been checked for coverage rather
-than assumed.
+The population, effective-scale and Weibull-fitting notebooks walk them.
+Every rung of the recovery ladder fits data generated at parameters the
+configuration states, and checks the estimates come back at them rather than
+checking that the generator and the estimator agree with each other; the
+confidence intervals have been checked for coverage rather than assumed.
 
 The annual simulation loop, the five replacement policies, the budget-constrained
 allocation, the reliability metrics and the shared figures all exist, and a

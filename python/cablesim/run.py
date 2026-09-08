@@ -101,20 +101,37 @@ result arrays of `(replications, years, classes)` are the visible part — one
 per field of `simulate.Results`, 5.8 MB together at a thousand replications —
 but they are not the figure to plan against: `results.rows_from_chunk` builds
 a frame from them and holds it while they are still live, and the peak carries
-both. Measured through `run` on the kernel over five policies, one process per
-point, above a 125 MB interpreter: 220 MB at 1,000 replications, 867 MB at
-10,000, 1,415 MB at 20,000 and 2,499 MB at 40,000. That is about 58 MB per
-thousand, some ten times what the arrays alone account for, and it is close
-enough to linear over that range to expect several gigabytes at a hundred
-thousand rather than the 580 MB the arrays suggest. The count is what someone
-raises to narrow a confidence interval, so this is the growth that would be met
-first.
+both.
+
+Measured at 1,000, 10,000, 20,000 and 40,000 replications: **327 MB, 938, 1,428
+and 2,299**. That is about 51 MB per thousand over the whole range, some nine
+times what the arrays alone account for. The growth decelerates — 68 MB per
+thousand between the first two points and 44 between the last two — so
+extrapolating from the bottom overstates, and the top-end rate puts a hundred
+thousand replications near five gigabytes against the 576 MB the arrays
+suggest. The count is what someone raises to narrow a confidence interval, so
+this is the growth that would be met first.
+
+**The polars thread pool is a condition of those numbers, not a detail.** It
+sizes itself from the core count, and the frame the rows are built into carries
+per-thread state, so the same run at 1,000 replications peaks at 166 MB with
+one polars thread, 219 with four and 327 with forty-eight. A figure recorded
+without that condition does not reproduce on a machine with a different core
+count, and reads as a defect when it fails to.
+
+The whole driver, so it can be run again: `run.run` on the kernel over the five
+configured policies, at 200 segments, one worker thread, no batch, release
+build, one process per point because a peak belongs to the process, above a
+126 MB interpreter, with the polars pool left at this machine's forty-eight.
+The population size moves these little — the result arrays and the rows frame
+are shaped by replications, years and classes rather than by segments — which
+is why 200 is enough to measure the growth that matters here, and why these
+figures sit far below the 386 MB an unchunked kernel run reaches at 12,000
+segments above.
 
 It is stated rather than bounded because no run has been taken near the top of
 that range, and a cap chosen without one would be a number with no measurement
-behind it. The figures above are at 200 segments; the result arrays and the rows
-frame are shaped by replications, years and classes, so the population size
-moves them little.
+behind it.
 """
 
 BATCH_SIZES: dict[str, int | None] = {

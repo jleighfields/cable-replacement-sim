@@ -245,16 +245,26 @@ green result from a filtered selection is not a green result.
   same way on `main`. So the eighth array costs about 1% of the peak, which is
   inside the run-to-run spread.
 
-**One thing was found and not fixed.** Those peak figures do not match the ones
-`run.py`'s `UNBOUNDED_BATCH` docstring records — 220 MB at 1,000 replications
-and 867 at 10,000 — and they do not match them **on `main` either**, so this is
-a claim that was already unreproducible rather than one this branch broke. The
-same docstring's other memory figure, 386 MB for an unchunked kernel run at
-12,000 segments and 1,000 replications, does reproduce, and it contradicts the
-220 in the paragraph above it. Whatever produced the 220/867/1,415/2,499 series
-is not a straightforward `run.run` at the shipped population, and the
-conditions were not written down beside it. Re-taking that series under a
-recorded driver is its own piece of work.
+**One thing was found, misdiagnosed twice, and then fixed.** The figures above
+did not match the series the `UNBOUNDED_BATCH` docstring recorded — 220 MB at
+1,000 replications rising to 2,499 at 40,000 — and they did not match it on
+`main` either, so it was not something this branch broke.
+
+Two of the things first said about it were wrong. The series was called
+unreproducible because its conditions were not recorded; the docstring states
+the population size in the sentence after it, *"The figures above are at 200
+segments"*, and the measurement above was taken at 12,000. And the same
+docstring's 386 MB was called a contradiction of the 220 beside it; it is not,
+because 386 MB is an unchunked kernel run at 12,000 segments where the 220 is
+the same run at 200. Different populations, so different peaks, and reading one
+against the other was the same mistake twice over.
+
+Measured at the population the docstring names, the series still does not come
+back: 326.8 MB at 1,000 replications against a recorded 220. The gap closes as
+the count rises, so it is a fixed overhead rather than a difference in growth —
+the thread count the series was taken at is the one condition it never
+recorded. The series is now re-taken and the driver written out beside it in
+full, so the next person to check it can.
 
 **The branch review found the figure drawn in the wrong dollars.** The
 frontier read `planned_spend` and `failure_cost` while the notebook cell above
