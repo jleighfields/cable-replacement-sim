@@ -155,8 +155,19 @@ def run_chunk(
             so the messages are its wording; ``simulate.run_chunk`` raises the
             same class for the same inputs.
     """
+    # The crate exposes one entry point per width, because PyO3 generates its
+    # glue from a signature and a signature names a concrete element type. The
+    # dtype of the arrays is what the run's precision travels as, so reading it
+    # here is what turns that choice into a call — and a mismatched dtype
+    # raises from the generated glue naming the array, rather than being
+    # coerced into a converted copy of every per-segment array.
+    at_width = (
+        _cablesim.run_chunk_single
+        if age0.dtype == np.float32
+        else _cablesim.run_chunk
+    )
     return simulate.Results(
-        *_cablesim.run_chunk(
+        *at_width(
             length_ft,
             customers,
             customer_minutes_per_failure,

@@ -349,7 +349,7 @@ pub fn uniform_at(index: u64, key: [u64; 2]) -> f64 {
 /// * `first_index` - the position the run starts at.
 /// * `key` - the two key words for this run.
 /// * `into` - filled with one uniform per position, in order.
-pub fn fill_run(first_index: u64, key: [u64; 2], into: &mut [f64]) {
+pub fn fill_run<T: crate::weibull::Real>(first_index: u64, key: [u64; 2], into: &mut [T]) {
     let lanes = LANES as u64;
     let mut position = first_index;
     let mut filled = 0;
@@ -359,7 +359,11 @@ pub fn fill_run(first_index: u64, key: [u64; 2], into: &mut [f64]) {
         // entered part-way through.
         let mut lane = (position % lanes) as usize;
         while lane < LANES && filled < into.len() {
-            into[filled] = to_double(words[lane]);
+            // Produced in double and narrowed as it is written. The
+            // generator is checked against NumPy's own Philox, so it computes
+            // at one width whatever the run's precision is, and the narrowing
+            // is the same rounding NumPy applies on the other side.
+            into[filled] = T::from_double(to_double(words[lane]));
             filled += 1;
             lane += 1;
             position += 1;

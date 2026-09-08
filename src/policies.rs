@@ -49,6 +49,8 @@ use std::fmt;
 
 use pyo3::prelude::*;
 
+use crate::weibull::Real;
+
 /// The integer tag each policy is compared by.
 ///
 /// The mapping is authored in `python/cablesim/policies.py` as `KIND`, and
@@ -162,7 +164,7 @@ impl fmt::Display for NanScore {
 /// # Returns
 ///
 /// Planned replacement cost, in dollars.
-pub fn planned_cost(length_ft: f64, cost_per_ft: f64, mobilization_per_segment: f64) -> f64 {
+pub fn planned_cost<T: Real>(length_ft: T, cost_per_ft: T, mobilization_per_segment: T) -> T {
     length_ft * cost_per_ft + mobilization_per_segment
 }
 
@@ -191,22 +193,22 @@ pub fn planned_cost(length_ft: f64, cost_per_ft: f64, mobilization_per_segment: 
 ///
 /// The rank key. The value for a segment this policy cannot fund is never
 /// read, because eligibility is applied before ordering.
-pub fn rank_key(
+pub fn rank_key<T: Real>(
     policy: Resolved,
-    age: f64,
-    failure_probability: f64,
-    outage_cost_per_failure: f64,
-    planned: f64,
-    emergency_multiplier: f64,
-    priority: f64,
-) -> f64 {
+    age: T,
+    failure_probability: T,
+    outage_cost_per_failure: T,
+    planned: T,
+    emergency_multiplier: T,
+    priority: T,
+) -> T {
     let key = match policy.kind {
         kind::AGE_THRESHOLD => age,
         kind::RISK_RANKED => {
             // The cost avoided by acting first, which is the emergency premium
             // rather than the whole emergency cost: the planned work is paid
             // either way.
-            let avoided = planned * (emergency_multiplier - 1.0);
+            let avoided = planned * (emergency_multiplier - T::one());
             failure_probability * (outage_cost_per_failure + avoided)
         }
         kind::WORST_FIRST => failure_probability,
@@ -215,7 +217,7 @@ pub fn rank_key(
         // The binding refuses any tag outside the five before the loop starts,
         // so this arm is that policy; it is written as a catch-all only
         // because a `match` on `u8` has to cover every value.
-        _ => 0.0,
+        _ => T::zero(),
     };
 
     if policy.rank_by_cost {
@@ -245,8 +247,10 @@ pub fn rank_key(
 /// # Returns
 ///
 /// True if the segment is a candidate.
-pub fn eligible(policy: Resolved, age: f64, replaced_this_year: bool) -> bool {
-    age >= policy.threshold_years && !replaced_this_year
+pub fn eligible<T: Real>(policy: Resolved, age: T, replaced_this_year: bool) -> bool {
+    // Narrowed rather than the age widened, because that is the comparison
+    // NumPy makes when a Python float meets an array of this width.
+    age >= T::from_double(policy.threshold_years) && !replaced_this_year
 }
 
 /// Orders eligible segments by rank, breaking ties on segment identifier.
@@ -277,7 +281,7 @@ pub fn eligible(policy: Resolved, age: f64, replaced_this_year: bool) -> bool {
 ///
 /// The eligible positions in the order the budget should be spent on them, or
 /// `NanScore` if any candidate's key was not a number.
-pub fn order_by_rank(rank: &[f64], candidates: &[usize]) -> Result<Vec<usize>, NanScore> {
+pub fn order_by_rank<T: Real>(rank: &[T], candidates: &[usize]) -> Result<Vec<usize>, NanScore> {
     // **The key travels with the identifier rather than being looked up.**
     // Sorting the candidate positions directly would make every comparison
     // read `rank[left]` and `rank[right]`, two scattered accesses into an
@@ -296,7 +300,7 @@ pub fn order_by_rank(rank: &[f64], candidates: &[usize]) -> Result<Vec<usize>, N
     // iterate, build a pair from each position, and collect into a `Vec` —
     // Rust's growable list. Nothing runs until `collect` asks for it, the same
     // way a Python generator does nothing until something consumes it.
-    let mut keyed: Vec<(f64, usize)> = candidates
+    let mut keyed: Vec<(T, usize)> = candidates
         .iter()
         .map(|&segment| (rank[segment], segment))
         .collect();
@@ -377,11 +381,12 @@ pub fn order_by_rank(rank: &[f64], candidates: &[usize]) -> Result<Vec<usize>, N
 // compiler prove nobody holds this prefix after the list it points into is
 // gone. Python leaves that to the garbage collector, so the annotation has no
 // counterpart there — it is the price of returning a view rather than a copy.
-pub fn fund<'a>(ranked: &'a [usize], planned: &[f64], budget: f64) -> &'a [usize] {
-    let mut running = 0.0;
+pub fn fund<'a, T: Real>(ranked: &'a [usize], planned: &[T], budget: T) -> &'a [usize] {
+    let mut running = T::zero();
     let mut funded = 0;
     for &index in ranked {
-        running += planned[index];
+        // `Float` does not require `AddAssign`, so this is written long.
+        running = running + planned[index];
         if running > budget {
             break;
         }
@@ -465,7 +470,7 @@ mod tests {
         let mut risk_ranked = policy(kind::RISK_RANKED);
         risk_ranked.rank_by_cost = true;
 
-        let scored = rank_key(risk_ranked, 40.0, 0.5, 1000.0, 100.0, 2.5, 0.7);
+        let scored = rank_key::<f64>(risk_ranked, 40.0, 0.5, 1000.0, 100.0, 2.5, 0.7);
 
         // 0.5 * (1000 + 100 * 1.5) = 575, over a planned cost of 100.
         assert!((scored - 5.75).abs() < 1e-12);

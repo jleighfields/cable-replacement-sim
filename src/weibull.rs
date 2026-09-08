@@ -48,10 +48,52 @@ use num_traits::Float;
 ///
 /// `num_traits::Float` is what supplies `powf`, `exp_m1` and `ln_1p` for both
 /// widths. It was already in the dependency tree beneath `ndarray`, so naming
-/// it directly costs no build time.
-pub trait Real: Float {}
-impl Real for f64 {}
-impl Real for f32 {}
+/// it directly costs no build time. `Send + Sync` is here rather than at each
+/// use because the kernel hands replications to worker threads, and both
+/// widths satisfy it trivially — they are plain numbers with no interior
+/// mutability to share.
+pub trait Real: Float + Send + Sync {
+    /// Narrows a configured value to the working width.
+    ///
+    /// Configuration crosses from Python as `f64` whatever the run's precision
+    /// is — a policy threshold, a cost multiplier — and has to reach the
+    /// arithmetic at the width the arithmetic is done in. Narrowing here is
+    /// what NumPy does on the other side when a Python float meets a
+    /// single-precision array, so the two agree on the comparison.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - the configured double.
+    fn from_double(value: f64) -> Self;
+
+    /// Widens a working value to the double the results accumulate in.
+    ///
+    /// Results are totalled in double at both precisions, so a saved run has
+    /// one schema whatever produced it and the reductions do not compound the
+    /// rounding the state already carries. NumPy does the same on the other
+    /// side: `bincount` returns doubles whatever width its weights are.
+    fn into_double(self) -> f64;
+}
+
+impl Real for f64 {
+    fn from_double(value: f64) -> Self {
+        value
+    }
+
+    fn into_double(self) -> f64 {
+        self
+    }
+}
+
+impl Real for f32 {
+    fn from_double(value: f64) -> Self {
+        value as f32
+    }
+
+    fn into_double(self) -> f64 {
+        f64::from(self)
+    }
+}
 
 /// Probability of failing within a year, given survival to `age`.
 ///
