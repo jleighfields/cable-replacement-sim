@@ -15,7 +15,10 @@ to 05. The reliability-against-budget curve is drawable.
 
 The annual loop now exists three times — a scalar Python reference, a batched
 NumPy loop and the Rust kernel — and **every one of them reproduces the
-reference in every cell of every array**, with no tolerance anywhere. Two
+reference in every cell of every array at double precision**, with no tolerance
+anywhere. At single precision they are held to four significant figures
+instead, because exactness at that width depends on the platform's C library
+rather than on this code. Two
 further implementations over a polars frame were built, measured and retired to
 `deprecated/`, which carries the numbers and the reason a column store is the
 wrong shape for a simulation.
@@ -1907,7 +1910,7 @@ Which comparisons share random draws, and which do not:
   A parity failure should therefore still be diagnosed as a difference in the
   *model*, but only after `test_draws.py` is green; if it is red, nothing below
   it means anything.
-- **Measured, the two agree bit for bit.** At 2,000 segments and 50
+- **Measured, the two agree bit for bit at double precision.** At 2,000 segments and 50
   replications of drawn lifetimes, every policy and every reported quantity
   matched exactly — no replication differed at all, so the paired criterion
   below is satisfied by its identically-zero clause rather than by its
@@ -2831,7 +2834,7 @@ Rayon over replications with the interpreter lock released. `batched.py`: the
 batched NumPy baseline. Two polars implementations of the same loop were built
 here, measured and retired to `deprecated/`. What remains passes the same parity
 tests
-as the kernel — exactly, every cell. The benchmark harness is
+as the kernel — exactly at double precision, every cell. The benchmark harness is
 `cablesim/benchmarks.py`, driven by `scripts/run_benchmarks.py`, and notebook
 05 renders the same table.
 

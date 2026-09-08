@@ -47,28 +47,41 @@ instead of `exp_m1` on one side made 76% of it differ, so the comparison
 discriminated.
 
 That binding is gone, because the question it answered is now answered
-continuously and by something stronger: **the parity suite runs at both widths**,
-comparing NumPy against the crate through the whole annual loop rather than
-three functions in isolation, at no tolerance. Perturbing the crate's
-single-precision narrowing — perturbing `Real::from_double` for `f32` by one
-part in a million — reddens fifty-two of its cases.
+continuously: **the parity suite runs at both widths**, comparing NumPy against
+the crate through the whole annual loop rather than three functions in
+isolation.
 
-**They agree because there is one implementation and not two.** NumPy's
-single-precision `expm1`, `log1p` and `pow` are bit-identical to this platform's
-`expm1f`, `log1pf` and `powf` — 20,000 of 20,000 each — which are the routines
-the crate calls. They are *not* a double computation rounded once: that
-explanation matches NumPy for 17,936 of 20,000 `expm1` inputs drawn uniformly on
-[-3, 3], 18,522 of 20,000 `log1p` inputs on (-0.99, -0.01], and 19,985 of 20,000
-`pow` inputs on [0.1, 50) raised to 6.5, so it is ruled out rather than merely
-unnecessary. The margin is thinnest for `pow` — fifteen inputs in twenty
-thousand — which is what its negative assertion turns on.
+**The two widths are held to different standards, deliberately.** Double
+precision is compared exactly, cell for cell, and that is where the mirror is
+validated. **Single precision is compared to four significant figures.**
 
-**This is a property of the platform's libm, not of the two languages**, and it
-is the assumption the single-precision mode rests on. A build against a
-different libm, or a NumPy that grew its own vectorised loops for these three,
-could break the agreement without anything in this repo changing.
-`tests/test_weibull.py::test_numpy_and_the_system_library_agree_in_single_precision`
-is what would notice.
+The reason is that exactness at single precision is not a property of this
+code. It needs NumPy's `expm1`, `log1p` and `pow` to return the same bits as
+the C library's `expm1f`, `log1pf` and `powf`, which the crate calls. None of
+those is required to be correctly rounded, and they were measured disagreeing
+by one representable step on some machines and not others — the same commit,
+the same container image, a different processor. A suite held to bit-for-bit
+agreement at that width goes red on hardware rather than on defects, and a
+green run says as much about the machine as about the code.
+
+What single precision is checked for is therefore that it computes the same
+model, not the same bits.
+
+**What the trade costs, measured rather than asserted.** Perturbing the batched
+loop's emergency spend by one part in a million reddens 26 of its 34 parity
+cases at double precision and 12 at single. The single-precision comparison is
+not blind to a defect that small — a cost nudged by a millionth still flips
+which segment is funded last, and that difference is discrete and far coarser
+than four figures — but it catches it less often, and anything finer is caught
+at double alone. At one part in a thousand both widths redden the same 26.
+
+What is genuinely given up is narrower than "small differences": a defect where
+one side accumulates or narrows an intermediate at a different width from the
+other. At double there is no narrowing, so nothing covers that at all. The two
+places in the crate where such a width is chosen deliberately — the emergency
+premium's subtraction order in `policies.rs` and the emergency total's
+accumulator in `simulate.rs` — now say in their comments that no test enforces
+them, so a reader changing one is not misled by a green suite.
 
 ## What it costs and saves
 

@@ -204,10 +204,11 @@ class SimulationConfig(pydantic.BaseModel):
             and present values are discounted to this year.
         precision: The floating width every implementation computes in. It
             reaches them as the dtype of the arrays they are handed rather than
-            as an argument, so nothing downstream branches on it. Two
-            implementations at the same precision are held to agreeing in every
-            cell; the two precisions give different answers, which is the point
-            of the choice.
+            as an argument, so nothing downstream branches on it. The two
+            precisions give different answers, which is the point of the
+            choice, and they are checked to different standards: double
+            exactly, single to four significant figures. ``constants.PRECISIONS``
+            says why.
     """
 
     n_years: int = pydantic.Field(ge=1)

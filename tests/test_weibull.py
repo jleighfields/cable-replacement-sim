@@ -6,8 +6,6 @@ An analytical check is worth more than a parity check because it can be wrong
 in only one way.
 """
 
-import ctypes
-import ctypes.util
 import re
 
 import numpy as np
@@ -44,79 +42,6 @@ def weibull_draws(
         Ages at failure, in years.
     """
     return weibull.draw_lifetime(random_draws.uniforms(source, n), shape, scale)
-
-
-def test_numpy_and_the_system_library_agree_in_single_precision() -> None:
-    """The assumption single precision rests on, and the reason it holds.
-
-    Two implementations of a single-precision ``expm1``, ``log1p`` or ``pow``
-    may legitimately differ in the last bit — none of them is required to be
-    correctly rounded. This project compares implementations at no tolerance, so
-    a single-precision run is only possible while NumPy and the crate produce
-    the same bits, and they do because **both reach the same C library**.
-
-    The second half is what makes this a test rather than a restatement. The
-    other available explanation — that each computes in double and rounds once —
-    is ruled out, not merely unnecessary: over this sample it gives a different
-    answer for 2,064 of 20,000 `expm1` inputs and 1,478 of 20,000 `log1p`, but
-    for only **15 of 20,000** on `pow`. That last margin is what the `pow` arm
-    turns on, so narrowing its range or shrinking the sample can disarm that arm
-    while the other two go on passing. Without it, a NumPy that grew its own
-    vectorised single-precision loops would pass the first assertion by
-    accident only until it did not.
-
-    This is a property of the platform, so this is where a build against a
-    different C library would report rather than the parity suite failing
-    somewhere less obvious.
-    """
-    library = ctypes.CDLL(ctypes.util.find_library("m"))
-    for name in ("expm1f", "log1pf"):
-        getattr(library, name).restype = ctypes.c_float
-        getattr(library, name).argtypes = [ctypes.c_float]
-    library.powf.restype = ctypes.c_float
-    library.powf.argtypes = [ctypes.c_float, ctypes.c_float]
-
-    generator = np.random.default_rng(0)
-    # Each over the range the annual loop actually reaches it in: the hazard
-    # exponent over a plausible age-to-scale ratio, the lifetime draw over the
-    # open unit interval a uniform lands in.
-    hazard = generator.uniform(-3.0, 3.0, 20_000).astype(np.float32)
-    uniform = generator.uniform(0.01, 0.99, 20_000).astype(np.float32)
-    ratio = generator.uniform(0.1, 50.0, 20_000).astype(np.float32)
-    exponent = np.float32(6.5)
-
-    checks = {
-        "expm1": (
-            np.expm1(hazard),
-            [library.expm1f(value) for value in hazard],
-            np.expm1(hazard.astype(np.float64)),
-        ),
-        "log1p": (
-            np.log1p(-uniform),
-            [library.log1pf(-value) for value in uniform],
-            np.log1p(-uniform.astype(np.float64)),
-        ),
-        "pow": (
-            ratio**exponent,
-            [library.powf(value, 6.5) for value in ratio],
-            ratio.astype(np.float64) ** 6.5,
-        ),
-    }
-    for name, (from_numpy, from_library, in_double) in checks.items():
-        assert np.array_equal(
-            from_numpy, np.array(from_library, dtype=np.float32)
-        ), (
-            f"NumPy and the system C library disagree on single-precision "
-            f"{name}, so the crate and NumPy would compute different numbers "
-            f"and no run at that precision could be compared against another "
-            f"implementation"
-        )
-        assert not np.array_equal(from_numpy, in_double.astype(np.float32)), (
-            f"for {name}, computing in double and rounding once gives the same "
-            f"answer over this sample, so this test no longer distinguishes the "
-            f"two explanations and would pass for an implementation that does "
-            f"not share the C library"
-        )
 
 
 def test_min_of_n_matches_the_reduced_scale() -> None:

@@ -171,10 +171,11 @@ def statistical_arguments(request: pytest.FixtureRequest) -> dict[str, object]:
     implementations within Monte Carlo error at each width.
 
     It does not catch a defect in how a draw is narrowed: the comparison here is
-    tolerance-based, and the difference narrowing makes fits inside it.
-    ``test_the_priority_draw_is_narrowed_where_the_state_it_ranks_meets_it`` is
-    what covers that, and covers only the draw that has an outcome to diverge
-    in.
+    tolerance-based, and the difference narrowing makes fits inside it. Nothing
+    else catches one either, since single precision is compared to four
+    significant figures rather than exactly — a deliberate trade, made because
+    exactness at that width is a property of the platform's C library rather
+    than of this code.
 
     Args:
         request: Supplies the precision this run is parametrized on.

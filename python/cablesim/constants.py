@@ -35,10 +35,18 @@ Here rather than on the configuration model because the *mapping* is fixed — a
 caller who changed what ``"f32"`` means would be writing a bug — while *which*
 of them a run uses is a choice, and that choice is a field on the model.
 
-Both are exact for every implementation: an implementation reads the dtype of
-the arrays it is handed, and two implementations at the same precision are held
-to agreeing in every cell, with no tolerance either way. What changes between
-them is the answer, not how closely the answers are compared.
+An implementation reads the width off the dtype of the arrays it is handed,
+so nothing downstream branches on the name.
+
+**The two are not held to the same standard, and that is deliberate.** At
+``"f64"`` two implementations must agree in every cell with no tolerance, and
+that comparison is what validates the kernel against the reference. At
+``"f32"`` they are held to four significant figures, because exactness at that
+width would need NumPy and the crate to return the same bits from the C
+library's single-precision ``expm1``, ``log1p`` and ``pow`` — none of which is
+required to be correctly rounded, and which were measured disagreeing by one
+representable step on some machines and not others. ``docs/single-precision.md``
+has the measurement and what the looser comparison gives up.
 """
 
 DEFAULT_PRECISION: str = "f64"
