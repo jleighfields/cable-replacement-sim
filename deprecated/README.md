@@ -17,11 +17,13 @@ Its measurement is in
 [docs/compiled-and-threaded-python.md](../docs/compiled-and-threaded-python.md),
 and it is the reason the benchmark table no longer claims what it used to. The
 published speedup compared **one Python thread against forty-eight Rust
-threads**, because every Python implementation refused a larger count. This one
-did not, and separating the three effects gave: threads worth 25–35x and
-dominating everything, compiling worth 5–6x where a policy makes few segments
-eligible, and the language worth 1.2–1.4x on one thread and about nothing on
-forty-eight.
+threads**, because at the time every Python implementation refused a larger
+count. The batched loop accepts one now, which this study is also what
+prompted. This one
+did not, and separating the three effects gave: threads worth
+8–36x depending on how long one replication is and dominating everything, compiling worth
+5.5–6.5x where a policy makes few segments eligible, and the language worth
+1.2–1.4x on one thread and not separable at all on forty-eight.
 
 It reproduced the reference exactly in every cell, under all five policies and
 at every thread count, so those figures compare one computation rather than

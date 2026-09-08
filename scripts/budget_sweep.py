@@ -67,7 +67,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
             "workers to spread each chunk's replications over; the kernel and "
             "the batched loop can use more than 1 and the scalar reference "
             "refuses it, though threading the batched loop is slower than one "
-            f"thread under most policies. This machine offers "
+            f"thread wherever the sort is small. This machine offers "
             f"{kernel.AVAILABLE_THREADS}"
         ),
     )

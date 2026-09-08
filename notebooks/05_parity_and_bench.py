@@ -340,8 +340,16 @@ def _(mo):
 
 @app.cell
 def _(pl, timings):
-    def per_replication(name, threads=1):
-        """Seconds per replication for one row of the table."""
+    def per_replication(name: str, threads: int = 1) -> float:
+        """Seconds per replication for one row of the table.
+
+        Args:
+            name: The implementation, as ``run.RUNNABLE`` names it.
+            threads: The thread count the wanted row was run at.
+
+        Returns:
+            That row's mean seconds per replication.
+        """
         row = timings.filter(
             (pl.col("implementation") == name) & (pl.col("threads") == threads)
         )

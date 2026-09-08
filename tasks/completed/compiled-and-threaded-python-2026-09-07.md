@@ -150,7 +150,40 @@ keeps the script and the notebook from disagreeing about what was measured.
 - [x] 9. It did. The "fastest Python, beaten by 18.5x / 78.4x / 22.6x" row is
       gone from both documents, replaced by the retaken table and by what the
       three effects are worth separately.
-- [ ] 10. Review passes.
+- [x] 10. Review passes. Three of them.
+
+## Review
+
+Three full passes. The first raised one Must Fix and five Should Fix on the
+draw-index work; the second, over this branch, eight and eight; the third five
+and five. Every item was fixed rather than waived.
+
+**What the passes were actually for, in the end, was the prose.** The code
+findings were few and shallow: a speedup column that took whichever baseline row
+came first once one implementation could appear twice, a thread refusal naming a
+module the retirement had deleted, a registry that could be emptied or narrowed
+without any test noticing. The rest — the majority across all three passes —
+were measurements written in more places than one, and one of them written four
+times. Correcting three copies and missing the fourth is what the second pass
+found me doing, and it is why the third pass ends with a test that asserts the
+copies agree rather than asserting what they say.
+
+**Two coverage gaps that predated this branch** came out of it. No test had ever
+given any implementation a chunk starting anywhere but replication zero, and
+none had combined a nonzero offset with threading — which is exactly what a real
+run does, since `run.execute` chunks a sweep and hands each chunk to a threaded
+implementation. Both are now pinned, and both were watched failing with the
+defect planted in two implementations each.
+
+**The benchmark harness had been folding compilation into its measurement**,
+timing three runs from cold and reporting the mean. That was invisible while
+every implementation was compiled ahead of time and became a 7x error the moment
+one was not.
+
+**What the study concluded is in
+`docs/compiled-and-threaded-python.md`,** and the implementation it measured is
+in `deprecated/`. The headline: the kernel's advantage is threads first, then
+compiling where the loop is scalar-shaped, and the language a distant third.
 
 ## What the port actually costs
 

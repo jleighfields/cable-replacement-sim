@@ -147,6 +147,14 @@ def unthreadable_implementations(names: Iterable[str]) -> set[str]:
     return set(names) - set(RUNNABLE)
 
 
+UNTHREADABLE = unthreadable_implementations(CONCURRENT)
+if UNTHREADABLE:
+    raise ValueError(
+        f"{sorted(UNTHREADABLE)} claim to spread replications but name no "
+        f"implementation; the runnable set is {sorted(RUNNABLE)}"
+    )
+
+
 def unknown_implementations(names: Iterable[str]) -> set[str]:
     """Names among these that no saved result may claim.
 

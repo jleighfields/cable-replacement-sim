@@ -1423,7 +1423,8 @@ cable-replacement-sim/
 │   ├── 02_effective_scale.py
 │   ├── 03_weibull_fitting.py
 │   ├── 04_policy_explorer.py
-│   └── 05_parity_and_bench.py
+│   ├── 05_parity_and_bench.py
+│   └── 06_production_run.py
 ├── app/                        # Shiny for Python
 │   ├── app.py                  # UI + server
 │   ├── overrides.py            # UI controls -> config overrides
@@ -2081,8 +2082,9 @@ those two ratios compare one thread against forty-eight — a Numba implementati
 built and measured for this reached the kernel at forty-eight threads before
 being retired, so the gap is the thread count rather than the language.
 `docs/compiled-and-threaded-python.md` separates the three effects the ratio
-carries: threads 25-35x, compiling 5-6x where few segments are eligible, and the
-language 1.2-1.4x on one thread.
+carries: threads 8–36x depending on how long one replication is, compiling
+5.5–6.5x where a policy makes few segments eligible, and the language
+1.2–1.4x on one thread and not separable at all on forty-eight.
 
 **Measured once at 100,000 segments**, which is eight times the shipped
 population and further than anything in the test suite goes. Ten replications,
@@ -2402,6 +2404,7 @@ notebook needs a function, it belongs in the package.
 | `03_weibull_fitting.py` | Censored MLE walkthrough. Slider for censoring fraction; show the likelihood surface, fitted vs true survival curve, and the recovery test result. Demonstrates *why* censoring must be handled. |
 | `02_effective_scale.py` | The effective-scale reduction derived and made visual (2.3). Numbered ahead of the fitting notebook because the fitting notebook's third rung tests what this one establishes. Sliders for `k`, `lambda`, `n` and length; overlay conductor-level and segment-level survival curves against the empirical minimum of sampled draws, and against draws for a longer segment. Shows scale shrinking by `(n * L/L_ref)^(-1/k)` while shape holds, which is the claim the recovery ladder's rung 3 tests numerically. |
 | `04_policy_explorer.py` | Sliders for annual budget, policy, and policy params; plot SAIDI/SAIFI trajectories over 30 years, spend, and failures by class. **This is the reliability-vs-budget curve** — the deliverable the original work produced. |
+| `06_production_run.py` | The shipped configuration run end to end on the kernel, at its full replication count, with every stage timed. Exposes the population size and replication count as the two parameters, so the same demonstration runs at a larger fleet; `resize_population` carries the customer denominator and the annual budget with it. Asserts what a timing has to be read against — the build profile, and that the manifest records the implementation and thread count that actually ran — and that the saved rows factor as policies times replications times years times classes, which no check on the values would catch. It is the only notebook that goes through `run.run`, so it is where the batch size is visible. |
 | `05_parity_and_bench.py` | Agreement and the benchmark table. Its rows are the implementations of Section 6.5, with the Rust kernel appearing twice as its two thread configurations, at a stated population size and replication count. Its *agreement* table reads the runnable registry, so an implementation added there is checked without being named here; its *timing* table names its rows, because each carries a thread count and a replication count the registry does not hold, and a test asserts every name it uses is one that exists. The scalar reference is shown for scale and is explicitly **not** the baseline a speedup is claimed against; 6.5 rules that comparison out as flattering. |
 
 **Each notebook walks the API layer by layer rather than making the top-level

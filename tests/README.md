@@ -38,6 +38,7 @@ covers how tests are laid out here and why.
 | `test_benchmarks.py` | the timing harness: what it refuses, and what its table columns mean |
 | `test_plots.py` | the figures, asserted on their data rather than their pixels |
 | `test_plan_document.py` | `PLAN.md` structure: citations resolve, and it quotes the config verbatim |
+| `test_published_figures.py` | the benchmark figures agree wherever the documents quote them |
 | `test_workflows.py` | the workflow files name no Rust toolchain of their own |
 | `test_notebooks.py` | every notebook runs headless (marker: `notebooks`) |
 

@@ -58,7 +58,7 @@ def configurations(threads: int) -> list[benchmarks.Configuration]:
     level with Python on the policy that scores every segment.
 
     The batched loop's threaded row is here despite being slower than its own
-    single-threaded row under most policies. It is the denominator of the
+    single-threaded row wherever the sort is small. It is the denominator of the
     fastest-Python column wherever the sort is large enough for threading to pay,
     so leaving it out would quote a speedup against a baseline that is not the
     fastest Python available.
@@ -69,6 +69,17 @@ def configurations(threads: int) -> list[benchmarks.Configuration]:
     Returns:
         One configuration per row.
     """
+    if threads > BENCHMARK_REPS:
+        # The constant says why: replications are the axis being parallelised,
+        # so a count below the thread count caps the speedup at the count. A
+        # row capped that way reads as a result rather than as a starved run.
+        log.warning(
+            "%d workers over %d replications: the speedup is capped by the "
+            "replication count, not by the threads. Raise BENCHMARK_REPS to at "
+            "least the thread count before quoting this table.",
+            threads,
+            BENCHMARK_REPS,
+        )
     return [
         benchmarks.Configuration("reference", 1, REFERENCE_REPS),
         benchmarks.Configuration("batched_numpy", 1, BENCHMARK_REPS),
@@ -111,7 +122,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "--threads",
         type=int,
         default=kernel.AVAILABLE_THREADS,
-        help="the full thread count to run the kernel at",
+        help="the full thread count to run the threading implementations at",
     )
     parser.add_argument(
         "--repeats",

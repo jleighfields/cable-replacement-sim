@@ -252,6 +252,11 @@ def test_the_threading_registry_names_the_kernel_and_something_to_compare() -> N
     shrinking to only the implementation whose threading is a negative result.
     """
     assert "kernel" in run.CONCURRENT
+    # Both, not just the kernel. Narrowing this set to the kernel alone leaves
+    # both threaded parity assertions green while they quietly stop checking
+    # the batched loop, because each loops over the set inside its body rather
+    # than parametrising on it, so the test count does not move either.
+    assert "batched_numpy" in run.CONCURRENT
     assert set(run.RUNNABLE) > run.CONCURRENT, (
         "the reference cannot spread replications and must stay out of this set"
     )

@@ -85,11 +85,13 @@ the three effects are worth separately, measured rather than argued: **threads
 policy makes few segments eligible, and the language 1.2–1.4x on one thread and
 not separable at all on forty-eight.**
 
-**Threading the batched loop mostly does not work**, which is why the fastest
-Python is single-threaded in two columns. It is *slower* on 48 threads than on
-one in four of the six columns measured: the operations that dominate it do
+**Threading the batched loop works only where the sort is large**, which is why
+the fastest Python is single-threaded in two columns. On 48 threads it is
+*slower* than on one under `run_to_failure` at both population sizes and under
+`age_threshold` at 12,000 segments — by as much as 3.9x — and faster in the
+other three of the six columns measured: the operations that dominate it do
 release the interpreter lock, but the Python-level orchestration between them
-holds it throughout.
+holds it throughout, and only a sort big enough to outweigh that pays.
 
 [docs/compiled-and-threaded-python.md](docs/compiled-and-threaded-python.md) has
 the full measurement, both population sizes, and what the Rust kernel carries
@@ -161,9 +163,9 @@ uv run python scripts/budget_sweep.py --implementation reference   # the Python 
 The Rust kernel and the batched NumPy loop both use more than one thread; the
 scalar reference refuses a larger count rather than ignoring it, so a saved run
 cannot record a thread count that nothing acted on. Threading the batched loop
-is slower than one thread under most policies — the benchmark section above has
-the measurement — so it is there as evidence rather than as a faster way to
-sweep.
+is slower than one thread wherever the sort is small — the benchmark section
+above has the measurement — so it is there as evidence rather than as a faster
+way to sweep.
 
 The benchmark script times all three — with the kernel appearing twice, at one
 thread and at the machine's full count — and checks each against the reference

@@ -274,7 +274,7 @@ suggested fix.
      and a value that changes every run is stale in the baseline by the
      next commit — exclude the file instead. A Connect `manifest.json`,
      whose per-file md5s all read as high-entropy hex, is the case the
-     pattern exists for — this repo grows one at Phase 7, when the Shiny app
+     pattern exists for — this repo grows one when the Shiny app
      deploys, and not before. Commit the result: the pattern is stored *in* the
      baseline as a filter, so every later caller inherits it without
      repeating the flag.

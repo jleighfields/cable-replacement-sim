@@ -56,7 +56,7 @@ decidable on forty-eight.** Against Numba running the same algorithm, the kernel
 is ahead by 1.18x to 1.37x single-threaded, in all six columns. At forty-eight
 threads the two trade places by policy and by size, and the spread is wide —
 Numba is 1.73x ahead at 12,000 segments under `age_threshold`, the kernel 1.17x
-ahead at 100,000 under `risk_ranked`. Those 12,000-segment rows are 11 to 19
+ahead at 100,000 under `risk_ranked`. Those 12,000-segment rows are 110 to 190
 microseconds per replication, which three repeats on a shared machine cannot
 separate, so the honest reading is that the language stops mattering once the
 work is spread, not that either side wins.
@@ -86,14 +86,15 @@ it is worth reading with its conditions attached rather than as one number:
 | Kernel, 100,000 segments | 8.2x | 7.8x | 27.2x |
 | Numba, 100,000 segments | 10.1x | 10.5x | 29.4x |
 
-It reaches the high twenties only under `risk_ranked`, where each replication is
-long enough that spreading it pays fully. Where a replication is short — 2 to 27
-milliseconds in the other two columns — the fixed cost of handing work to
-forty-eight workers takes a visible share, and at 100,000 segments with only 48
-replications there is also one replication per worker, so a single straggler
-holds the result.
+It reaches the high twenties under `risk_ranked` at both sizes, where each
+replication is long enough that spreading it pays fully, and once elsewhere —
+Numba under `age_threshold` at 12,000 segments, at 28.5x. The low end is where
+the fixed cost of handing work to forty-eight workers takes a visible share: the
+four cells between 7.8x and 10.5x are all at 100,000 segments with only 48
+replications, which is one replication per worker, so a single straggler holds
+the result.
 
-**Threading NumPy mostly does not work.** Forty-eight threads made the batched
+**Threading NumPy works only where the sort is large.** Forty-eight threads made the batched
 loop *slower* in three of the six columns — 3.9x and 1.8x slower at 12,000
 segments under `run_to_failure` and `age_threshold`, and 3.1x slower at 100,000
 under `run_to_failure`. It helped in the other three, and only where the sort is
