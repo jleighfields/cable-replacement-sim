@@ -131,3 +131,60 @@ It does not answer whether the newest technology's parameters should be
 reported, pooled with the previous technology, or carried from a prior — the
 three ways out that `PLAN.md` section 13.2 lists. It shows which of them the
 fleet forces, which is what that decision has been waiting for.
+
+
+---
+
+## Review
+
+Built as planned, in `notebooks/03_weibull_fitting.py` section 90, and the
+package needed no change: the four calls are all public, which was the test of
+whether there was a seam here. There was.
+
+**What the fleet turned out to say**, which is more than the plan expected:
+
+| technology | vintage | episodes | failures |
+|---|---|---|---|
+| `hmwpe` | 1965–1985 | 1,748 | 1,089 |
+| `xlpe` | 1986–2004 | 6,802 | 335 |
+| `tr_xlpe` | 2005–2020 | 12,876 | **2** |
+
+The newest technology is the most numerous in the fleet by a factor of seven
+and contributes two failures. Its shape interval is `[-0.468, +0.639]` as a log
+ratio, six times wider than the middle technology's, and it covers the
+configured value the way an interval that admits everything covers anything.
+That is the exposure-time argument in the standing plan's open questions, shown
+rather than asserted.
+
+Both geometry coefficients come back inside their intervals: `log(n)` at
+-0.1723 against a predicted -0.1595, and `log(L/L_ref)` at -0.0807 against
+-0.0797. Those are the closed forms the effective-scale reduction gives, so
+this is the check the section exists for.
+
+**One finding the plan did not anticipate.** The reference technology's own
+shape interval spans 0.68, and the three configured shapes span 0.6 between
+them. So the interval on the best-identified technology is wider than the
+differences the model is trying to resolve, and *no* technology on this fleet
+is distinguishable from another by shape. The weak identification is not a
+`tr_xlpe` problem with a long tail; it is the whole per-technology shape story.
+
+**Assertions, and what each was watched failing against:**
+
+| assertion | mutation that reddens it |
+|---|---|
+| geometry coefficients cover their closed forms | the prediction doubled, so the reduction and the regression disagree |
+| the reference's shape interval covers its configured value | the truncation correction dropped, which moves it to `[6.284, 6.923]` |
+| the newest technology's interval is several times the middle one's | the newest technology given the oldest vintage, so exposure stops binding |
+
+The reference anchor was also tried against a mis-specified reference — coding
+`xlpe` as the reference while comparing against `hmwpe` — and **did not**
+redden, because 6.5 sits inside `[6.002, 6.682]`. That is recorded in the cell
+rather than left for someone to discover: the anchor catches a broken fit, not
+a mis-coded reference, and the reason is the same interval-versus-spread fact
+above.
+
+**Not done, deliberately.** Which way out to take for the newest technology —
+report it as weakly identified, pool it with the previous technology, or carry
+a prior from accelerated-life testing — is left open, which is where the
+standing plan has it. What this adds is the numbers that decision was waiting
+for.
