@@ -113,21 +113,42 @@ anywhere.** An earlier reading of this plan said otherwise and was wrong.
       appear to evaluate single-precision `expm1`, `log1p` and `pow` by
       widening to double, computing there, and rounding once — which is exact
       over these ranges and leaves nothing for the two to disagree about.
-- [ ] 2. `precision` on the config model, taking effect in `population.py`, so
+- [x] 2. `precision` on the config model, taking effect in `population.py`, so
       the arrays carry the choice and nothing else needs an argument.
-- [ ] 3. The scalar reference and the batched loop read the dtype they are
+- [x] 3. The scalar reference and the batched loop read the dtype they are
       given. Python needs care that no literal silently promotes back to `f64`
       — a `float` in an expression with an `f32` array does not, but `np.float64`
       scalars from configuration do.
-- [ ] 4. The kernel generic over the float type, and the binding accepting both.
+- [x] 4. The kernel generic over the float type, and the binding accepting both.
       This is the bulk of the work and the reason to be sure of step 1 first.
-- [ ] 5. Parity at both dtypes, which the registry should give without new tests
+- [x] 5. Parity at both dtypes, which the registry should give without new tests
       — confirmed by watching a planted divergence redden it.
-- [ ] 6. Re-measure time **and peak resident memory**, both dtypes, both
+- [x] 6. Re-measure time **and peak resident memory**, both dtypes, both
       population sizes, all three policies. The prediction to check: near 2x on
       `age_threshold` and `run_to_failure`, near 1.15x on `risk_ranked`, memory
       down by about 46%.
-- [ ] 7. Decide whether it stays, on those numbers.
+- [x] 7. Decide whether it stays, on those numbers. **It stays**, as a run
+      option rather than a default. `docs/single-precision.md` has the
+      measurement.
+
+## What the measurement said, against what this plan predicted
+
+**The prediction was wrong in its mechanism and roughly right in its
+scepticism.** It expected about 2x where a policy is arithmetic-bound and
+nothing where it is sort-bound, drawn from NumPy microbenchmarks. The split is
+by population size instead: nothing at 12,000 segments, 1.6x to 2.4x at 100,000,
+and it helps the sort-bound policy nearly as much as the other. Halving the
+working set matters when forty-eight workers pull their scratch through a
+shared cache and does not matter when it already fits. Those microbenchmarks
+timed one thread on isolated arrays, which is the wrong shape for the thing
+being predicted.
+
+**Step 1's explanation predicts the timings.** If both widths evaluate `powf`,
+`expm1` and `log1p` by widening to double, the two agree bit for bit *and*
+single precision buys nothing per operation. One mechanism, both results.
+
+**Memory falls 25% to 87%** across implementations and sizes, which is what the
+arithmetic did predict.
 - [ ] 8. Review passes.
 
 ## What would make this not worth doing
