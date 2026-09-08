@@ -72,20 +72,44 @@ thread-count parity test already checks.
 
 ## Steps
 
-- [ ] 1. Establish NumPy's Philox mapping from raw-stream index to
+- [x] 1. Establish NumPy's Philox mapping from raw-stream index to
       `(counter, lane)`. **Done before writing anything: counter `c` yields
       four `u64`, so index `i` is `counter = i // 4`, `lane = i % 4`.**
-- [ ] 2. `src/draws.rs`: Philox-4x64-10, the counter packing, and the
+- [x] 2. `src/draws.rs`: Philox-4x64-10, the counter packing, and the
       `u64` to double conversion NumPy uses.
-- [ ] 3. A Rust test against vectors taken from NumPy, and a Python test
-      comparing the two implementations over a grid of indices.
-- [ ] 4. `random_draws.py`: a Philox path producing the identical values, so
+- [x] 3. A Rust test against vectors taken from NumPy, and a Python test
+      comparing the two implementations over a grid of indices. `draws.rs`
+      carries eight Rust tests and `tests/test_draws.py` seventeen, and the
+      comparison is three-cornered: Rust against NumPy, Python against NumPy,
+      and Python against Rust.
+- [x] 4. `random_draws.py`: a Philox path producing the identical values, so
       the reference and the batched loops read what the kernel generates.
-- [ ] 5. The kernel generates its own draws; the draw array leaves its
-      signature. A test-only entry point returns what it would generate, so
-      parity stays exact without the production path materializing anything.
-- [ ] 6. Whether `batch_size` survives on the kernel path.
-- [ ] 7. Update `PLAN.md`: the rule that the kernel neither seeds nor
+      **Both designs now live in that module** — the spawned `SeedSequence`
+      sources stayed for the population table and the failure history, which
+      are drawn once per run and which nothing crosses a language boundary to
+      reproduce.
+- [x] 5. The kernel generates its own draws; the draw array leaves its
+      signature. It takes `draw_key` and `first_replication` instead, and
+      `n_reps` became explicit because there is no longer an array whose shape
+      it could be recovered from. No test-only entry point was needed: the
+      Python side computes the same uniforms from the same positions, so parity
+      compares two generators rather than one generator and one reader.
+- [x] 6. Whether `batch_size` survives on the kernel path. **It does not** —
+      the kernel resolves to the whole run, which is a separate plan of its own
+      and is where that was measured.
+- [x] 7. Update `PLAN.md`: the rule that the kernel neither seeds nor
       generates, the settled item recording this as declined, and the memory
-      figures that follow from it.
-- [ ] 8. Review passes.
+      figures that follow from it. **Finished later than the rest, and it was
+      the only step still outstanding.** The settled item and the opening
+      summary were rewritten when the change landed, but a pocket of section
+      2.11 was not: it still headed its consequences "of materializing the
+      draws", still said "passing an array is the simplest way to be indexed",
+      still showed the `PCG64`/`SeedSequence` code building a
+      `(chunk, segments, years + 1)` array, and still gave the random policy a
+      second array called `policy_uniforms`. The Rust-versus-Python table
+      described the draws as "built once per chunk and handed to every
+      implementation", and the kernel's own bullet said it "generates nothing".
+      All of that described the superseded design while section 2.11's opening
+      paragraph, three hundred lines above, correctly said there is no draw
+      array.
+- [x] 8. Review passes, as part of the pull request that carried the work.

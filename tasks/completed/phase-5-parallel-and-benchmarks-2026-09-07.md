@@ -94,4 +94,5 @@ rewritten by this work beyond being made callable in parallel.
 - [x] 10. `scripts/budget_sweep.py` default, and a `--threads` argument.
 - [x] 11. Update the plan document with the measured figures, which it
       currently leaves blank, and record what the polars comparison found.
-- [ ] 12. Review passes until no Must Fix or Should Fix remains.
+- [x] 12. Review passes until no Must Fix or Should Fix remains. Run over
+      several rounds before the pull request that carried this phase merged.
