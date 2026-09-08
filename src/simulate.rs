@@ -32,7 +32,7 @@
 //!
 //! Four differences account for most of what looks unfamiliar:
 //!
-//! * **The result buffers are flat.** Python holds seven arrays of shape
+//! * **The result buffers are flat.** Python holds one array per field, of shape
 //!   `(replications, years, classes)` and indexes them with three subscripts.
 //!   Here each is one long `Vec<f64>` and the caller computes the offset —
 //!   `(replication * n_years + year) * n_classes + class`. That is exactly
@@ -109,10 +109,15 @@ pub struct Results {
     pub planned_spend: Vec<f64>,
     /// Dollars spent replacing failures, nominal.
     pub emergency_spend: Vec<f64>,
+    /// Value of lost load, in nominal dollars, over the segments that failed.
+    /// Customer value destroyed by an interruption rather than money the
+    /// utility spends, so it is charged to no budget and totalled into no
+    /// spend column.
+    pub voll: Vec<f64>,
 }
 
 impl Results {
-    /// Seven zeroed buffers of `replications * years * classes`.
+    /// One zeroed buffer per field, each `replications * years * classes`.
     pub fn zeros(n_reps: usize, n_years: usize, n_classes: usize) -> Self {
         let cells = n_reps * n_years * n_classes;
         Self {
@@ -123,6 +128,7 @@ impl Results {
             planned_replacements: vec![0.0; cells],
             planned_spend: vec![0.0; cells],
             emergency_spend: vec![0.0; cells],
+            voll: vec![0.0; cells],
         }
     }
 
@@ -144,6 +150,7 @@ impl Results {
         self.planned_replacements.extend(block.planned_replacements);
         self.planned_spend.extend(block.planned_spend);
         self.emergency_spend.extend(block.emergency_spend);
+        self.voll.extend(block.voll);
     }
 }
 
@@ -283,7 +290,7 @@ impl std::fmt::Display for ChunkError {
 ///
 /// # Returns
 ///
-/// The seven per-year, per-class buffers for this chunk, or a `ChunkError` if
+/// The per-year, per-class buffers for this chunk, or a `ChunkError` if
 /// a candidate scored a key that was not a number, or if the pool could not be
 /// built.
 ///
@@ -451,6 +458,12 @@ pub fn run_chunk<T: Real>(
                         block.customer_minutes[class] +=
                             customer_minutes_per_failure[segment].into_double();
                         block.emergency_spend[class] += emergency_now.into_double();
+                        // The same product the `risk_ranked` score takes of
+                        // the same column, at the same working width, so the
+                        // value a policy weighs against a replacement and the
+                        // value the results report as lost cannot round apart.
+                        block.voll[class] +=
+                            (outage_cost_per_failure[segment] * escalation).into_double();
                         emergency_total = emergency_total + emergency_now;
                         replaced[segment] = true;
                     }

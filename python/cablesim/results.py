@@ -72,6 +72,7 @@ SCHEMA: dict[str, pl.DataType] = {
     "planned_replacements": pl.Float64,
     "planned_spend": pl.Float64,
     "emergency_spend": pl.Float64,
+    "voll": pl.Float64,
 }
 """The columns every ``results.parquet`` carries, before swept parameters.
 
@@ -81,6 +82,10 @@ produced and not written is a metric that cannot be computed. The one most
 likely to look redundant is the count of customers interrupted, which is not
 recoverable from the customer-minutes beside it once restoration time varies by
 class.
+
+``voll`` is the value of lost load, and the one dollar column that is not money
+the utility spends. It is customer value destroyed by the interruptions, so it
+sits beside the spend columns and is summed into none of them.
 
 The counts are stored as floats rather than cast to integers: they are exactly
 what the implementation returned, and a cast would be the place a non-integral

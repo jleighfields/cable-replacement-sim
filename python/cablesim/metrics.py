@@ -75,10 +75,10 @@ def indices_per_replication(
             the shape stays plausible, and the swept column disappears.
 
     Returns:
-        One row per policy, replication and year, carrying the seven saved
-        quantities summed over classes plus ``saifi``, ``saidi``, ``caidi``
-        and ``total_spend``. Customer minutes interrupted stays under its
-        saved name, ``customer_minutes``.
+        One row per policy, replication and year, carrying every saved
+        quantity summed over classes plus ``saifi``, ``saidi``, ``caidi``,
+        ``total_spend`` and ``failure_cost``. Customer minutes interrupted
+        stays under its saved name, ``customer_minutes``.
 
     Examples:
         The input is the saved frame, one row per class::
@@ -103,6 +103,7 @@ def indices_per_replication(
             "planned_replacements",
             "planned_spend",
             "emergency_spend",
+            "voll",
         ).sum()
     )
     return totals.with_columns(
@@ -111,6 +112,13 @@ def indices_per_replication(
         # No `cmi` column: customer minutes interrupted is `customer_minutes`
         # unchanged, and the module docstring says so once.
         total_spend=pl.col("planned_spend") + pl.col("emergency_spend"),
+        # What a year of failures costs, which is not what it costs the
+        # utility: the emergency bill is money spent and the value of lost
+        # load is value destroyed. They are added here because the frontier
+        # plots their sum against the planned spend that bought it down, and
+        # kept out of `total_spend` because that column is the utility's own
+        # outlay and the reliability-against-budget figures divide by it.
+        failure_cost=pl.col("emergency_spend") + pl.col("voll"),
     ).with_columns(
         # Average duration per customer interrupted. Undefined rather than zero
         # in a year nothing failed: dividing two zeros would report a
@@ -132,17 +140,28 @@ def discount(frame: pl.LazyFrame, rate: float) -> pl.LazyFrame:
     year-29 dollar the same as a year-0 one.
 
     Args:
-        frame: Rows carrying a ``year`` column and the spend columns.
+        frame: Rows carrying a ``year`` column and the dollar columns, as
+            ``indices_per_replication`` leaves them.
         rate: Annual discount rate, as a fraction.
 
     Returns:
-        The frame with a discounted counterpart for each spend column.
+        The frame with a discounted counterpart for each dollar column —
+        ``planned_spend``, ``emergency_spend``, ``total_spend``, ``voll`` and
+        ``failure_cost``. The last two are not spend: the value of lost load is
+        customer value destroyed, and it is discounted because it is dated
+        dollars like the rest, not because the utility pays it.
     """
     factor = (1.0 + rate) ** (-pl.col("year").cast(pl.Float64))
     return frame.with_columns(
         [
             (pl.col(name) * factor).alias(f"{name}_discounted")
-            for name in ("planned_spend", "emergency_spend", "total_spend")
+            for name in (
+                "planned_spend",
+                "emergency_spend",
+                "total_spend",
+                "voll",
+                "failure_cost",
+            )
         ]
     )
 
@@ -185,8 +204,44 @@ def summarize_replications(
     )
 
 
+def replication_totals(frame: pl.LazyFrame, by: tuple[str, ...] = ()) -> pl.LazyFrame:
+    """Sums each replication over the whole horizon, keeping them apart.
+
+    The scatter behind the frontier is drawn from these: one point per
+    replication, showing that a year of many failures raises the emergency
+    bill and the value of lost load together. That correlation is the thing a
+    pair of error bars on the averaged point would hide, so the axis it lives
+    on has to survive as far as the figure.
+
+    Args:
+        frame: Per-replication rows, already discounted.
+        by: Extra columns to keep as grouping keys, as in ``indices_per_replication``.
+
+    Returns:
+        One row per policy and replication, and per extra grouping key.
+    """
+    return frame.group_by(["policy", "replication", *by]).agg(
+        pl.col(
+            "failures",
+            "customer_minutes",
+            "planned_customer_minutes",
+            "planned_replacements",
+            "planned_spend",
+            "emergency_spend",
+            "total_spend",
+            "voll",
+            "failure_cost",
+            "planned_spend_discounted",
+            "emergency_spend_discounted",
+            "total_spend_discounted",
+            "voll_discounted",
+            "failure_cost_discounted",
+        ).sum()
+    )
+
+
 def horizon_totals(frame: pl.LazyFrame, by: tuple[str, ...] = ()) -> pl.LazyFrame:
-    """Sums each replication over the whole horizon, then averages.
+    """Averages the per-replication totals.
 
     Summing before averaging is what keeps the replication as the unit: the
     mean of a total is not the total of a mean once a policy's spend varies
@@ -199,20 +254,7 @@ def horizon_totals(frame: pl.LazyFrame, by: tuple[str, ...] = ()) -> pl.LazyFram
     Returns:
         One row per policy, and per extra grouping key.
     """
-    summed = frame.group_by(["policy", "replication", *by]).agg(
-        pl.col(
-            "failures",
-            "customer_minutes",
-            "planned_customer_minutes",
-            "planned_replacements",
-            "planned_spend",
-            "emergency_spend",
-            "total_spend",
-            "planned_spend_discounted",
-            "emergency_spend_discounted",
-            "total_spend_discounted",
-        ).sum()
-    )
+    summed = replication_totals(frame, by)
     return (
         summed.group_by(["policy", *by])
         .agg(pl.exclude("policy", "replication", *by).mean())

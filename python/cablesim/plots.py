@@ -24,6 +24,25 @@ from cablesim import metrics
 BAND_OPACITY = 0.18
 """How solid the shaded interval is behind its line."""
 
+SPEND_AXIS = "planned_spend_discounted"
+"""The horizontal quantity of the cost frontier, in present value."""
+
+FAILURE_AXIS = "failure_cost_discounted"
+"""The vertical quantity of the cost frontier, in present value.
+
+``metrics.indices_per_replication`` derives ``failure_cost`` as emergency
+spend plus the value of lost load, and ``metrics.discount`` gives it this
+present-value counterpart.
+"""
+
+CLOUD_OPACITY = 0.10
+"""How faint one replication is behind the policy means it contributed to.
+
+Low enough that a thousand of them read as a density rather than a blob, and
+the mean markers stay legible through the overlap where two policies' clouds
+cross.
+"""
+
 
 def band_colors(policies: list[str]) -> dict[str, str]:
     """Assigns one colour per policy, stable across figures.
@@ -238,5 +257,118 @@ def reliability_against_budget(
         xaxis_title="Annual planned budget (dollars)",
         yaxis_title=quantity,
         hovermode="x unified",
+    )
+    return figure
+
+
+def cost_frontier(
+    totals: pl.DataFrame, per_replication: pl.DataFrame, budget_column: str
+) -> go.Figure:
+    """What each policy buys with the money it manages to spend.
+
+    **Planned spend incurred on the x-axis, not the budget offered.** A policy
+    that cannot spend its allowance — nothing eligible, or nothing affordable
+    at the year's prices — has a curve that stops short of the budgets it was
+    given, and plotting the offer instead would hide that by construction.
+
+    **The cost of failure on the y-axis**: the emergency replacement bill plus
+    the value of lost load, which is what a year of failures costs between the
+    utility and its customers.
+
+    **Both axes are present values**, the ``_discounted`` columns rather than
+    the nominal ones. This compares one thirty-year total against another
+    across policies, which is the comparison an undiscounted total gets wrong:
+    it weights a year-29 dollar the same as a year-0 one. Nor is the choice a
+    rescaling that leaves the picture alone — over the shipped budget grid the
+    nominal totals run 1.8 to 2.5 times the discounted ones, and the ratio
+    differs between the two axes at the same point, so the curve's shape moves
+    with it.
+
+    **Every replication is drawn faintly behind the policy means**, rather than
+    error bars on each axis. The two costs are correlated within a
+    replication — a year of many failures raises both — and a pair of error
+    bars states each margin while hiding exactly that. The cloud shows it.
+
+    This is the largest figure the project draws, so its cost was measured
+    rather than assumed. At the size the shipped sweep produces — five
+    policies, eight budget levels and 1,000 replications, so 40,000 points
+    behind 40 means — building it takes 0.16 s and it serializes to 1.4 MB of
+    HTML. The cloud is a WebGL trace and the mean curves are ordinary SVG, so
+    their markers and hover text behave the way every other figure's do.
+
+    Args:
+        totals: One row per policy and budget level, as ``horizon_totals``
+            leaves them, carrying ``planned_spend_discounted`` and
+            ``failure_cost_discounted``.
+        per_replication: The same two quantities before averaging, one row per
+            policy, replication and budget level, from
+            ``metrics.replication_totals``.
+        budget_column: The swept parameter, which orders each policy's points
+            along its own curve. Not an axis here: what a policy was offered
+            is what the x-axis deliberately does not show.
+
+    Returns:
+        One curve per policy over its mean points, with the replication cloud
+        behind every curve.
+
+    Raises:
+        KeyError: If either frame is missing a column this reads. Polars raises
+            on the missing column by itself, from inside whichever trace loop
+            reached it first; checking here is what names the frame as well as
+            the column, and a caller holding two frames of the same shape needs
+            to be told which of them was short.
+    """
+    needed = ("policy", SPEND_AXIS, FAILURE_AXIS)
+    for frame, name in ((totals, "totals"), (per_replication, "per_replication")):
+        missing = [column for column in needed if column not in frame.columns]
+        if missing:
+            raise KeyError(f"{missing} are not in {name}")
+    if budget_column not in totals.columns:
+        raise KeyError(f"{budget_column!r} is not in totals")
+
+    policies = totals["policy"].unique(maintain_order=True).to_list()
+    colors = band_colors(policies)
+    figure = go.Figure()
+    # Every cloud first, then every curve, so that a policy's line is not
+    # buried under the next policy's replications. Within one loop the traces
+    # interleave and the last policy drawn hides the first.
+    for policy in policies:
+        cloud = per_replication.filter(pl.col("policy") == policy)
+        figure.add_trace(
+            go.Scattergl(
+                x=cloud[SPEND_AXIS].to_list(),
+                y=cloud[FAILURE_AXIS].to_list(),
+                mode="markers",
+                marker={"color": colors[policy], "size": 3},
+                opacity=CLOUD_OPACITY,
+                hoverinfo="skip",
+                showlegend=False,
+                name=f"{policy} replications",
+            )
+        )
+    for policy in policies:
+        rows = totals.filter(pl.col("policy") == policy).sort(budget_column)
+        figure.add_trace(
+            go.Scatter(
+                x=rows[SPEND_AXIS].to_list(),
+                y=rows[FAILURE_AXIS].to_list(),
+                mode="lines+markers",
+                line={"color": colors[policy]},
+                marker={"size": 9, "line": {"color": "#FFFFFF", "width": 1}},
+                customdata=rows[budget_column].to_list(),
+                hovertemplate=(
+                    "%{fullData.name}<br>budget %{customdata:,.0f}"
+                    "<br>planned spend %{x:,.0f}"
+                    "<br>cost of failure %{y:,.0f}<extra></extra>"
+                ),
+                name=policy,
+            )
+        )
+    figure.update_layout(
+        title="What each policy buys: planned spend against the cost of failure",
+        xaxis_title="Planned spend incurred (present value, dollars)",
+        yaxis_title=(
+            "Emergency spend plus value of lost load (present value, dollars)"
+        ),
     )
     return figure

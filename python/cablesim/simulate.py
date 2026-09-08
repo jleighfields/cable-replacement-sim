@@ -2,7 +2,7 @@
 
 This is the correctness reference: it is written to be checkable by reading, so
 that when it and another implementation disagree, this one arbitrates. It takes
-the same arguments as the Rust kernel and returns the same seven arrays, so
+the same arguments as the Rust kernel and returns the same arrays, so
 whatever runs a simulation can call either without knowing which it has.
 
 Failure times are continuous and drawn once per installation; the budget cycle
@@ -87,6 +87,11 @@ class Results(NamedTuple):
         planned_replacements: Segments replaced as planned work.
         planned_spend: Dollars spent on planned work, nominal.
         emergency_spend: Dollars spent replacing failures, nominal.
+        voll: Value of lost load, in nominal dollars, over the segments that
+            failed. Customer value destroyed by an interruption rather than
+            money the utility spends, which is why it is charged to no budget
+            and totalled into no spend column. The rate behind it is
+            ``reliability.voll_per_customer_hour`` in the configuration.
     """
 
     failures: np.ndarray
@@ -96,6 +101,7 @@ class Results(NamedTuple):
     planned_replacements: np.ndarray
     planned_spend: np.ndarray
     emergency_spend: np.ndarray
+    voll: np.ndarray
 
 
 def running_total(values: np.ndarray) -> float:
@@ -421,7 +427,7 @@ def run_chunk(
             run did not use.
 
     Returns:
-        The seven per-year, per-class arrays for this chunk.
+        The per-year, per-class arrays for this chunk.
 
     Raises:
         ValueError: If the policy tag names no policy, if the population is
@@ -551,6 +557,9 @@ def run_chunk(
             )
             results.emergency_spend[replication, year] += by_class(
                 failed, emergency_now
+            )
+            results.voll[replication, year] += by_class(
+                failed, outage_cost_per_failure[failed] * escalation
             )
 
             replaced = failed.copy()
