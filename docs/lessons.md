@@ -34,6 +34,32 @@ wait $!
 text at all. Note also that the harness kills a foreground command at ten
 minutes, so a loop longer than that is doubly wrong.
 
+## An edit script that validates late discards every edit before it
+
+A script that applies several replacements and asserts on each as it goes will,
+on the first failed assertion, exit before writing — so the edits that already
+succeeded are lost with it. Nothing says so: the traceback names the assertion
+that failed, not the two replacements that are now missing. Reporting the change
+as made, on the strength of a later command that printed something reassuring,
+is how it reaches a commit message.
+
+It happened twice in one branch. Once as above, where an assertion on the second
+replacement discarded the first, and a review three passes later found the
+commit describing a change the diff did not contain. Once as a conditional
+replacement — `if s.count(old) == 1:` — that silently matched nothing because
+the target text was wrapped differently than expected, and the script reported
+success anyway.
+
+**Verify the file on disk after writing it**, in the same command:
+
+```python
+p.write_text(s.replace(old, new))
+assert "the new text" in p.read_text()
+```
+
+And prefer `assert s.count(old) == 1` over `if s.count(old) == 1:` — a
+replacement that matches nothing should stop, not shrug.
+
 ## Never `git add -A` while a review agent is editing
 
 A `code-reviewer` pass edits docstrings in place. Committing everything the

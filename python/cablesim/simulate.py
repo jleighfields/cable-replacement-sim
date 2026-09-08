@@ -180,11 +180,10 @@ def check_arguments(arguments: dict[str, object], concurrent: bool = False) -> i
             more than one floating width, or if it carries one width that no
             run computes at — an all-``float16`` call names a single width and
             is still one the binding cannot borrow. The width check is a type
-            error
-            rather than a value error because the width is not a value any
-            argument holds — it is the dtype the arrays are stored at, and the
-            binding refuses the same call by failing to borrow the array as the
-            element type its signature names.
+            error rather than a value error because the width is not a value
+            any argument holds — it is the dtype the arrays are stored at,
+            and the binding refuses the same call by failing to borrow the
+            array as the element type its signature names.
 
             **The binding makes that refusal first, before any check here.**
             PyO3 extracts every argument before the function body runs, so a

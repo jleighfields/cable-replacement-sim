@@ -144,6 +144,8 @@ whatever it touches — and every implementation widens the same way and goes on
 agreeing in every cell. This happened twice while building this: once in the
 per-year cost series, and once in the parity fixtures themselves, where
 eighty-eight cases were labelled `f32` and ran `f64` twice while passing.
-Two places now check the width directly, which is the only thing that can:
-`tests/test_benchmarks.py` over the arguments the benchmark harness builds, and
-the parity fixture in `tests/conftest.py` over the ones it builds itself.
+Three places now check the width directly, which is the only thing that can:
+`tests/test_benchmarks.py` over the arguments the benchmark harness builds, the
+parity fixture in `tests/conftest.py` over the ones it builds itself, and the
+boundary builder in `tests/test_parity.py` over the ones it assembles, which
+neither of the other two reaches.

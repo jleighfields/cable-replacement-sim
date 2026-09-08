@@ -8,6 +8,7 @@ machine and teach nothing when it did.
 """
 
 import importlib.util
+import json
 import pathlib
 import types
 
@@ -296,4 +297,57 @@ def test_the_shipped_callers_only_name_implementations_that_exist(
     assert requested <= runnable, (
         f"{path.name} asks for {sorted(requested - runnable)}, which "
         f"{sorted(runnable)} does not carry"
+    )
+
+
+def test_a_script_run_computes_at_the_width_its_configuration_names(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A flag left off must defer to the configuration, not overwrite it.
+
+    Both benchmark scripts take a ``--precision`` and apply it to the loaded
+    configuration as an override. The flag defaults to
+    ``constants.DEFAULT_PRECISION`` rather than to nothing, so the override is
+    applied on every run — including the run where nobody named a width. A
+    configuration that names the other one is then discarded without a word,
+    and the figure that comes back is labelled with the width the flag
+    supplied rather than the width the configuration asked for.
+
+    That is the whole shape of the defect the width checks elsewhere in this
+    suite exist for, one layer up: the number is right for *some* run, and
+    nothing says it is not the run that was asked for.
+
+    ``measure_memory.py`` is the one driven here because it completes on a
+    small population; ``scripts/run_benchmarks.py`` builds its override the
+    same way and needs the same repair.
+
+    Args:
+        monkeypatch: Replaces the configuration the script loads.
+        caplog: Captures the JSON line the script reports.
+    """
+    asked_for = "f32"
+    settings = small_settings(n_segments=50, n_reps=2).model_copy(
+        update={
+            "simulation": small_settings().simulation.model_copy(
+                update={"precision": asked_for, "n_reps": 2}
+            )
+        }
+    )
+    assert settings.simulation.precision != constants.DEFAULT_PRECISION, (
+        f"this test needs a configuration naming the width the flag does not "
+        f"default to; both are {asked_for}"
+    )
+    script = measure_memory_script()
+    monkeypatch.setattr(config, "load_config", lambda *_args, **_kwargs: settings)
+
+    with caplog.at_level("INFO", logger="measure_memory"):
+        script.main(
+            ["--implementation", "reference", "--segments", "50", "--reps", "2"]
+        )
+
+    reported = json.loads(caplog.messages[-1])
+    assert reported["precision"] == asked_for, (
+        f"the configuration named {asked_for} and the run reported "
+        f"{reported['precision']!r}; the --precision default overrode the "
+        f"configuration instead of deferring to it"
     )

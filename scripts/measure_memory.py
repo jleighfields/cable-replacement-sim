@@ -47,7 +47,7 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--precision",
-        default=constants.DEFAULT_PRECISION,
+        default=None,
         choices=sorted(constants.PRECISIONS),
         help="the floating width it computes in",
     )
@@ -94,13 +94,18 @@ def main(argv: list[str] | None = None) -> int:
 
     after_import = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
 
+    settings = config.load_config(constants.DEFAULT_CONFIG_PATH)
+    if arguments.precision is not None:
+        # Only when asked. Defaulting the flag to a width and applying it
+        # unconditionally overrides the configured one, so a project that
+        # switched its shipped width would measure at the old one — with the
+        # reported precision naming the width the flag imposed rather than the
+        # width the configuration carries.
+        settings = config.with_overrides(
+            settings, {"simulation.precision": arguments.precision}
+        )
     settings = config.resize_population(
-        config.with_overrides(
-            config.load_config(constants.DEFAULT_CONFIG_PATH),
-            {"simulation.precision": arguments.precision},
-        ),
-        arguments.segments,
-        n_reps=arguments.reps,
+        settings, arguments.segments, n_reps=arguments.reps
     )
     chunk = benchmarks.chunk_arguments(settings, arguments.reps)
     spec = benchmarks.configured_policy(settings, arguments.policy)
@@ -121,7 +126,8 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(
             {
                 "implementation": arguments.implementation,
-                "precision": arguments.precision,
+                # What ran, which is the configuration unless a flag moved it.
+                "precision": settings.simulation.precision,
                 "segments": arguments.segments,
                 "replications": arguments.reps,
                 "policy": arguments.policy,

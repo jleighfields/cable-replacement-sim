@@ -107,7 +107,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--precision",
-        default=constants.DEFAULT_PRECISION,
+        default=None,
         choices=sorted(constants.PRECISIONS),
         help=(
             "the floating width every implementation computes in. It reaches "
@@ -165,10 +165,16 @@ def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     arguments = parse_arguments(argv)
 
-    settings = config.with_overrides(
-        config.load_config(constants.DEFAULT_CONFIG_PATH),
-        {"simulation.precision": arguments.precision},
-    )
+    settings = config.load_config(constants.DEFAULT_CONFIG_PATH)
+    if arguments.precision is not None:
+        # Only when asked. Defaulting the flag to a width and applying it
+        # unconditionally overrides the configured one, so a project that
+        # switched its shipped width would get tables at the old one — with
+        # provenance recording the width the flag imposed rather than the width
+        # the configuration names.
+        settings = config.with_overrides(
+            settings, {"simulation.precision": arguments.precision}
+        )
     if arguments.reduced:
         settings = config.resize_population(
             settings, run.REDUCED_SEGMENTS, n_reps=run.REDUCED_REPS

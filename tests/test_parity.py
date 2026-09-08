@@ -221,10 +221,11 @@ def test_the_alternating_scale_fails_the_half_it_names_at_both_widths(
     conditional on survival, so the accumulated hazard dominates the bracket and
     adding the draw to it changes nothing a single-precision float holds — the
     result lands either side of zero, and a negative remaining life is a
-    failure time no year's `[year, year + 1)` window contains. The alternating
-    scale is applied to the fixture's aged population, so the half meant to fail
-    does not, and the two tests below reach a scenario with roughly a quarter of
-    the population failing rather than a half.
+    failure time no year's `[year, year + 1)` window contains. That is why
+    `helpers.alternating_lifetimes` zeroes the age of the half it forces to
+    fail and leaves the other half aged: applied to the fixture's aged
+    population without that, only about a quarter of it fails and the two
+    tests below no longer reach the scenario they describe.
     """
     arguments = helpers.alternating_lifetimes(deterministic_arguments)
     # Counted off the fixture the helper returned rather than by restating its
@@ -324,7 +325,7 @@ def test_every_implementation_funds_a_candidate_costing_the_remainder(
 
 
 def one_year_at_single_precision(
-    multiplier: float, budget: float, charged: bool
+    multiplier: float, budget: float, charged: bool, n_segments: int | None = None
 ) -> dict[str, object]:
     """One year of the shipped population at single precision, on a boundary.
 
@@ -347,11 +348,18 @@ def one_year_at_single_precision(
         budget: The year's budget, chosen to sit between the two cut points.
         charged: Whether the year's emergency bill is taken off the budget
             before the planned pass is scored.
+        n_segments: A population size to build instead of the shipped one.
+            The callers below leave it None and get the population their
+            constants were searched against; the test that checks those
+            constants are still on their boundary passes one of the sizes
+            named above, which is the perturbation that moves it.
 
     Returns:
         Every argument of ``simulate.run_chunk`` except ``policy``.
     """
     base = config.load_config(constants.DEFAULT_CONFIG_PATH)
+    if n_segments is not None:
+        base = config.with_overrides(base, {"population.n_segments": n_segments})
     settings = base.model_copy(
         update={
             "simulation": base.simulation.model_copy(
@@ -446,13 +454,100 @@ def test_the_emergency_bill_totals_at_the_width_the_budget_compares_at(
     )
     reference = simulate.run_chunk(**arguments, policy=UNFILTERED_RISK)
 
+    # The funded count alone cannot guard this one: at 12,001 segments it still
+    # reads 1 while the boundary has stopped straddling, so the test would pass
+    # having pinned nothing. The emergency bill is the quantity the boundary is
+    # cut from, and it separates every perturbation that breaks this.
     assert reference.planned_replacements.sum() == 1, (
-        "the budget no longer sits between the two totals, so this test pins "
-        "nothing whatever it asserts next; it was searched against a "
-        "particular population and needs searching again"
+        "the funded count moved, so the budget no longer sits between the two "
+        "totals; this was searched against a particular population and needs "
+        "searching again, unless the reference's own arithmetic changed"
+    )
+    assert reference.emergency_spend.sum() == pytest.approx(
+        79962487.52734375, abs=1.0
+    ), (
+        "the emergency bill moved, so the budget is no longer between what the "
+        "two accumulator widths total to and this test pins nothing; re-search "
+        "it against this population"
     )
     assert_identical(
         reference, implementation(**arguments, policy=UNFILTERED_RISK)
+    )
+
+
+BOUNDARY_CASES = {
+    "premium": (
+        {"multiplier": 2.942645377983026, "budget": 41938160.0, "charged": False},
+        lambda produced: (produced.planned_replacements.sum(),),
+    ),
+    "emergency_bill": (
+        {"multiplier": 2.5, "budget": 80962232.0, "charged": True},
+        # Both quantities its guard reads. The funded count alone does not move
+        # at the drifted population, which is why that guard needed the bill.
+        lambda produced: (
+            produced.planned_replacements.sum(),
+            produced.emergency_spend.sum(),
+        ),
+    ),
+}
+"""The two boundary cases above, with the quantity each one's guard asserts.
+
+Keyed by the boundary rather than by the test name so a reader can see which
+constants belong to which. The second element reads back exactly what that
+test's guard reads, so the check below is a check on the guard rather than on
+something adjacent to it.
+"""
+
+DRIFTED_POPULATION = 12_001
+"""One segment more than the shipped population.
+
+``one_year_at_single_precision`` names this among the perturbations that stop
+its constants straddling their boundary, so it is the smallest change that
+must be visible to a guard placed there.
+"""
+
+
+@pytest.mark.parametrize("boundary", sorted(BOUNDARY_CASES), ids=str)
+def test_each_boundary_guard_notices_that_its_boundary_has_moved(
+    boundary: str,
+) -> None:
+    """A guard that reads the same number either side of a drift disarms silently.
+
+    The two tests above are searched against one exact population, and each
+    opens with a guard whose message says the search has to be redone if the
+    constants stop straddling. That message is only reached if the guarded
+    quantity moves when the population does — a guard reading a number that is
+    the same on both sides passes on a population its test pins nothing about,
+    which is the failure the guard was added to prevent.
+
+    One segment added to the population is the perturbation the builder's own
+    docstring names. Both boundaries are checked, so a guard that does move is
+    the control showing this comparison discriminates.
+
+    Args:
+        boundary: Which of the two searched boundaries to check.
+    """
+    constants_for, guarded = BOUNDARY_CASES[boundary]
+
+    searched = guarded(
+        simulate.run_chunk(
+            **one_year_at_single_precision(**constants_for), policy=UNFILTERED_RISK
+        )
+    )
+    drifted = guarded(
+        simulate.run_chunk(
+            **one_year_at_single_precision(
+                **constants_for, n_segments=DRIFTED_POPULATION
+            ),
+            policy=UNFILTERED_RISK,
+        )
+    )
+
+    assert searched != drifted, (
+        f"the {boundary} guard reads {searched} on the population it was "
+        f"searched against and {searched} again at {DRIFTED_POPULATION} "
+        f"segments, so it cannot tell that the boundary has moved; it needs "
+        f"to assert a quantity the drift changes as well"
     )
 
 
