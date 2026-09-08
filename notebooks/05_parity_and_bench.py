@@ -282,11 +282,15 @@ def _(mo):
 @app.cell
 def _(benchmarks, kernel, settings):
     reps = settings.simulation.n_reps
+    threads = kernel.AVAILABLE_THREADS
     configurations = [
         benchmarks.Configuration("reference", 1, reps),
         benchmarks.Configuration("batched_numpy", 1, reps),
+        benchmarks.Configuration("batched_numpy", threads, reps),
+        benchmarks.Configuration("numba", 1, reps),
+        benchmarks.Configuration("numba", threads, reps),
         benchmarks.Configuration("kernel", 1, reps),
-        benchmarks.Configuration("kernel", kernel.AVAILABLE_THREADS, reps),
+        benchmarks.Configuration("kernel", threads, reps),
     ]
     timings = benchmarks.compare(settings, "risk_ranked", configurations)
     # Timing an implementation that has drifted measures something else being
@@ -299,6 +303,7 @@ def _(benchmarks, kernel, settings):
         "replications",
         "seconds",
         "seconds_per_replication",
+        "first_run_seconds",
         "matches_reference",
         "speedup_over_batched_numpy",
     )
@@ -309,10 +314,23 @@ def _(benchmarks, kernel, settings):
 def _(mo):
     mo.md(
         r"""
-    ## 50 · The two pairs
+    ## 50 · What the table separates
 
-    The table above has more in it than a ranking. Reading it as two pairs is
-    what answers the questions the duplication was built to answer.
+    The table above has more in it than a ranking. Each row differs from
+    another in exactly one respect, and reading those pairs off is what the
+    duplication was built for.
+
+    Three questions it answers, none of which a single ranking would:
+
+    * **Does the language matter?** Compare the two compiled implementations on
+      one thread. Both are the reference's algorithm compiled; only the
+      compiler differs.
+    * **Does compiling matter?** Compare either compiled implementation against
+      the scalar reference it is a translation of, on one thread.
+    * **Do threads matter, and can Python have them?** Compare each
+      implementation against itself at one thread and at many. The batched loop
+      is the interesting case: its arrays are operated on one at a time, and
+      only some of those operations release the interpreter lock.
     """
     )
     return
@@ -327,14 +345,30 @@ def _(pl, timings):
         )
         return row["seconds_per_replication"][0]
 
-    array_form = per_replication("batched_numpy") / per_replication("kernel")
-    parallel = per_replication("kernel") / per_replication(
-        "kernel", threads=timings["threads"].max()
+    widest = timings["threads"].max()
+
+    language = per_replication("numba") / per_replication("kernel")
+    compiling = per_replication("reference") / per_replication("numba")
+    threads_kernel = per_replication("kernel") / per_replication("kernel", widest)
+    threads_numba = per_replication("numba") / per_replication("numba", widest)
+    threads_numpy = per_replication("batched_numpy") / per_replication(
+        "batched_numpy", widest
     )
 
-    print(f"one thread, Rust against Python:  {array_form:.2f}x")
-    print(f"threads, within the Rust kernel:  {parallel:.2f}x")
-    return array_form, parallel, per_replication
+    print(f"Rust against Numba, both on one thread: {language:>7.2f}x")
+    print(f"Numba against the reference it compiles:{compiling:>7.2f}x")
+    print(f"threads, within the kernel:             {threads_kernel:>7.2f}x")
+    print(f"threads, within Numba:                  {threads_numba:>7.2f}x")
+    print(f"threads, within the batched loop:       {threads_numpy:>7.2f}x")
+    return (
+        compiling,
+        language,
+        per_replication,
+        threads_kernel,
+        threads_numba,
+        threads_numpy,
+        widest,
+    )
 
 
 @app.cell

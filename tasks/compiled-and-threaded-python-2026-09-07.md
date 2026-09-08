@@ -125,24 +125,31 @@ keeps the script and the notebook from disagreeing about what was measured.
       by splitting into 32-bit halves, there being no 128-bit integer here, and
       every constant is typed `uint64` because an untyped literal would promote
       the arithmetic to `float64` and quietly produce a different generator.
-- [ ] 3. The annual loop under `njit` in `compiled.py`, joined to the existing
-      parity tests at no tolerance rather than given tests of its own.
-- [ ] 4. `prange` over replications, with the answer asserted independent of the
-      thread count, the way the kernel's already is.
-- [ ] 5. A thread count on the batched loop, same two assertions, and
+- [x] 3. The annual loop under `njit` in `compiled.py`, joined to the existing
+      parity tests at no tolerance rather than given tests of its own. Exact
+      against the reference under all five policies on the first run.
+- [x] 4. `prange` over replications, with the answer asserted independent of the
+      thread count, the way the kernel's already is. Exact at 1, 2, 3, 8 and 48
+      threads. No reduction crosses the workers, so `prange` had nothing to
+      reorder.
+- [x] 5. A thread count on the batched loop, same two assertions, and
       `check_arguments` widened to admit it for the implementations that can.
-- [ ] 6. Add both to `05_parity_and_bench.py`'s configuration list, so the
+      Which implementations those are is now declared in `run.CONCURRENT`
+      rather than discovered by calling one and seeing whether it raises.
+- [x] 6. Add both to `05_parity_and_bench.py`'s configuration list, so the
       notebook renders the four rows against the kernel's two and checks each
-      against the reference. Run it both ways — headless and interactive — and
-      run `pytest -m notebooks`, which nothing triggers automatically and which
-      step 5 obliges by changing `check_arguments`.
-- [ ] 7. Run the table: both sizes, three policies, one thread and forty-eight,
-      kernel rows alongside.
-- [ ] 8. Write the conclusion, and say plainly which of the three explanations
-      the numbers support.
-- [ ] 9. If the conclusion changes what the published speedup row means, say so
-      in `README.md` and `PLAN.md` — the row currently compares one Python
-      thread against forty-eight Rust threads without saying that it does.
+      against the reference. Its analysis cell now reads off three pairs rather
+      than two, since there is a second compiled implementation to compare the
+      first against.
+- [x] 7. Run the table: both sizes, three policies, one thread and forty-eight,
+      kernel rows alongside. Forty-two rows, every one exact against the
+      reference.
+- [x] 8. Write the conclusion, in `docs/compiled-and-threaded-python.md`. It is
+      threads first by a wide margin, compilation second where the loop is
+      scalar-shaped, and the language a distant third.
+- [x] 9. It did. The "fastest Python, beaten by 18.5x / 78.4x / 22.6x" row is
+      gone from both documents, replaced by the retaken table and by what the
+      three effects are worth separately.
 - [ ] 10. Review passes.
 
 ## What the port actually costs
@@ -163,6 +170,22 @@ did in 2,463 lines of Rust. The population generator, the censored fit and the
 policy resolution stay in Python: they run once per configuration, not inside
 the loop.
 
+## Two things found while doing it
+
+**The benchmark harness folded compilation into the measurement.** It timed
+three runs from cold and reported their mean, which for an implementation built
+at first call describes neither the first call nor the ones after it. It now
+warms once before the clock starts and reports that first call as its own
+column. This moves every previously published figure slightly, because warming
+removes first-touch costs from every row rather than only from the compiled
+ones.
+
+**No test gave any implementation a chunk that did not start at replication
+zero.** Every fixture starts a run at zero, so all four implementations were
+free to ignore the offset they are told and still agree with the reference
+everywhere. Planting that defect in the compiled loop and again in the batched
+one reddens the assertion that now covers it.
+
 ## What would invalidate the comparison
 
 - **`fastmath` anywhere.** It licenses reassociation, which changes reduction
@@ -178,7 +201,15 @@ the loop.
 
 ## Open questions, for the user
 
-**Do they stay?** Answerable only after step 7. A Numba loop that lands close to
+**Do they stay?** Now answerable, and it is a decision rather than a
+measurement. The Numba loop earns its place on the numbers: level with the
+kernel threaded, and it is what makes the published comparison honest. Threaded
+NumPy earns nothing on speed — it is slower than one thread in four of six
+columns — but it is the evidence for *why* threading Python arrays does not
+work, and deleting it would leave that claim unsupported. The `deprecated/`
+option remains open for either.
+
+**Original wording, for the record:** answerable only after step 7. A Numba loop that lands close to
 the kernel is worth keeping as a fourth implementation and worth saying so in
 the README; one that does not is the polars situation again, and
 `deprecated/README.md` is where that gets recorded. Either way the measurement

@@ -27,15 +27,15 @@ budget sweep draws the reliability-against-budget curve — at zero budget every
 policy lands on the same point as run-to-failure, which is the end-to-end check
 that costs nothing to run.
 
-**The annual loop is implemented three times**, and that is the validation
+**The annual loop is implemented four times**, and that is the validation
 strategy rather than duplication. A scalar Python reference written to be
 checkable by reading; a batched NumPy loop that holds every replication in
-flight at once; and a Rust kernel that spreads replications over worker
-threads. All three take the same arguments, compute the same draws and return
-the same result type, so any of them can be named at the call. No array of
-uniforms is passed: each computes every draw from the run's key and the
-position it is reading, and the two generators are held to agreeing bit for bit
-against NumPy's own Philox.
+flight at once; the reference's algorithm compiled by Numba; and a Rust kernel.
+The last three all spread replications over worker threads. All four take the
+same arguments, compute the same draws and return the same result type, so any
+of them can be named at the call. No array of uniforms is passed: each computes
+every draw from the run's key and the position it is reading, and the three
+generators are held to agreeing bit for bit against NumPy's own Philox.
 
 Two further implementations over a polars frame, one in each language, were
 built and retired; [deprecated/README.md](deprecated/README.md) has the
@@ -43,42 +43,54 @@ measurements and what they say about running a simulation on a column store.
 
 They are compared by tests that force the lifetimes and check every cell, by a
 paired test over drawn lifetimes, and by runs written to disk and diffed row for
-row. **All three agree in every cell of every array**, with no tolerance
+row. **All four agree in every cell of every array**, with no tolerance
 anywhere — which takes deliberate care rather than luck, because floating-point
 addition is not associative and the year's emergency bill decides which segment
 the budget reaches last.
 
-What the timings say, at 12,000 segments over 30 years, on a release build with
-48 cores available. Seconds per replication, mean of 3 runs, and **including the
-cost of producing each run's random draws**, which is work a run actually does:
+What the timings say, at 12,000 segments over 30 years and 96 replications, on a
+release build with 48 cores available. Seconds per replication, mean of 3 runs
+after one warming run, and **including the cost of producing each run's random
+draws**, which is work a run actually does:
 
 | Implementation | `run_to_failure` | `age_threshold` | `risk_ranked` |
 |---|---|---|---|
-| Scalar Python reference | 0.00747 | **0.02039** | 0.04425 |
-| Batched NumPy | **0.00445** | 0.02426 | **0.04400** |
-| Rust kernel, 1 thread | 0.00201 | 0.00262 | 0.04057 |
-| **Rust kernel, 48 threads** | **0.00024** | **0.00026** | **0.00195** |
-| **Fastest Python, beaten by** | **18.5x** | **78.4x** | **22.6x** |
+| Scalar Python reference | 0.00746 | 0.02033 | 0.04405 |
+| Batched NumPy, 1 thread | 0.00459 | 0.02468 | 0.04479 |
+| Batched NumPy, 48 threads | 0.01792 | 0.04335 | 0.03564 |
+| Numba, 1 thread | 0.00273 | 0.00314 | 0.04893 |
+| **Numba, 48 threads** | **0.00014** | **0.00011** | **0.00134** |
+| Rust kernel, 1 thread | 0.00202 | 0.00266 | 0.04058 |
+| Rust kernel, 48 threads | **0.00014** | 0.00019 | 0.00148 |
 
 The three policies differ in how much of the population they make eligible each
 year — none, between 76 and 868 of 12,000, and all of it — and that matters more
-than anything else here. Bold marks the fastest Python in each column, and it is
-not always the same implementation: the batched loop wins where a policy funds
-nothing or everything, and the scalar reference wins where few segments are
-eligible, because the batched form still sorts every one of them.
+than anything else here.
 
-**On one thread the kernel is not reliably faster than Python.** It is level
-under `risk_ranked`, where every segment is a candidate and the array
-expressions it competes with are already compiled loops over the same data. It
-pulls ahead where the candidate set is small — 7.8x under `age_threshold` —
-because it scores only the candidates. All three produce only the draws they
-read, so that part of the work is the same in every row.
+**Bold marks the fastest Python, and it is no longer beaten.** The kernel is
+level with compiled Python under `run_to_failure` and behind it under the other
+two. An earlier version of this table reported the kernel beating the fastest
+Python by 18.5x, 78.4x and 22.6x, and that comparison was one Python thread
+against forty-eight Rust ones: every Python implementation then refused a thread
+count above one. Adding one that does not is what moved the number.
 
-**The win is the replication axis.** They are independent, the interpreter lock
-is released for the whole computation, and no Python implementation follows
-without multiprocessing. That is a fact about the axis rather than about Rust;
-what Rust contributes is that the compiler refused the first version, which
-shared its working buffers between workers.
+**Almost all of it was ever the replication axis.** Replications are
+independent, so spreading them is worth twenty-five to thirty-five times, and
+that term dominates every figure in the table. Compiling the scalar loop is
+worth five to six times more where a policy makes few segments eligible, because
+a compiled loop keeps the ability to skip that vectorising costs. Rust itself is
+worth 1.2x to 1.4x on one thread and about nothing on forty-eight.
+
+**Threading the batched loop mostly does not work**, which is the other half of
+the same finding: it is *slower* on 48 threads than on one in four of six
+columns measured, because Python-level orchestration holds the interpreter lock
+between the array operations that release it.
+
+[docs/compiled-and-threaded-python.md](docs/compiled-and-threaded-python.md) has
+the full measurement, both population sizes, and what the Rust kernel still
+carries that none of this is about — ahead-of-time compilation against Numba's
+5.4-second cold build, one wheel across Python versions, and integer semantics
+that cannot go wrong quietly.
 
 Run the table yourself with `uv run python scripts/run_benchmarks.py`, after
 building with `--release`. See [PLAN.md](PLAN.md) for the model, the decisions

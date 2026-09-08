@@ -24,6 +24,15 @@ be free to break:
   slower by a wide margin, and an unlabelled number cannot be checked against
   anything.
 
+**One run happens before the clock starts, and is reported as its own column.**
+An implementation Numba compiles builds machine code on its first call, which is
+a cost paid once per process rather than once per run, so folding it into a mean
+over three runs describes neither the first call nor the ones after it. Warming
+first and reporting ``first_run_seconds`` beside the mean says both. The other
+implementations pay something smaller on their first call — pages touched, a
+buffer allocated — and warming removes that from every row alike rather than
+from the one it would flatter.
+
 **The measurement is the mean of several runs, and the count is in the table.**
 The minimum is the other defensible choice and answers a different question:
 noise on a shared machine is all in one direction, so the fastest run is the one
@@ -204,10 +213,14 @@ def time_once(
         repeats: How many times to run it.
 
     Returns:
-        The result of the last run, the mean wall time, and the shortest. Both
-        times are returned because the gap between them is worth seeing: a row
+        The result of the last run, the mean wall time, the shortest, and what
+        the first call cost before the clock started. The mean and the minimum
+        are both returned because the gap between them is worth seeing: a row
         whose mean sits well above its minimum was interrupted, and its mean is
-        then measuring the machine rather than the implementation.
+        then measuring the machine rather than the implementation. The first
+        call is returned because for an implementation compiled at runtime it
+        is the compilation, which is real and is not part of what a run costs
+        per chunk.
 
     Raises:
         ValueError: If asked for no runs at all, which would otherwise report a
@@ -216,6 +229,16 @@ def time_once(
     if repeats < 1:
         raise ValueError(f"repeats must be at least 1, got {repeats}")
     annual_loop = run.RUNNABLE[configuration.implementation]
+
+    warming = time.perf_counter()
+    annual_loop(
+        **arguments,
+        **draw_arguments(settings, configuration.n_reps),
+        policy=policy,
+        threads=configuration.threads,
+    )
+    first_run = time.perf_counter() - warming
+
     elapsed = []
     produced = None
     for _ in range(repeats):
@@ -228,7 +251,7 @@ def time_once(
             **arguments, **draws, policy=policy, threads=configuration.threads
         )
         elapsed.append(time.perf_counter() - started)
-    return produced, sum(elapsed) / len(elapsed), min(elapsed)
+    return produced, sum(elapsed) / len(elapsed), min(elapsed), first_run
 
 
 def compare(
@@ -295,7 +318,7 @@ def compare(
             reference[n_reps] = simulate.run_chunk(
                 **shared, **draw_arguments(settings, n_reps), policy=policy
             )
-        produced, seconds, fastest = time_once(
+        produced, seconds, fastest, first_run = time_once(
             configuration, settings, shared, policy, repeats
         )
         log.info(
@@ -314,6 +337,7 @@ def compare(
                 "repeats": repeats,
                 "seconds": seconds,
                 "fastest_seconds": fastest,
+                "first_run_seconds": first_run,
                 "seconds_per_replication": seconds / n_reps,
                 "matches_reference": agrees(reference[n_reps], produced),
             }
