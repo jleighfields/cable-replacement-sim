@@ -24,6 +24,9 @@ dependencies = [
 plots = [
     "plotly>=5.24",
 ]
+compiled = [
+    "numba>=0.60",
+]
 
 [tool.maturin]
 # The Rust extension is built into the `cablesim` package rather than sitting

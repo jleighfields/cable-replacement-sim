@@ -114,12 +114,17 @@ keeps the script and the notebook from disagreeing about what was measured.
 
 ## Steps
 
-- [ ] 1. `uv add --group benchmarks numba`, and confirm `uv sync --locked` still
-      passes.
-- [ ] 2. Philox in Numba, checked against NumPy's `np.random.Philox` at the
-      positions the existing draw tests use — against the published
-      implementation, not against this repo's other two copies of it. **Stop
-      here and report if it will not agree exactly.**
+- [x] 1. numba as the `compiled` extra, mirroring how `plots` is declared,
+      because the module will import it at scope. CI syncs it for the reason it
+      syncs `plots`. numba 0.67, llvmlite 0.49, `omp` threading layer, and
+      `NUMBA_NUM_THREADS` already 48 on this machine, so `set_num_threads`
+      reaches the full count without the environment variable.
+- [x] 2. Philox in Numba, checked against NumPy's `np.random.Philox` — matches
+      bit for bit at counters 0, 1, 2, 7, 4096 and 2^40, including the
+      pre-increment and the conversion to doubles. The 64x64 product is taken
+      by splitting into 32-bit halves, there being no 128-bit integer here, and
+      every constant is typed `uint64` because an untyped literal would promote
+      the arithmetic to `float64` and quietly produce a different generator.
 - [ ] 3. The annual loop under `njit` in `compiled.py`, joined to the existing
       parity tests at no tolerance rather than given tests of its own.
 - [ ] 4. `prange` over replications, with the answer asserted independent of the
@@ -139,6 +144,24 @@ keeps the script and the notebook from disagreeing about what was measured.
       in `README.md` and `PLAN.md` — the row currently compares one Python
       thread against forty-eight Rust threads without saying that it does.
 - [ ] 10. Review passes.
+
+## What the port actually costs
+
+Measured after step 2, because the loop is not the half of it. `njit` cannot
+call into ordinary Python, so everything the annual loop reaches has to exist in
+Numba's dialect too:
+
+| Piece | Lines to port |
+|---|---|
+| the annual loop itself | ~110 |
+| `planned_cost`, `rank_key`, `eligible`, `order_by_rank`, `fund` | ~170 |
+| `conditional_failure_probability`, `draw_lifetime`, `draw_remaining_life` | ~100 |
+| Philox and the draw index | ~60, done |
+
+About 440 lines mirroring three modules — which is the same job `src/` already
+did in 2,463 lines of Rust. The population generator, the censored fit and the
+policy resolution stay in Python: they run once per configuration, not inside
+the loop.
 
 ## What would invalidate the comparison
 
@@ -161,8 +184,7 @@ the README; one that does not is the polars situation again, and
 `deprecated/README.md` is where that gets recorded. Either way the measurement
 is the thing being produced here.
 
-**How many threads is the fair comparison?** Forty-eight matches the published
-kernel row, but replications cap the speedup — ten replications cap it at ten
-however many threads exist, which is why the 100,000-segment run reached 8.8x
-and not 20x. Either the study runs enough replications that forty-eight threads
-are not starved, or it reports a lower thread count and says why.
+**How many threads is the fair comparison?** Settled: **96 replications on 48
+threads**, two per thread so load balancing has something to work with and the
+replication count stops being the binding constraint. That matches the
+published kernel row, so these rows drop into the existing table.
