@@ -164,7 +164,11 @@ sizes, or 15.4% to 33.4% of what the model adds above the interpreter's own
 that scratch is a fraction of either figure. `docs/single-precision.md` carries
 the table these come from; an earlier version of this line quoted 25% to 87%,
 read off a memory table since retaken at one replication count.
-- [ ] 8. Review passes.
+- [x] 8. Review passes. Several rounds. What they found is above, in the
+      section comparing the measurement against what this plan predicted: the
+      mechanism behind step 1's result was guessed wrong and its own test
+      refuted it, and a memory table had to be retaken at one replication
+      count after an earlier version quoted figures read across several.
 
 ## What would make this not worth doing
 

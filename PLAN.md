@@ -684,7 +684,7 @@ defined for only one policy:
 | `age_threshold` | `age >= threshold_years` | age, descending |
 | `risk_ranked` | every segment not already replaced this year | the score, or the score per dollar |
 | `worst_first` | every segment not already replaced this year | `p(t)`, descending |
-| `random` | every segment not already replaced this year | its fixed priority, from `policy_uniforms` (2.11) |
+| `random` | every segment not already replaced this year | its fixed priority, the draw at `(policies, r, i, 0)` (2.11) |
 
 Nothing is ever out of service — a failure is replaced the same year (2.9) — so
 "eligible" means only *not already replaced this year*, which excludes the
@@ -1011,9 +1011,13 @@ preserve a particular lifetime *value* across policies once they diverge.
 Deriving one generator per replication and consuming it in order does **not**
 achieve this. Policies diverge from the first year, so they reach the same draw
 at different points and the streams decorrelate immediately. Indexing is what
-avoids that, and passing an array is the simplest way to be indexed.
+avoids that, and a counter-based generator is what makes a position addressable
+without an array to hold it: the draw at `(purpose, r, i, y)` is the same
+number whichever policy asks for it, and whether anything asked for the ones
+before it.
 
-**Three consequences of materializing the draws:**
+**Chunking, and three consequences of addressing a draw rather than storing
+one:**
 
 - **Replications may be processed in chunks, and whether they are depends on
   the implementation.** The batched NumPy loop holds every replication of a
@@ -1031,71 +1035,48 @@ avoids that, and passing an array is the simplest way to be indexed.
   Crossing the boundary per chunk costs nothing either way — the rule that
   matters is never calling back into Python *inside* the loop, and that
   still holds.
-- **The draws come from the bit generator's raw stream, not from a
-  distribution method**, and the conversion is written down here:
+- **The `random` policy's priorities are a purpose in the same index, not a
+  second array.** A priority is the draw at `(policies, r, i, 0)` — one fixed
+  value per segment per replication — where a lifetime is at
+  `(lifetimes, r, i, y)`. Separating the two by *purpose* rather than by
+  position along a shared stream is what keeps them independent. Reading
+  further along one stream would make the priorities a deterministic function
+  of the same segments' lifetime draws, and since a larger uniform gives a
+  shorter lifetime, the random policy would rank segments by imminence of
+  failure and stop being a control (2.8) — a control correlated with what it
+  controls for has stopped being one. No parity test would notice, because
+  every implementation would compute the same wrong index. A priority that
+  holds across years also makes it a better control, since `age_threshold` is
+  consistent year to year and this way the random comparison is too.
 
-  ```python
-  children = numpy.random.SeedSequence(seed).spawn(n_reps)  # one per replication
-  raw = numpy.random.PCG64(children[r]).random_raw(n_segments * (n_years + 1))
-  block = ((raw >> numpy.uint64(11)) * 2.0**-53).reshape(n_segments, n_years + 1)
-  ```
+- **The sources that are still spawned draw from the bit generator's raw
+  stream, not from a distribution method.** The synthetic segment table and the
+  synthetic failure history are drawn once per run rather than per replication,
+  and nothing crosses a language boundary to reproduce them, so they keep their
+  `SeedSequence` roots rather than moving to the counter-based scheme. Two rules
+  govern them, and both are easy to get wrong in a way nothing detects.
+  **Spawn by purpose first, then by replication**: a fresh `SeedSequence` has
+  spawned nothing, so calling `spawn` on two separately constructed ones returns
+  *identical* children, and asking for "its own child" without saying where from
+  produces the correlation the separation exists to prevent. **Take the raw
+  stream**: NumPy guarantees version-to-version stream compatibility for
+  `BitGenerator` classes and explicitly permits `Generator` methods to break it
+  on a feature release, so a routine upgrade could otherwise move every archived
+  result with nothing failing. `test_the_uniform_stream_is_pinned` holds a
+  handful of values from a fixed seed, so a stream change fails loudly rather
+  than moving every number quietly. `python/cablesim/random_draws.py` holds
+  both designs, and its docstring is where which-applies-to-what is written
+  down.
 
-  One `block` per replication, stacked in replication order into the
-  `(chunk, n_segments, n_years + 1)` array 5.2 receives — C order
-  throughout, so one segment's draws are contiguous.
-
-  **Spawn by purpose first, then by replication.** A fresh `SeedSequence(seed)`
-  has spawned nothing, so calling `.spawn(n_reps)` on two separate ones returns
-  *identical* children — asking for "its own child" without saying where from
-  produces the correlation this scheme exists to avoid. Take one root spawn per
-  independent stream:
-
-  ```python
-  lifetimes, policies, population, records = SeedSequence(seed).spawn(4)
-  children = lifetimes.spawn(n_reps)  # and policies.spawn(n_reps)
-  ```
-
-  **One child per replication per stream is what makes a chunk addressable.**
-  A chunk builds its replications from their own children without consuming
-  the ones before, so replication `r` holds the same draws at any chunk size — which is what lets 6.5, Benchmarks,
-  sweep chunk size and still claim it changes no result. Advancing a single
-  stream by a computed offset would work too and puts the arithmetic in the
-  caller, where an error is silent.
-
-  NumPy guarantees version-to-version stream compatibility for `BitGenerator`
-  classes, calling them "a firmer building block for downstream users that need
-  it", and explicitly permits `Generator` methods to break stream
-  compatibility on feature releases. `Generator(PCG64(seed)).random()` produces
-  exactly the expression above today, so nothing is given up by writing it out
-  — and writing it out is what keeps a NumPy upgrade from silently changing
-  every archived result. A test pins a handful of values from a fixed seed, so
-  a stream change fails loudly rather than moving the numbers.
-
-- **The draws are not written to disk.** They regenerate from
+- **The draws are not written to disk, and there is now nothing to write.**
+  Every uniform is a function of its position under a key derived from
   `simulation.seed`, which 7.1 already records beside every run, so the seed
-  *is* the persistence at four bytes rather than nine gigabytes. Persisting
-  them would not remove any discrepancy between implementations either, because
-  all four already read one array in memory within a run. What persistence
-  could protect — an archived result surviving a library upgrade — is what the
-  raw-stream rule above protects instead, and it protects it on every machine
-  rather than only where the file happens to still exist. A nine-gigabyte
-  artifact cannot be committed and would be regenerated on any other machine
-  regardless, so it would buy a guarantee that holds in exactly one place.
-- **The `random` policy takes a second array**, `policy_uniforms[r, i]` — one
-  fixed priority per segment per replication rather than a fresh permutation
-  every year. **It comes from the `policies` root above, spawned per
-  replication the same way, not from further along the lifetime stream.** Reusing that stream would make the random
-  policy's priorities a deterministic function of the same segments' lifetime
-  draws, and `random` exists to isolate the value of ranking from the value of
-  spending (2.8) — a control correlated with what it controls for has stopped
-  being one, and no parity test would notice, because every implementation
-  reads the same array. `policy_uniforms` is chunked `(chunk, segments)` like
-  the lifetimes and takes its per-replication child the same way, so chunk size
-  changes no result there either. The population and record generators use the
-  remaining two roots on the same principle: streams that must be independent
-  are derived independently, never by reading further along one. A priority that holds across years also makes it a better
-  control, since `age_threshold` is consistent year to year and this way the
-  random comparison is too.
+  *is* the persistence. That argument was made when the draws were an array —
+  149 MB for a fifty-replication chunk and 2.98 GB unchunked — and it only got
+  stronger when the array went away. What persistence could have protected, an
+  archived result surviving a library upgrade, is what the raw-stream rule
+  protects for the spawned sources and what checking Philox against NumPy's own
+  implementation protects for the rest.
 
 ---
 
@@ -1500,7 +1481,7 @@ question with a different answer.
 | Synthetic failure records | `records.py` | — | One-time, and only the fit consumes it |
 | Effective-scale reduction (conductors, length) | `weibull.py` | — | Collapses to one `(shape, scale)` per segment before the call (2.3) |
 | Customer and restoration-time rollup | `population.py` | — | Collapses to four scalars per segment; the kernel never learns customer types or restoration times exist (2.5) |
-| Random draws | `PCG64.random_raw`, per replication | — | Built once per chunk and handed to every implementation, so cross-language parity of the draws cannot fail rather than being tested (2.11) |
+| Random draws | `random_draws.py` | `draws.rs` | Mirrored: the kernel needs the simulation's uniforms without a stream to share, so both compute them from position and both are held to NumPy's Philox. The population and failure history stay Python-only (2.11) |
 | Budget and cost escalation series | `config.py` → arrays | — | A rate written on both sides diverges silently |
 | Censored MLE and the AFT fit | `weibull.py` | — | A one-time fit over a modest table; porting it buys nothing (2.4) |
 | **Conditional `p(t)`** | `weibull.py` | `weibull.rs` | **Mirrored** |
@@ -1707,10 +1688,12 @@ Implementation notes:
   downstream depends on that ordering surviving a config edit.
 - Wrap the compute in `py.allow_threads(|| ...)` and parallelize replications
   with `rayon`. Replications are independent — this is the natural axis.
-- **Uniforms are read at `[r, i, y]` — replication, segment, year** (2.11).
-  The kernel generates nothing and takes no seed. Reading rather than drawing
-  is also what makes results independent of the order replications complete in
-  under rayon.
+- **A uniform is addressed at `(purpose, r, i, y)` — replication, segment,
+  year** (2.11). The kernel takes no seed: it is handed the two key words and
+  computes each uniform from its position, so nothing is drawn from a stream.
+  That is also what makes results independent of the order replications
+  complete in under rayon, since a position does not depend on what a worker
+  computed before it.
 - **The initial draw is left-truncated** at each segment's starting age (2.2).
   Getting this wrong produces a run that completes and curves that look
   plausible.
@@ -2833,8 +2816,10 @@ with maturin, use `rust-numpy` for zero-copy array passing. Pass the
 deterministic parity test and the Phase 4 form of the statistical one — scalar
 reference, 50 replications, 2,000 segments (6.4).
 
-The draw array of 2.11 arrives with Phase 3, not here — `simulate.py` cannot
-run without it — so this phase consumes it rather than deciding it.
+The draws of 2.11 arrive with Phase 3, not here — `simulate.py` cannot run
+without them — so this phase consumes them rather than deciding them. They
+arrived as an array, which Phase 5 then replaced with the counter-based scheme;
+the settled item recording that reversal has the reasoning.
 
 **Phase 5 — parallel, batched baselines, and benchmarks**
 Rayon over replications with the interpreter lock released. `batched.py`: the
