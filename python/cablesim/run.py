@@ -237,9 +237,7 @@ def floating_for(precision: str) -> type[np.floating]:
     return floating
 
 
-def escalation_series(
-    rate: float, n_years: int, precision: str = constants.DEFAULT_PRECISION
-) -> np.ndarray:
+def escalation_series(rate: float, n_years: int, precision: str) -> np.ndarray:
     """Compounds an annual rate into a per-year multiplier.
 
     Args:
@@ -258,9 +256,7 @@ def escalation_series(
     )
 
 
-def segment_arrays(
-    frame: pl.DataFrame, precision: str = constants.DEFAULT_PRECISION
-) -> dict[str, np.ndarray]:
+def segment_arrays(frame: pl.DataFrame, precision: str) -> dict[str, np.ndarray]:
     """Extracts the per-segment arrays an implementation reads.
 
     A segment's position in these arrays is its identifier, and the tie-break
@@ -275,7 +271,9 @@ def segment_arrays(
     Args:
         frame: The population, one row per segment.
         precision: ``"f64"`` or ``"f32"``, naming the dtype every per-segment
-            float array is built at.
+            float array is built at. Required rather than defaulted: this
+            argument has been forgotten twice, and both times it defaulted
+            quietly to double and produced a run at a width nobody asked for.
 
     Returns:
         The arrays, keyed by the argument name each is passed as.
@@ -295,11 +293,11 @@ def segment_arrays(
     arrays["age0"] = arrays.pop("age")
     # The class index keys into the result axis and is not part of the
     # arithmetic, so it keeps its own width whatever the floats are doing.
-    arrays["class_index"] = arrays["class_index"].astype(np.uint8)
-    for name, array in arrays.items():
-        if name != "class_index":
-            arrays[name] = array.astype(floating)
-    return arrays
+    classes = arrays.pop("class_index").astype(np.uint8)
+    return {
+        **{name: array.astype(floating) for name, array in arrays.items()},
+        "class_index": classes,
+    }
 
 
 def replication_chunks(n_reps: int, batch_size: int) -> list[range]:

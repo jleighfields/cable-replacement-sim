@@ -429,13 +429,12 @@ pub fn run_chunk<T: Real>(
                 // its `bincount` widens the result totals to double. Both of those
                 // were checked rather than assumed.
                 //
-                // **No test holds this either way.** Totalling in double here and
-                // narrowing at the subtraction leaves the whole parity suite green,
-                // so what keeps it correct is the reference's `running_total` being
-                // the canonical order and this comment saying so. A test would need
-                // a budget landing between what the two widths total to, and
-                // neither a search over budget levels nor one over cost
-                // distributions has found one.
+                // `test_the_emergency_bill_totals_at_the_width_the_budget_compares_at`
+                // holds this. It needs a budget landing between what the two
+                // widths total to: at single precision on the shipped
+                // population the running sum is 79,962,480 against 79,962,488
+                // for a double total narrowed once, and one candidate falls
+                // either side.
                 let mut emergency_total = T::zero();
                 let year_start = T::from_double(year as f64);
                 for segment in 0..n_segments {

@@ -331,6 +331,48 @@ def at_call_width(arguments: dict[str, object]) -> dict[str, object]:
     }
 
 
+def alternating_lifetimes(arguments: dict[str, object]) -> dict[str, object]:
+    """Copies a call's arguments so even-numbered segments fail and odd ones do not.
+
+    The scenario two parity tests are built on: a year that has both an
+    emergency bill and a candidate list, so ``emergency_charged_to_budget``
+    decides how far down the second the money reaches. Half the population
+    carries ``FAILS_AT_ONCE`` and half ``NEVER_FAILS``, alternating on segment
+    identifier so the split is the same whatever the population size.
+
+    Both scales are applied through the ordinary ``scale`` and
+    ``replacement_scale`` arrays and then cast to the width ``age0`` carries, so
+    the call names one precision rather than two.
+
+    **The failing half starts from new and the surviving half keeps its age.**
+    A lifetime is drawn conditional on survival to the current age, and for a
+    segment far past its scale the accumulated hazard swamps the draw at single
+    precision, so a short scale on an aged segment does not put its remaining
+    life inside year one — measured, 273 of 600 failed rather than all 600, and
+    the tests built on this describe half the population failing. Zeroing only
+    the half meant to fail fixes that without making the survivors ineligible:
+    an all-new population is never past an age threshold, and one of the two
+    tests here ranks on exactly that.
+
+    Args:
+        arguments: The arguments to copy, as the parity fixtures build them.
+
+    Returns:
+        A new argument dictionary; the original is untouched.
+    """
+    n_segments = np.size(arguments["age0"])
+    fails = np.arange(n_segments) % 2 == 0
+    scales = np.where(fails, FAILS_AT_ONCE, NEVER_FAILS).astype(float)
+    return at_call_width(
+        {
+            **arguments,
+            "scale": scales,
+            "replacement_scale": scales,
+            "age0": np.where(fails, 0.0, np.asarray(arguments["age0"])),
+        }
+    )
+
+
 def forced_lifetimes(
     arguments: dict[str, object],
     scale: float,

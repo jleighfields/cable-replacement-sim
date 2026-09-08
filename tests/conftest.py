@@ -147,9 +147,10 @@ def deterministic_arguments(request: pytest.FixtureRequest) -> dict[str, object]
     per width. The precision travels as the dtype of these arrays, so this is
     the whole of what the axis costs: no test names a width, and an
     implementation that mishandled one would fail the comparison it already
-    runs. What this cannot check is that the width is the one asked for, since
-    every implementation would widen together — ``tests/test_benchmarks.py``
-    checks that directly.
+    runs. Comparing implementations cannot check that the width is the one
+    asked for, since every implementation would widen together, so
+    ``simulation_arguments`` asserts the dtype of every float array it built
+    before returning it.
 
     Args:
         request: Supplies the precision this run is parametrized on.

@@ -5,7 +5,13 @@ machine, release build, one implementation per process so the memory attributes
 to one of them. **Memory is `ru_maxrss` for the whole process**, which includes
 about 126 MB of interpreter and imported libraries before any array exists —
 the same in every row, so the difference between two rows is the model's and
-the ratio between them is not. Every configuration reproduced the scalar reference **exactly,
+the ratio between them is not.
+
+The timings come from `scripts/run_benchmarks.py`, which takes `--precision`
+and `--segments` and records both in its provenance. The memory columns come
+from `scripts/measure_memory.py`, which measures one implementation per process
+because a peak is a property of the process and a program running three of them
+cannot say which needed it. Every configuration reproduced the scalar reference **exactly,
 in every cell of every array, at its own width** — the parity suite runs at both
 precisions with no tolerance either way.
 
@@ -38,8 +44,9 @@ single-precision narrowing reddens fifty of its cases.
 single-precision `expm1`, `log1p` and `pow` are bit-identical to this platform's
 `expm1f`, `log1pf` and `powf` — 20,000 of 20,000 each — which are the routines
 the crate calls. They are *not* a double computation rounded once: that
-explanation matches NumPy for 90% of `expm1` inputs and 93% of `log1p`, so it is
-ruled out rather than merely unnecessary.
+explanation matches NumPy for 17,936 of 20,000 `expm1` inputs drawn uniformly on
+[-3, 3] and 18,522 of 20,000 `log1p` inputs on [0.01, 0.99), so it is ruled out
+rather than merely unnecessary.
 
 **This is a property of the platform's libm, not of the two languages**, and it
 is the assumption the single-precision mode rests on. A build against a
@@ -118,5 +125,6 @@ whatever it touches — and every implementation widens the same way and goes on
 agreeing in every cell. This happened twice while building this: once in the
 per-year cost series, and once in the parity fixtures themselves, where
 eighty-eight cases were labelled `f32` and ran `f64` twice while passing.
-`tests/test_benchmarks.py` now checks the width directly, which is the only
-thing that can.
+Two places now check the width directly, which is the only thing that can:
+`tests/test_benchmarks.py` over the arguments the benchmark harness builds, and
+the parity fixture in `tests/conftest.py` over the ones it builds itself.

@@ -216,14 +216,12 @@ pub fn rank_key<T: Real>(
             // fifths of them at single precision, moving 9,537 of 12,000 rank
             // keys on the shipped population.
             //
-            // **No test holds this**, and the reason is worth writing down
-            // rather than leaving for the next person to rediscover: the
-            // divergence is in an intermediate the ranking reads, and neither
-            // a search over counterexample multipliers nor one over budget
-            // levels drove it as far as a different funded set. The shipped
-            // multiplier of 2.5 is exactly representable, so it cannot show it
-            // at all. What keeps the two sides together here is this comment
-            // and the reference being the canonical order.
+            // `test_the_emergency_premium_is_narrowed_where_the_reference_narrows_it`
+            // holds this, on the shipped population at single precision, where
+            // the two orders fund 181 candidates and 180. It needs that
+            // population: on a few hundred segments the ordering moves without
+            // the funded set changing, and the shipped multiplier of 2.5 is
+            // exactly representable and cannot show it at any size.
             let avoided = planned * T::from_double(emergency_multiplier - 1.0);
             failure_probability * (outage_cost_per_failure + avoided)
         }

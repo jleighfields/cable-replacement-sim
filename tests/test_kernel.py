@@ -648,5 +648,5 @@ def test_no_implementation_runs_a_call_that_mixes_two_widths(name: str) -> None:
     }
     mixed = {**single, "budget": single["budget"].astype(np.float64)}
 
-    with pytest.raises((TypeError, ValueError)):
+    with pytest.raises(TypeError):
         run.RUNNABLE[name](**mixed, policy=helpers.resolved("worst_first"))

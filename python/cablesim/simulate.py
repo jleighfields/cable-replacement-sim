@@ -176,9 +176,52 @@ def check_arguments(arguments: dict[str, object], concurrent: bool = False) -> i
             run — 1 is the only count an implementation that runs one
             replication at a time accepts, and anything below 1 is refused by
             every implementation.
-        TypeError: If ``policy.kind`` is not an integer.
+        TypeError: If ``policy.kind`` is not an integer, or if the call carries
+            more than one floating width. The width check is a type error
+            rather than a value error because the width is not a value any
+            argument holds — it is the dtype the arrays are stored at, and the
+            binding refuses the same call by failing to borrow the array as the
+            element type its signature names.
+
+            **The binding makes that refusal first, before any check here.**
+            PyO3 extracts every argument before the function body runs, so a
+            call that both mixes widths and, say, names an unknown policy is
+            refused for the width by the kernel and for the policy here. Where
+            the width is the only thing wrong, both raise ``TypeError``.
     """
     policy = arguments["policy"]
+
+    # One width per call. The precision a run computes in travels as the dtype
+    # of these arrays, so a call carrying two of them is a call at neither: an
+    # array left at the wider one silently widens everything it touches, and
+    # because every implementation widens the same way they all go on agreeing
+    # with each other in every cell. That is a defect with no symptom, and it
+    # has been shipped here twice.
+    #
+    # First, and that is the one place this function's order departs from the
+    # binding's for a reason rather than by accident: PyO3 extracts every
+    # argument before the body runs, so on the Rust side a width it cannot
+    # borrow is refused ahead of everything, including the policy tag. Checking
+    # it anywhere later would have the two sides report different problems for
+    # a call that has both. The class matches too — a dtype that cannot be
+    # borrowed is a type error rather than a bad value — and the wording is
+    # PyO3's on that side by design.
+    widths = {
+        name: arguments[name].dtype
+        for name in (*SEGMENT_ARGUMENTS, "budget", "cost_escalation")
+        if getattr(arguments[name], "dtype", None) is not None
+        and arguments[name].dtype.kind == "f"
+    }
+    if len(set(widths.values())) > 1:
+        counted = collections.Counter(widths.values())
+        common, _ = counted.most_common(1)[0]
+        odd = {name: str(kind) for name, kind in widths.items() if kind != common}
+        raise TypeError(
+            f"this call carries more than one floating width: {odd} against "
+            f"{common} everywhere else. The precision a run computes in is the "
+            f"dtype of these arrays, so a mixed call is a call at neither width"
+        )
+
     n_classes = arguments["n_classes"]
     n_years = arguments["n_years"]
     n_reps = arguments["n_reps"]
@@ -227,32 +270,6 @@ def check_arguments(arguments: dict[str, object], concurrent: bool = False) -> i
     random_draws.check_positions(
         arguments["first_replication"] + n_reps - 1, n_segments - 1, n_years
     )
-
-    # One width per call. The precision a run computes in travels as the dtype
-    # of these arrays, so a call carrying two of them is a call at neither: an
-    # array left at the wider one silently widens everything it touches, and
-    # because every implementation widens the same way they all go on agreeing
-    # with each other in every cell. That is a defect with no symptom, and it
-    # has been shipped here twice.
-    #
-    # The binding refuses it already, with PyO3's own wording and a `TypeError`
-    # because a dtype it cannot borrow is a type error rather than a bad value.
-    # This is the same refusal on the side that would otherwise convert.
-    widths = {
-        name: arguments[name].dtype
-        for name in (*SEGMENT_ARGUMENTS, "budget", "cost_escalation")
-        if getattr(arguments[name], "dtype", None) is not None
-        and arguments[name].dtype.kind == "f"
-    }
-    if len(set(widths.values())) > 1:
-        counted = collections.Counter(widths.values())
-        common, _ = counted.most_common(1)[0]
-        odd = {name: str(kind) for name, kind in widths.items() if kind != common}
-        raise TypeError(
-            f"this call carries more than one floating width: {odd} against "
-            f"{common} everywhere else. The precision a run computes in is the "
-            f"dtype of these arrays, so a mixed call is a call at neither width"
-        )
 
     for name in SEGMENT_ARGUMENTS:
         column = arguments[name]
@@ -402,7 +419,10 @@ def run_chunk(
             These are the checks ``cablesim.kernel.run_chunk`` makes, in the
             order it makes them and word for word, because the two are
             documented as interchangeable behind one call: a caller must not
-            get an answer from one and an error from the other.
+            get an answer from one and an error from the other. The mixed-width
+            refusal is the exception to the ordering: the binding makes it at
+            extraction, before every check in this list, where this
+            implementation makes it after the draw-position check.
 
             What the two report differently is whatever the binding's
             argument types refuse before any check of ours runs: an array
@@ -418,8 +438,16 @@ def run_chunk(
             error naming neither the argument nor the reason. So an argument
             set this accepts is not guaranteed to cross the boundary.
 
-        TypeError: If ``policy.kind`` is not an integer, or an array is not
-            one-dimensional where one entry per segment is expected.
+        TypeError: If ``policy.kind`` is not an integer, or if the call carries
+            more than one floating width — the precision a run computes in is
+            the dtype of these arrays, so a call carrying two of them is a call
+            at neither, and widening one silently would give an answer at a
+            width nobody asked for.
+
+            A per-segment array that is not one-dimensional raises
+            ``ValueError`` here and ``TypeError`` from the binding, which is
+            one of the reported-differently cases above rather than a class the
+            two share.
     """
     n_segments = check_arguments(locals())
     results = Results(

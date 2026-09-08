@@ -67,26 +67,50 @@ def test_numpy_and_the_system_library_agree_in_single_precision() -> None:
     for name in ("expm1f", "log1pf"):
         getattr(library, name).restype = ctypes.c_float
         getattr(library, name).argtypes = [ctypes.c_float]
+    library.powf.restype = ctypes.c_float
+    library.powf.argtypes = [ctypes.c_float, ctypes.c_float]
 
     generator = np.random.default_rng(0)
-    sample = generator.uniform(-3.0, 3.0, 20_000).astype(np.float32)
+    # Each over the range the annual loop actually reaches it in: the hazard
+    # exponent over a plausible age-to-scale ratio, the lifetime draw over the
+    # open unit interval a uniform lands in.
+    hazard = generator.uniform(-3.0, 3.0, 20_000).astype(np.float32)
+    uniform = generator.uniform(0.01, 0.99, 20_000).astype(np.float32)
+    ratio = generator.uniform(0.1, 50.0, 20_000).astype(np.float32)
+    exponent = np.float32(6.5)
 
-    from_numpy = np.expm1(sample)
-    from_library = np.array(
-        [library.expm1f(value) for value in sample], dtype=np.float32
-    )
-    through_double = np.expm1(sample.astype(np.float64)).astype(np.float32)
-
-    assert np.array_equal(from_numpy, from_library), (
-        "NumPy and the system C library disagree on single-precision expm1, so "
-        "the crate and NumPy would compute different numbers and no run at that "
-        "precision could be compared against another implementation"
-    )
-    assert not np.array_equal(from_numpy, through_double), (
-        "computing in double and rounding once gives the same answer here, so "
-        "this test no longer distinguishes the two explanations and would pass "
-        "for an implementation that does not share the C library"
-    )
+    checks = {
+        "expm1": (
+            np.expm1(hazard),
+            [library.expm1f(value) for value in hazard],
+            np.expm1(hazard.astype(np.float64)),
+        ),
+        "log1p": (
+            np.log1p(-uniform),
+            [library.log1pf(-value) for value in uniform],
+            np.log1p(-uniform.astype(np.float64)),
+        ),
+        "pow": (
+            ratio**exponent,
+            [library.powf(value, 6.5) for value in ratio],
+            ratio.astype(np.float64) ** 6.5,
+        ),
+    }
+    for name, (from_numpy, from_library, in_double) in checks.items():
+        assert np.array_equal(
+            from_numpy, np.array(from_library, dtype=np.float32)
+        ), (
+            f"NumPy and the system C library disagree on single-precision "
+            f"{name}, so the crate and NumPy would compute different numbers "
+            f"and no run at that precision could be compared against another "
+            f"implementation"
+        )
+        assert not np.array_equal(from_numpy, in_double.astype(np.float32)), (
+            f"for {name}, computing in double and rounding once gives the same "
+            f"answer over this sample, so this test no longer distinguishes the "
+            f"two explanations and would pass for an implementation that does "
+            f"not share the C library"
+        )
 
 
 def test_min_of_n_matches_the_reduced_scale() -> None:

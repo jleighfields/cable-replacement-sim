@@ -182,7 +182,16 @@ something else being computed:
 ```bash
 uv run python scripts/run_benchmarks.py            # the shipped population
 uv run python scripts/run_benchmarks.py --reduced  # while someone watches
+uv run python scripts/run_benchmarks.py --precision f32 --segments 100000
 ```
+
+`--precision` selects the working width and `--segments` resizes the
+population, so the timings in
+[docs/single-precision.md](docs/single-precision.md) can be reproduced row by
+row. Both are recorded in the `provenance.json` written beside the table,
+because the width changes the numbers as well as the timings and two tables
+taken at different precisions are otherwise indistinguishable on disk. The
+memory columns in that document are not produced by this script.
 
 ## Testing
 
