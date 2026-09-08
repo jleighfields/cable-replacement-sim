@@ -8,6 +8,7 @@ import contextlib
 import functools
 import importlib.util
 import pathlib
+import platform
 import re
 import subprocess
 import types
@@ -552,3 +553,159 @@ def script(name: str) -> types.ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def total_order(values: np.ndarray) -> np.ndarray:
+    """Maps floats onto integers that sort the way the floats do.
+
+    Two floats one representable step apart differ by one here, whatever their
+    exponent, which is what makes "how far apart" a meaningful question across
+    a sample spanning several orders of magnitude. Subtracting the raw bit
+    patterns does not give that across the sign boundary, because a negative
+    float's pattern grows as the value falls.
+
+    Args:
+        values: Any floating array, read through its bit pattern.
+
+    Returns:
+        One integer per value, monotone in the value, with both zeros at 0.
+    """
+    width = np.dtype(f"int{values.dtype.itemsize * 8}")
+    bits = values.view(width).astype(np.int64)
+    lowest = np.int64(-(2 ** (values.dtype.itemsize * 8 - 1)))
+    return np.where(bits < 0, lowest - bits, bits)
+
+
+def steps_apart(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    """Counts representable steps between two arrays, elementwise.
+
+    Args:
+        left: One array.
+        right: The other, same dtype and shape.
+
+    Returns:
+        How many representable values separate each pair; 0 where equal.
+    """
+    return np.abs(total_order(left) - total_order(right))
+
+
+def disagreement_report(
+    name: str, inputs: np.ndarray, from_numpy: np.ndarray, from_library: np.ndarray
+) -> str:
+    """Describes where and by how much two implementations differ.
+
+    Written for the failure message of the single-precision agreement check,
+    whose whole difficulty is that "they disagree" does not say whether the
+    disagreement matters. What decides that is **which inputs disagree**: a
+    difference at an input the annual loop never reaches is a property of the
+    sample, and one at an input it reaches every year is a property of the
+    model. So the offending inputs are reported, not just the count.
+
+    Args:
+        name: The function being compared, for the report's first line.
+        inputs: What each result was computed from.
+        from_numpy: NumPy's results.
+        from_library: The C library's results, same dtype.
+
+    Returns:
+        A multi-line report, or a line saying they agree everywhere.
+    """
+    steps = steps_apart(from_numpy, from_library)
+    differing = np.flatnonzero(steps)
+    if differing.size == 0:
+        return f"{name}: agrees on all {inputs.size:,} inputs"
+
+    offending = inputs[differing]
+    lines = [
+        f"{name}: {differing.size:,} of {inputs.size:,} inputs disagree, "
+        f"by at most {int(steps.max())} representable step(s)",
+        f"{name}: those inputs span {offending.min():.6g} to "
+        f"{offending.max():.6g}, within a sample spanning "
+        f"{inputs.min():.6g} to {inputs.max():.6g}",
+    ]
+    # A handful is enough to recognise the values; the span above is what says
+    # whether they cluster.
+    for index in differing[:5]:
+        # Nine significant digits, which is what a single-precision value needs
+        # to be read back as itself.
+        lines.append(
+            f"{name}:   f({float(inputs[index]):.9g}) = "
+            f"{float(from_numpy[index]):.9g} from NumPy, "
+            f"{float(from_library[index]):.9g} from the C library"
+        )
+    return "\n".join(lines)
+
+
+CPUINFO_PATH: pathlib.Path = pathlib.Path("/proc/cpuinfo")
+"""Where Linux publishes the processor this run is on."""
+
+
+def platform_fingerprint(cpuinfo: pathlib.Path = CPUINFO_PATH) -> list[str]:
+    """What a run needs to record to explain a floating-point disagreement.
+
+    Reported on every run rather than only on a failing one. A fingerprint from
+    the machine that disagrees says nothing on its own — what identifies the
+    difference is comparing it against the machines that agree, and those are
+    the runs that passed.
+
+    Each fact that cannot be read says so rather than being left out, since a
+    missing line and an absent feature would otherwise look the same in a log.
+
+    Args:
+        cpuinfo: Where to read the processor from. An argument only so that a
+            test can reach the branch taken where the file is absent, which on
+            the platform this runs on it otherwise never would.
+
+    Returns:
+        One line per fact, for a test report header.
+    """
+    missing = f"unreadable ({cpuinfo} is not present)"
+    model = f"cpu model: {missing}"
+    flags = f"cpu features: {missing}"
+    if cpuinfo.exists():
+        text = cpuinfo.read_text()
+        named = re.search(r"^model name\s*:\s*(.+)$", text, re.MULTILINE)
+        model = f"cpu model: {named.group(1).strip() if named else 'not named'}"
+        listed = re.search(r"^flags\s*:\s*(.+)$", text, re.MULTILINE)
+        present = set(listed.group(1).split()) if listed else set()
+        # The features that decide which kernel a vectorised or dispatched
+        # implementation runs, on either side of the comparison.
+        watched = ("avx", "avx2", "fma", "avx512f", "avx512dq", "avx512vl")
+        flags = "cpu features: " + " ".join(
+            f"{feature}={'yes' if feature in present else 'no'}"
+            for feature in watched
+        )
+
+    dispatch = numpy_dispatch()
+    return [
+        model,
+        flags,
+        f"libc: {' '.join(platform.libc_ver()) or 'unknown'}",
+        f"numpy: {np.__version__}, baseline {dispatch['baseline']}, "
+        f"enabled {dispatch['enabled'] or 'none beyond baseline'}",
+    ]
+
+
+def numpy_dispatch() -> dict[str, str]:
+    """Which vectorised code paths this NumPy build is allowed to take.
+
+    NumPy compiles several instruction-set variants of a loop and picks one at
+    import from what the processor reports. That choice is the first candidate
+    explanation for two machines computing different bits from one build, so it
+    is recorded beside the processor rather than inferred from it.
+
+    Returns:
+        The always-compiled baseline and the dispatched sets this machine
+        enabled, each as a space-separated string, or a note where this NumPy
+        does not expose them.
+    """
+    umath = getattr(np._core, "_multiarray_umath", None)
+    baseline = getattr(umath, "__cpu_baseline__", None)
+    dispatch = getattr(umath, "__cpu_dispatch__", None)
+    features = getattr(umath, "__cpu_features__", None)
+    if baseline is None or dispatch is None or features is None:
+        return {"baseline": "not exposed by this numpy", "enabled": ""}
+    return {
+        "baseline": " ".join(baseline),
+        "enabled": " ".join(name for name in dispatch if features.get(name)),
+    }

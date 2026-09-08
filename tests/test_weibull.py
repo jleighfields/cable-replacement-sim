@@ -8,6 +8,7 @@ in only one way.
 
 import ctypes
 import ctypes.util
+import pathlib
 import re
 
 import numpy as np
@@ -67,7 +68,13 @@ def test_numpy_and_the_system_library_agree_in_single_precision() -> None:
 
     This is a property of the platform, so this is where a build against a
     different C library would report rather than the parity suite failing
-    somewhere less obvious.
+    somewhere less obvious. **The failure carries which inputs disagreed**,
+    because "they disagree" does not say whether it matters: a difference at an
+    input the annual loop never reaches is a fact about this sample, and one at
+    an input it reaches every year is a fact about the model. The machine is in
+    the run header, printed whether this passes or fails, since a fingerprint
+    from the machine that disagreed means nothing without the ones that did
+    not.
     """
     library = ctypes.CDLL(ctypes.util.find_library("m"))
     for name in ("expm1f", "log1pf"):
@@ -85,31 +92,36 @@ def test_numpy_and_the_system_library_agree_in_single_precision() -> None:
     ratio = generator.uniform(0.1, 50.0, 20_000).astype(np.float32)
     exponent = np.float32(6.5)
 
+    # Each entry carries the argument as well as the three results, so a
+    # failure can name the inputs that disagreed rather than only the count.
     checks = {
         "expm1": (
+            hazard,
             np.expm1(hazard),
             [library.expm1f(value) for value in hazard],
             np.expm1(hazard.astype(np.float64)),
         ),
         "log1p": (
+            -uniform,
             np.log1p(-uniform),
             [library.log1pf(-value) for value in uniform],
             np.log1p(-uniform.astype(np.float64)),
         ),
         "pow": (
+            ratio,
             ratio**exponent,
             [library.powf(value, 6.5) for value in ratio],
             ratio.astype(np.float64) ** 6.5,
         ),
     }
-    for name, (from_numpy, from_library, in_double) in checks.items():
-        assert np.array_equal(
-            from_numpy, np.array(from_library, dtype=np.float32)
-        ), (
+    for name, (inputs, from_numpy, from_library, in_double) in checks.items():
+        from_c = np.array(from_library, dtype=np.float32)
+        assert np.array_equal(from_numpy, from_c), (
             f"NumPy and the system C library disagree on single-precision "
             f"{name}, so the crate and NumPy would compute different numbers "
             f"and no run at that precision could be compared against another "
-            f"implementation"
+            f"implementation\n"
+            + helpers.disagreement_report(name, inputs, from_numpy, from_c)
         )
         assert not np.array_equal(from_numpy, in_double.astype(np.float32)), (
             f"for {name}, computing in double and rounding once gives the same "
@@ -358,3 +370,92 @@ def test_the_forced_scale_stays_inside_single_precision() -> None:
         f"{np.isnan(overflowed).mean():.0%} of the fleet at NaN; the docstring "
         f"says most of it, which is the reason it gives for not lowering this"
     )
+
+
+def test_representable_steps_are_counted_across_the_sign_boundary() -> None:
+    """Subtracting raw bit patterns is wrong either side of zero.
+
+    A negative float's bit pattern grows as the value falls, so the two
+    smallest numbers either side of zero — one representable step from it
+    apiece — sit at opposite ends of the integer range. Read naively they are
+    two thousand million steps apart rather than two, which would turn every
+    report of a sign-straddling disagreement into a number that means nothing.
+    """
+    below = np.nextafter(np.float32(0.0), np.float32(-1.0))
+    above = np.nextafter(np.float32(0.0), np.float32(1.0))
+
+    assert helpers.steps_apart(np.array([below]), np.array([above]))[0] == 2
+    assert helpers.steps_apart(np.array([above]), np.array([above]))[0] == 0
+    # The two zeros are one value as far as this is concerned, and their bit
+    # patterns are as far apart as the representation allows.
+    assert helpers.steps_apart(
+        np.array([np.float32(-0.0)]), np.array([np.float32(0.0)])
+    )[0] == 0
+
+
+def test_the_disagreement_report_names_the_inputs_that_disagreed() -> None:
+    """The count alone cannot say whether a disagreement matters.
+
+    Which inputs disagree is what separates a fact about the sample from a
+    fact about the model, and the report is read from a continuous integration
+    log for a machine that cannot be borrowed, so it has to carry the values
+    rather than an index into an array nobody has.
+    """
+    inputs = np.linspace(-3.0, 3.0, 100, dtype=np.float32)
+    computed = np.expm1(inputs)
+    other = computed.copy()
+    other[7] = np.nextafter(other[7], np.float32(1e30))
+
+    report = helpers.disagreement_report("expm1", inputs, computed, other)
+
+    assert "1 of 100 inputs disagree" in report
+    assert "at most 1 representable step" in report
+    # The offending input, to nine significant digits, and both answers.
+    assert f"{float(inputs[7]):.9g}" in report
+    assert f"{float(computed[7]):.9g}" in report
+    assert f"{float(other[7]):.9g}" in report
+    # The span of the whole sample, so a reader can see where in it they fell.
+    assert f"{float(inputs.min()):.6g}" in report
+
+
+def test_the_disagreement_report_says_so_when_nothing_disagrees() -> None:
+    """A report that is empty when the arrays match reads as a broken report.
+
+    This one is called only from a failing assertion today, so the agreeing
+    branch would otherwise never run and would rot unnoticed.
+    """
+    inputs = np.linspace(-3.0, 3.0, 100, dtype=np.float32)
+    computed = np.expm1(inputs)
+
+    report = helpers.disagreement_report("expm1", inputs, computed, computed)
+
+    assert report == "expm1: agrees on all 100 inputs"
+
+
+FINGERPRINT_FACTS = ["cpu model", "cpu features", "libc", "numpy"]
+"""What the run header records about the machine, in the order it records it."""
+
+
+def test_the_platform_fingerprint_reports_every_fact_it_claims_to() -> None:
+    """The fingerprint is compared across machines, so a missing line is what
+    makes the comparison ambiguous exactly when it is needed."""
+    lines = helpers.platform_fingerprint()
+
+    assert [line.partition(":")[0] for line in lines] == FINGERPRINT_FACTS
+    assert all(line.partition(":")[2].strip() for line in lines), lines
+
+
+def test_the_platform_fingerprint_says_which_facts_it_could_not_read() -> None:
+    """A fact left out and a fact that is absent look the same in a log.
+
+    Driven at a path that does not exist, because on the platform this suite
+    runs on the processor file is always there and the branch that handles its
+    absence would never be reached — an untaken branch in a diagnostic that
+    only ever runs on a machine nobody can borrow.
+    """
+    lines = helpers.platform_fingerprint(pathlib.Path("/proc/cpuinfo.absent"))
+
+    assert [line.partition(":")[0] for line in lines] == FINGERPRINT_FACTS
+    unreadable = [line for line in lines if "unreadable" in line]
+    assert len(unreadable) == 2, lines
+    assert all("/proc/cpuinfo.absent" in line for line in unreadable), unreadable

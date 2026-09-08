@@ -45,6 +45,16 @@ This machine has no AVX-512 (NumPy reports `found: X86_V3`,
 differ is the one that cannot be exercised here. That is a reason to go and
 look at a failing runner, not a reason to assume.
 
+**One clue does point somewhere, and the diagnostic is built to test it.** The
+failing run printed both arrays. At the first input it computed 1.2745224 from
+NumPy against 1.2745225 from the C library. This machine computes 1.27452254
+from NumPy for that same input, and its C library agrees. So the C library
+answers alike on both machines and **NumPy is the side that differs** — which
+puts the dispatch question on NumPy's, where the only path this machine cannot
+take is AVX-512. A red run whose header reports an enabled set beyond `X86_V3`
+confirms it; one that reports `X86_V3` like this machine refutes it and sends
+the question back to the C library.
+
 **So step one is diagnosis, and no test changes before it.** Every remedy below
 depends on which inputs disagree and by how much, and a fix chosen without that
 would be a guess dressed as a repair.
@@ -65,16 +75,20 @@ The last of those is what decides the remedy, so it is the part not to skip.
 The question it answers: **do the disagreeing inputs lie in the range the
 annual loop actually reaches?**
 
-Where it goes matters. A failing assertion prints nothing extra, so this is
-either a `pytest` failure message built from the comparison it already
-computes — the cheapest option, since the test holds all three arrays already —
-or a separate always-run CI step that prints the fingerprint whatever happens.
-Prefer building it into the assertion message: it then reports the same way for
-someone running locally on a machine that disagrees.
+**Done.** The fingerprint prints from `pytest_report_header` on every run,
+passing or failing, because a fingerprint from the machine that disagreed
+identifies nothing without the ones that agreed. The disagreement report is
+built into the failing assertion, so it reaches a continuous integration log
+and a local run alike, and it names the offending inputs to nine significant
+digits — enough to read a single-precision value back as itself — beside the
+span of the sample they fell in.
 
-This step is worth doing on its own even if the remedy turns out to be
-straightforward, because the same information is what tells us whether a future
-red is this problem or a new one.
+The diagnostic is itself tested, and each of its tests was watched failing
+against a named mutation, because this code runs once, on a machine nobody can
+borrow, and a diagnostic that quietly reports nothing is worse than none. That
+includes the branch taken where the processor file is absent, which the
+platform this suite runs on never reaches on its own — the path is an argument
+so a test can drive it.
 
 ## Step 2 — the remedy, chosen from what step 1 finds
 
@@ -156,12 +170,44 @@ everywhere over a test that is skipped somewhere.
   evidence for a fix is a run of greens long enough to be worth something,
   and the honest report says how many.
 
-## Open questions for the user
+## The decision this rests on, already taken
 
-1. **Is single precision meant to be portable?** If the answer from step 1 is
-   that the platform genuinely disagrees on inputs the loop reaches, this is
-   the decision that follows, and it belongs in the project's own record of
-   decisions rather than in a test.
-2. **Is a skipped test acceptable in this suite?** There is currently no
-   platform-conditional skip anywhere in it, so this would be the first, and it
-   is the kind of thing that quietly spreads.
+**Single precision rests on a stated platform precondition.** It stays an
+opt-in option whose bit-for-bit exactness depends on NumPy and the crate
+reaching the same C library. Where that does not hold, the tests that depend on
+it report the fact and stand down rather than failing, and the precondition is
+recorded among the project's decisions rather than left implicit in a test.
+
+Three things follow, and they are not separate questions:
+
+- **There is one predicate, defined in one place**, and it is what the
+  agreement test currently asserts. A platform-conditional skip is what
+  "stand down" means, so this suite gets its first one. It should be the only
+  one, and what may attach to it is exactly the tests that compare single
+  precision at no tolerance.
+- **A predicate that fails must stay visible.** The failure mode to avoid is
+  not a red check; it is a machine where single precision is quietly unsafe and
+  every test passes. So the predicate's state gets printed on every CI run,
+  whatever it is, and the skip carries the reason rather than a bare marker. A
+  skip nobody reads is the precondition deleted.
+- **The predicate must be watched both ways.** Forced true and forced false,
+  confirming the suite reports each. A predicate that is always true is a skip
+  that never fires and a set of tests that silently never run.
+
+## What is still open, and what settles it
+
+Neither is a policy question; both are decided by the numbers step 1 produces.
+
+1. **Do the two knife-edge fixtures attach to the predicate, or get re-searched
+   so they run everywhere?** Prefer re-searching: a test that runs on every
+   machine is worth more than one conditionally skipped, and these check the
+   *arithmetic order* rather than the platform, so they should not stand down
+   with the platform if they do not have to. Whether they can is arithmetic —
+   the gap between each fixture's two cut points against the largest
+   last-place difference step 1 measures. The emergency-bill sibling straddles
+   eight dollars in eighty million, so the margin may not be there.
+2. **Where the predicate is evaluated.** Once per session in a fixture is
+   cheapest and makes the skip reason available everywhere; inside the
+   agreement test is simpler but leaves the parity fixtures needing their own
+   copy. Prefer the fixture, and let the agreement test consume it, so the
+   property is computed once and described once.

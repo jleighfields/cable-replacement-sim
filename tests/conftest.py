@@ -27,6 +27,24 @@ from cablesim import constants, population, random_draws, run
 
 from tests import helpers
 
+
+def pytest_report_header() -> list[str]:
+    """Records the machine, at the top of every run.
+
+    A handful of checks in this suite compare single-precision results against
+    the system C library at no tolerance, and whether they hold is a property
+    of the processor and the libraries rather than of this repository. When one
+    of them fails, the only thing that identifies *why* is the difference
+    between this machine and the ones where it passed — so the fingerprint is
+    printed whatever the outcome, because a record kept only on failures has
+    nothing to compare against.
+
+    Returns:
+        The lines to print under pytest's own header.
+    """
+    return helpers.platform_fingerprint()
+
+
 DETERMINISTIC_SEGMENTS = 400
 """Population for the deterministic tests.
 
