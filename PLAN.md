@@ -1961,7 +1961,8 @@ Which comparisons share random draws, and which do not:
 **What the single-threaded kernel is worth, measured.** At 12,000 segments,
 50 replications and a 30-year horizon, release build, one thread, against the
 reference on the same draws: 1.9x with no candidates at all, 5.8x under an age
-threshold of 45 years — which leaves 655 of 12,000 eligible — and **1.0x for
+threshold of 45 years — which leaves between 76 and 868 of 12,000 eligible in
+any one year — and **1.0x for
 the three policies that use the neutral threshold**, where every segment is a
 candidate every year. The kernel scores only candidates while the reference
 scores the whole population every year, which is the whole of that spread.
@@ -2061,32 +2062,39 @@ something else being computed.
 The three policies are shown together because the answer depends on them more
 than on anything else in the table. What varies is how much of the population a
 policy makes eligible each year: `run_to_failure` funds nothing, `age_threshold`
-at 45 years makes 655 of 12,000 eligible, and `risk_ranked` makes every segment
-a candidate.
+at 45 years makes between 76 and 868 of 12,000 eligible depending on the year,
+and `risk_ranked` makes every segment a candidate.
 
 | Implementation | `run_to_failure` | `age_threshold` | `risk_ranked` |
 |---|---|---|---|
-| Scalar Python reference | 0.01513 | 0.02817 | 0.05191 |
-| Batched NumPy | **0.00551** | **0.02498** | **0.04496** |
-| Rust kernel, 1 thread | 0.00224 | 0.00295 | 0.04748 |
-| **Rust kernel, 48 threads** | **0.00024** | **0.00030** | **0.00222** |
-| **Fastest Python, beaten by** | **23.0x** | **83.3x** | **20.3x** |
+| Scalar Python reference | 0.00747 | **0.02039** | 0.04425 |
+| Batched NumPy | **0.00445** | 0.02426 | **0.04400** |
+| Rust kernel, 1 thread | 0.00201 | 0.00262 | 0.04057 |
+| **Rust kernel, 48 threads** | **0.00024** | **0.00026** | **0.00195** |
+| **Fastest Python, beaten by** | **18.5x** | **78.4x** | **22.6x** |
 
 **Measured once at 100,000 segments**, which is eight times the shipped
 population and further than anything in the test suite goes. Ten replications,
 30 years, `risk_ranked`: the scalar reference 0.418 s per replication, the
-batched loop 0.436, the kernel 0.445 on one thread and 0.048 on forty-eight,
+batched loop 0.432, the kernel 0.386 on one thread and 0.044 on forty-eight,
 **and every one of them reproduced the reference exactly.** That last is the
 part worth having: the parity tests run at 400 and 2,000 segments, so a defect
 that only appears at scale — an index overflowing, a reduction reordering —
 would be invisible to the whole suite.
 
-Peak memory for the process was **0.28 GB**. The same run under the design that
-passed draws in as an array would have needed about 1.2 GB for the draws alone.
+Peak memory was **0.32 GB** for a process that ran all four implementations in
+turn. The same run under the design that passed draws in as an array would have
+needed about 1.2 GB for the draws alone.
 
-The threading ratio there is 8.7 and not 20, and the population is not the
+The threading ratio there is 8.8 and not 20, and the population is not the
 reason: replications are the axis being parallelised, so ten of them cap the
-speedup at ten however many threads exist. 8.7 is 87% of that ceiling.
+speedup at ten however many threads exist. 8.8 is 88% of that ceiling.
+
+**On one thread at that size the kernel is 12% ahead of the batched loop**,
+0.386 against 0.432, where at 12,000 segments under the same policy the two are
+level. Almost all of the kernel's advantage at scale is the threads rather than
+the port, which is the comparison the single-thread row exists to make
+visible.
 
 **Draw generation is inside the timed region**, because a run pays for it once
 per chunk and an implementation producing only what it reads deserves the
@@ -2095,21 +2103,32 @@ same work is counted on both sides of the change and the improvement is a
 measurement rather than an artefact of where the clock went.
 
 Bold marks the fastest Python implementation in each column, which is the
-denominator of the last row. It is the batched loop in all three now, but that
-row exists because it has not always been: before the draws were computed rather
-than passed in, the scalar reference was faster on two of the three, and a
-speedup quoted against a baseline the reference beats is flattered.
+denominator of the last row. **It is not the same implementation in every
+column**, which is exactly why that row exists rather than a fixed baseline: the
+batched loop wins where a policy funds nothing or everything, and the scalar
+reference wins under `age_threshold`, where 503 of 12,000 segments are
+eligible in the first year and between 76 and 868 in any year, and the batched
+form sorts all 12,000 every year regardless. The count does not climb with the
+population's age the way the threshold alone would suggest, because funding a
+segment replaces it and a replaced segment is new again — the policy spends the
+candidates it creates.
+
+The two swapped places twice while this was being built — once when the batched
+loop was written with a wasted pass in it, and once when computing draws made
+the reference pay a per-call cost it had not paid before. A speedup quoted
+against whichever was named the baseline would have moved both times without the
+kernel changing at all.
 
 Five findings, and only the second is the one this project set out to make:
 
 - **Single-threaded, the compiled kernel is not reliably faster than Python.**
-  It is level under `risk_ranked` — 0.0475 against 0.0450 — and 8.5x under
-  `age_threshold`. The gap tracks the candidate set exactly: the kernel scores
+  It is roughly level under `risk_ranked` — 0.0406 against 0.0440 — and 7.8x
+  under `age_threshold`. The gap tracks the candidate set exactly: the kernel scores
   only the candidates, the array implementations score the whole population
   because that is what vectorizes, and when every segment is a candidate the
   advantage is gone. A claim that this model is faster in Rust, single
   threaded, would be false for the policy that is the actual proposal.
-- **The win is the replication axis: 20x to 83x.** Replications are
+- **The win is the replication axis: 18x to 78x.** Replications are
   independent, each reads its own slice of the draws and writes its own block,
   and the interpreter lock is released for the whole computation. Nothing on
   the Python side follows without multiprocessing. This holds for reasons that

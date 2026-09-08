@@ -100,10 +100,12 @@ def _(mo):
     **Read the threading ratio against the replication count, not the
     population.** Replications are the axis being parallelised, so the speedup
     cannot exceed how many there are however many threads the machine has. At
-    100,000 segments and 10 replications the kernel comes out 8.7 times faster
-    than the fastest Python — which is 87% of the ceiling of 10, not a sign that
-    parallelism degrades with population. Lowering replications to afford a
-    larger population lowers that ceiling with it.
+    100,000 segments and 10 replications the kernel on forty-eight threads comes
+    out 8.8 times faster than the same kernel on one — which is 88% of the
+    ceiling of 10, not a sign that parallelism degrades with population. Against
+    the fastest Python rather than against itself, the same run gives 9.5.
+    Lowering replications to afford a larger population lowers that ceiling
+    with it.
     """
     )
     return

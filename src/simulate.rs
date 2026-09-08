@@ -176,6 +176,13 @@ struct Scratch {
     replaced: Vec<bool>,
     /// The eligible segments, ascending, refilled each year.
     candidates: Vec<usize>,
+    /// The fixed per-segment priority the random policy ranks on.
+    ///
+    /// Filled once per replication rather than read per candidate per year. It
+    /// does not depend on the year, so drawing it inside the year loop would
+    /// recompute the same twelve thousand values once for every year of the
+    /// horizon.
+    priority: Vec<f64>,
 }
 
 impl Scratch {
@@ -190,6 +197,7 @@ impl Scratch {
             rank: vec![0.0; n_segments],
             replaced: vec![false; n_segments],
             candidates: Vec::with_capacity(n_segments),
+            priority: vec![0.0; n_segments],
         }
     }
 }
@@ -355,6 +363,7 @@ pub fn run_chunk(
             rank,
             replaced,
             candidates,
+            priority,
         } = scratch;
         // This replication's own results: one replication's worth, so
         // `years * classes` per buffer.
@@ -369,11 +378,26 @@ pub fn run_chunk(
         // make the chunking change the numbers.
         let replication_in_run = first_replication + replication as u64;
 
+        // The two draws every segment takes whatever happens to it, each a run
+        // of consecutive positions and so a quarter as many encryptions as
+        // asking for them one at a time. The priority does not depend on the
+        // year, so it is filled here rather than inside the year loop.
+        draws::fill_run(
+            draws::index(draws::purpose::POLICIES, replication_in_run, 0, 0),
+            draw_key,
+            priority,
+        );
+        draws::fill_run(
+            draws::index(draws::purpose::LIFETIMES, replication_in_run, 0, 0),
+            draw_key,
+            failure_time,
+        );
+
         // Conditional on survival to age0: a population that starts partway
         // through its life must not behave as though it were new.
         for segment in 0..n_segments {
             failure_time[segment] = weibull::draw_remaining_life(
-                weibull_draw(draw_key, replication_in_run, segment, 0),
+                failure_time[segment],
                 age[segment],
                 current_shape[segment],
                 current_scale[segment],
@@ -453,15 +477,7 @@ pub fn run_chunk(
                         outage_cost_per_failure[segment] * escalation,
                         planned_now[segment],
                         emergency_multiplier,
-                        draws::uniform_at(
-                            draws::index(
-                                draws::purpose::POLICIES,
-                                replication_in_run,
-                                segment as u64,
-                                0,
-                            ),
-                            draw_key,
-                        ),
+                        priority[segment],
                     );
                 }
                 // The `?` returns early with the error if there was one, and

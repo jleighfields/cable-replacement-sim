@@ -142,6 +142,25 @@ and this reads them, so there is one copy.
 PHILOX_LANES = 4
 """Values one Philox counter yields, so index ``i`` is block ``i // 4``."""
 
+MAX_RUN_DRAWS = 16_384
+"""Longest run ``uniforms_at`` will produce to gather a few positions out of.
+
+**A memory bound, not a tuned crossover.** A run is charged for the largest
+segment asked for and not for how many positions were asked for, so without a
+bound one draw high in the segment field produces every position beneath it:
+``check_positions`` admits segments up to ``MAX_SEGMENT``, where the run would
+be 32 GB.
+
+The value sits above the 12,000-segment population this project ships, where
+producing the run is about three times cheaper than drawing each position its
+own block, and below 100,000, where it is two to three times more expensive.
+Where the two cross in between was measured twice, in and out of the loop that
+calls this, and came out at 16,000 one way and 80,000 the other — the run
+path's cost per draw moves with how the allocator handles the size being asked
+for. Nothing here runs a population in that range, and any value across it
+behaves the same on the two sizes that are run.
+"""
+
 PHILOX_MULTIPLIERS = (np.uint64(0xD2E7470EE14C6C93), np.uint64(0xCA5A826395121157))
 """The round function's two multipliers, from Random123."""
 
@@ -346,10 +365,31 @@ def uniforms_at(
         One double in ``[0, 1)`` per position, in the order given.
     """
     index = draw_index(purpose, replications, segments, year)
+    if index.size == 0:
+        return np.empty(0)
+
+    # **Positions sharing a replication lie inside one consecutive run**, so the
+    # run can be produced and the wanted entries taken out of it. At the shipped
+    # population that is more draws and less time — 108 microseconds against
+    # 325 for the scattered path, asking for 200 positions across 12,000
+    # segments. It is the reference implementation that takes this branch,
+    # drawing one replication's replaced segments at a time.
+    #
+    # Both conditions are needed. Positions spanning several replications are
+    # several runs separated by a wide stride, and a run longer than
+    # ``MAX_RUN_DRAWS`` is refused for the reason that constant carries. The
+    # scattered path's cost grows with the number of positions asked for; the
+    # run's grows with the largest segment among them, which is why the two
+    # cross at all. Detected here rather than asked of the caller: which branch
+    # is cheaper is a fact about this module's generators, not about the loop.
+    largest = int(segments.max())
+    if largest < MAX_RUN_DRAWS and (replications == replications[0]).all():
+        start = draw_index(purpose, replications[:1], np.zeros(1, np.uint64), year)
+        run = uniforms_over(key, int(start[0]), largest + 1)
+        return run[segments]
+
     lanes = np.uint64(PHILOX_LANES)
-    # One block per draw here, because the positions are scattered and share
-    # nothing. `uniforms_over` is the path for a consecutive run, and it is a
-    # quarter of the work.
+    # One block per draw, because the positions share nothing.
     words = philox(index // lanes + np.uint64(1), key)
     chosen = words[np.arange(index.size), (index % lanes).astype(np.intp)]
     return to_double(chosen)
@@ -393,14 +433,24 @@ def uniforms_over(
     """
     if count == 0:
         return np.empty(0)
-    lanes = PHILOX_LANES
-    first_block, offset = divmod(first_index, lanes)
-    last_block = (first_index + count - 1) // lanes
-    blocks = np.arange(first_block, last_block + 1, dtype=np.uint64)
-    # NumPy's counter leads the block index by one, because it increments before
-    # producing. The crate applies the same offset, and a test pins it.
-    words = philox(blocks + np.uint64(1), key).ravel()
-    return to_double(words[offset : offset + count])
+    first_block, offset = divmod(first_index, PHILOX_LANES)
+    # **NumPy's own Philox, not the one in this module.** A run of consecutive
+    # positions is exactly what a stream produces, so the C implementation
+    # applies. The vectorised `philox` above exists for *scattered* positions,
+    # where a stream is no use, and it carries about 320 NumPy operations — a
+    # floor of 255 microseconds whatever the array size. NumPy's has no such
+    # floor: 13 microseconds for 360 draws against 300, and roughly ten times
+    # the throughput besides.
+    #
+    # The two produce the same stream, which `test_draws.py` asserts rather than
+    # assumes. `counter` is the block index directly, because NumPy increments
+    # before producing: its first word at `counter=b` is the one Philox defines
+    # at block `b + 1`, so it already carries the `+ 1` that `uniforms_at`
+    # above adds by hand.
+    words = np.random.Philox(
+        key=np.array(key, dtype=np.uint64), counter=first_block
+    ).random_raw(offset + count)
+    return to_double(words[offset:])
 
 
 def uniforms_dense(

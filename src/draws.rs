@@ -335,6 +335,38 @@ pub fn uniform_at(index: u64, key: [u64; 2]) -> f64 {
     to_double(block(index / lanes, key)[(index % lanes) as usize])
 }
 
+/// Fills a slice with the uniforms at a run of consecutive positions.
+///
+/// **One encryption per four draws, rather than one per draw.** The generator
+/// produces four words at a time and the segment field sits in the low bits
+/// precisely so that adjacent segments land on adjacent indices — but
+/// `uniform_at` computes a whole block and returns a single lane, so a loop
+/// calling it for consecutive segments encrypts each block four times and
+/// discards three quarters of every one.
+///
+/// # Arguments
+///
+/// * `first_index` - the position the run starts at.
+/// * `key` - the two key words for this run.
+/// * `into` - filled with one uniform per position, in order.
+pub fn fill_run(first_index: u64, key: [u64; 2], into: &mut [f64]) {
+    let lanes = LANES as u64;
+    let mut position = first_index;
+    let mut filled = 0;
+    while filled < into.len() {
+        let words = block(position / lanes, key);
+        // A run need not start on a block boundary, so the first block is
+        // entered part-way through.
+        let mut lane = (position % lanes) as usize;
+        while lane < LANES && filled < into.len() {
+            into[filled] = to_double(words[lane]);
+            filled += 1;
+            lane += 1;
+            position += 1;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,6 +452,24 @@ mod tests {
         let first = index(0, 3, 0, 7);
         for segment in 0..LANES as u64 {
             assert_eq!(index(0, 3, segment, 7), first + segment);
+        }
+    }
+
+    #[test]
+    fn a_run_gives_what_asking_one_at_a_time_gives() {
+        // The whole point of filling a run is that it encrypts a quarter as
+        // often. It has to agree with the position-at-a-time path exactly, and
+        // at every offset into the first block, since a run need not start on a
+        // boundary.
+        let key = [0xDEAD_BEEF, 0x0BAD_C0DE];
+        for first in [0u64, 1, 2, 3, 4, 7, 4096, 4099] {
+            for length in [0usize, 1, 3, 4, 5, 9, 33] {
+                let mut run = vec![0.0; length];
+                fill_run(first, key, &mut run);
+                for (offset, drawn) in run.iter().enumerate() {
+                    assert_eq!(*drawn, uniform_at(first + offset as u64, key));
+                }
+            }
         }
     }
 

@@ -54,20 +54,23 @@ cost of producing each run's random draws**, which is work a run actually does:
 
 | Implementation | `run_to_failure` | `age_threshold` | `risk_ranked` |
 |---|---|---|---|
-| Scalar Python reference | 0.01513 | 0.02817 | 0.05191 |
-| Batched NumPy | **0.00551** | **0.02498** | **0.04496** |
-| Rust kernel, 1 thread | 0.00224 | 0.00295 | 0.04748 |
-| **Rust kernel, 48 threads** | **0.00024** | **0.00030** | **0.00222** |
-| **Fastest Python, beaten by** | **23.0x** | **83.3x** | **20.3x** |
+| Scalar Python reference | 0.00747 | **0.02039** | 0.04425 |
+| Batched NumPy | **0.00445** | 0.02426 | **0.04400** |
+| Rust kernel, 1 thread | 0.00201 | 0.00262 | 0.04057 |
+| **Rust kernel, 48 threads** | **0.00024** | **0.00026** | **0.00195** |
+| **Fastest Python, beaten by** | **18.5x** | **78.4x** | **22.6x** |
 
 The three policies differ in how much of the population they make eligible each
-year — none, 655 of 12,000, and all of it — and that turns out to matter more
-than anything else here.
+year — none, between 76 and 868 of 12,000, and all of it — and that matters more
+than anything else here. Bold marks the fastest Python in each column, and it is
+not always the same implementation: the batched loop wins where a policy funds
+nothing or everything, and the scalar reference wins where few segments are
+eligible, because the batched form still sorts every one of them.
 
 **On one thread the kernel is not reliably faster than Python.** It is level
 under `risk_ranked`, where every segment is a candidate and the array
 expressions it competes with are already compiled loops over the same data. It
-pulls ahead where the candidate set is small — 8.5x under `age_threshold` —
+pulls ahead where the candidate set is small — 7.8x under `age_threshold` —
 because it scores only the candidates. All three produce only the draws they
 read, so that part of the work is the same in every row.
 
