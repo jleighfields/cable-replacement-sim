@@ -26,7 +26,10 @@ know about, and `polars` and NumPy both keep allocator arenas that resident
 memory sees and a size calculation does not.
 
 **What it costs the kernel**, measured end to end through `run.run` at 1,000
-replications over five policies, release build, 48 workers:
+replications over five policies, release build, 48 workers. These are the
+figures that motivated the change, each a single run; step 5 retakes them as
+means and lands at 1.66x and 1.67x, so the size-dependence they appear to show
+is not real:
 
 | Segments | Chunks of 50 | One chunk | |
 |---|---|---|---|
@@ -114,18 +117,37 @@ table did not move" reads as an error otherwise.
       kernel at 1,000 replications, forty-eight threads, batch fifty against
       the implementation's own:
 
-      | Segments | Batch 50 | Its own | | Peak, 50 | Peak, own |
-      |---|---|---|---|---|---|
-      | 12,000 | 5.39 s | 3.24 s | **1.66x** | 432.4 MB | 387.2 MB |
-      | 50,000 | 24.25 s | 14.73 s | **1.65x** | 653.1 MB | 626.8 MB |
+      | Segments | Batch 50 | Its own | | Peak, 50 | Peak, own | Runs |
+      |---|---|---|---|---|---|---|
+      | 12,000 | 5.54 s | 3.34 s | **1.66x** | 431.4 MB | 385.6 MB | 6 timed, 3 for memory |
+      | 50,000 | 24.85 s | 14.90 s | **1.67x** | 651.8 MB | 625.5 MB | 12 timed, 3 for memory |
 
-      Memory falls slightly rather than rising, which the estimate did not
-      predict: each chunk writes its own parquet part, so twenty chunks hold
-      twenty parts where one holds one, and that outweighs the 4.8 MB the
-      larger results array costs.
+      Every cell is a mean and the count is beside it, because an earlier
+      version of this table reported single runs and its 50,000 row did not
+      reproduce — read at 24.25 s once and at 23.22 s by a second measurement,
+      against a mean of 24.85 s over twelve. **That cell is the noisy one**,
+      spanning 23.1 s to 27.9 s, while its unchunked denominator stays inside
+      14.7 to 16.0 s and the whole 12,000 row reproduces to within 3%. What
+      moved with the repeat count is the *shape* of the result: the two sizes
+      cost the same 1.66x rather than 1.76x falling to 1.52x.
 
-      Notebook 06 gets the same speedup without asking for it — 3.53 s where it
-      needed `batch_size=N_REPS` by hand to reach 3.82 s before.
+      Peak resident memory is one process per configuration, since a peak
+      belongs to the process. It falls slightly rather than rising, which the
+      estimate did not predict: each chunk writes its own parquet part, so
+      twenty chunks hold twenty parts where one holds one, and that outweighs
+      the 4.8 MB the larger results array costs.
+
+      **The scalar reference is indifferent on both counts**, which is what its
+      one-replication-at-a-time loop predicts and is now measured rather than
+      argued: 8.26 s and 230.8 MB chunked at fifty against 8.20 s and 230.6 MB
+      whole, three runs each at 2,000 segments and 200 replications on one
+      thread — a gap smaller than the spread inside either column.
+
+      Notebook 06 is not a measurement of this change and its timing is not
+      quoted as one. It passed `batch_size=N_REPS` by hand before and resolves
+      to the same size now, so it does identical work either way; the run-to-run
+      difference between the two readings is session variance, and an earlier
+      version of this line offered it as a speedup.
 
       **The budget sweep is unchanged, 1.70 s against 1.68 s, and that is not a
       disappointment but arithmetic**: it runs at the reduced 40 replications,
@@ -149,7 +171,15 @@ table did not move" reads as an error otherwise.
 - [x] 6. `PLAN.md` had two: a paragraph deriving the batch's useful range from
       one number, and a claim of twenty boundary crossings per policy, which is
       now one. `README.md` had none.
-- [ ] 7. Review passes.
+- [ ] 7. Review passes. The first found the 50,000-segment timing row did not
+      reproduce and that every figure in step 5 was a single run. All of them
+      are retaken above as means with their repeat counts, which changed the
+      conclusion: the cost is the same at both population sizes rather than
+      falling with size. It also found that both batching assertions read the
+      manifest, which records what was resolved and not what the run did — two
+      mutations that made a run record one size and perform another left the
+      suite green, and the test now wraps the registry entry and asserts on the
+      calls.
 
 ## Open questions
 

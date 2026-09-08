@@ -4,12 +4,16 @@ Nothing here needs pytest to be readable; fixtures and other pytest machinery
 belong in `conftest.py`.
 """
 
+import contextlib
+import importlib.util
 import pathlib
 import re
 import subprocess
+import types
+from collections.abc import Iterator
 
 import numpy as np
-from cablesim import config, constants, policies, simulate
+from cablesim import config, constants, policies, run, simulate
 
 PLAN_PATH: pathlib.Path = constants.PROJECT_ROOT / "PLAN.md"
 """The standing project plan, whose structure the document tests check."""
@@ -467,3 +471,68 @@ def forced_lifetimes(
     if from_new:
         forced["age0"] = np.zeros(segments, dtype=reference.dtype)
     return forced
+
+
+@contextlib.contextmanager
+def recorded_batches(implementation: str) -> Iterator[list[int]]:
+    """Records the replication count of every call to one implementation.
+
+    **What a manifest says about the batch size and what the run did are two
+    claims, and reading the manifest checks only one of them.** The resolved
+    size is computed in one place and the chunking is done in another, so a run
+    can record fifty and call the loop once with the whole thousand, or record a
+    thousand and call it twenty times with fifty. Both were tried against the
+    suite and neither reddened anything, because every assertion about batching
+    went through the manifest.
+
+    This wraps the callable ``run.run`` will reach for and collects the
+    ``n_reps`` each call was given, which is the chunking itself rather than a
+    record of it.
+
+    Args:
+        implementation: The name it is keyed into ``run.RUNNABLE`` under.
+
+    Yields:
+        The replication counts, filled in as the calls happen and complete once
+        the block exits. Empty until a run is started inside the block.
+    """
+    called: list[int] = []
+    wrapped = run.RUNNABLE[implementation]
+
+    def recording(*, n_reps: int, **arguments: object) -> simulate.Results:
+        called.append(n_reps)
+        return wrapped(n_reps=n_reps, **arguments)
+
+    run.RUNNABLE[implementation] = recording
+    try:
+        yield called
+    finally:
+        # Restored however the block exits, since the registry is module state
+        # shared by every test in the session and a spy left in it would make
+        # whichever test ran next depend on the order it ran in.
+        run.RUNNABLE[implementation] = wrapped
+
+
+def script(name: str) -> types.ModuleType:
+    """Loads one of the driver scripts as a module.
+
+    ``scripts/`` is not part of the importable package, so the file is loaded
+    by path. Reading it this way is what lets a test drive a script's argument
+    handling without starting a subprocess.
+
+    Args:
+        name: The file's stem, without the extension.
+
+    Returns:
+        The loaded module, whose ``main`` takes an argument list.
+
+    Raises:
+        ImportError: If the file could not be loaded as a module.
+    """
+    path = constants.PROJECT_ROOT / "scripts" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"{path} could not be loaded as a module")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module

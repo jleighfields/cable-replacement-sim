@@ -1022,7 +1022,8 @@ avoids that, and passing an array is the simplest way to be indexed.
   replications over 100,000 segments is ten gigabytes and at a chunk of fifty is
   836 MB. The kernel holds nothing shaped that way — its per-worker scratch is
   sized by segments — so chunking buys it about five megabytes and costs it the
-  axis it parallelises over, measured at 1.5x to 1.8x through the run path. Each
+  axis it parallelises over, measured at 1.66x through the run path at 12,000
+  segments and 1.67x at 50,000, means of six and twelve runs. Each
   implementation therefore carries its own default rather than sharing one.
   Crossing the boundary per chunk costs nothing either way — the rule that
   matters is never calling back into Python *inside* the loop, and that
@@ -1138,8 +1139,9 @@ simulation:
   # flight, and so trades memory against time, but every draw is a function of
   # the key and of a position carrying the replication's index in the whole
   # run, so the batch size changes no number. It is a driver-script argument,
-  # recorded in each run's manifest beside the thread count and the build
-  # profile.
+  # optional there because each implementation declares what it wants when
+  # nobody names one, and recorded in each run's manifest — as the size that
+  # was resolved, beside the thread count and the build profile.
 
 population:
   n_segments: 12_000

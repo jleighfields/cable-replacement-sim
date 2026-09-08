@@ -7,7 +7,6 @@ asserts that something was fast, because a test that did would fail on a loaded
 machine and teach nothing when it did.
 """
 
-import importlib.util
 import json
 import pathlib
 import types
@@ -118,31 +117,6 @@ def test_a_configuration_naming_no_implementation_is_refused() -> None:
         )
 
 
-def script(name: str) -> types.ModuleType:
-    """Loads one of the driver scripts as a module.
-
-    ``scripts/`` is not part of the importable package, so the file is loaded
-    by path. Reading it this way is what lets a test drive a script's argument
-    handling without starting a subprocess.
-
-    Args:
-        name: The file's stem, without the extension.
-
-    Returns:
-        The loaded module, whose ``main`` takes an argument list.
-
-    Raises:
-        ImportError: If the file could not be loaded as a module.
-    """
-    path = constants.PROJECT_ROOT / "scripts" / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"{path} could not be loaded as a module")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_a_caller_naming_no_configured_policy_is_told_which_exist() -> None:
     """A misspelled policy name is refused the way a misspelled implementation is.
 
@@ -175,7 +149,7 @@ def test_a_caller_naming_no_configured_policy_is_told_which_exist() -> None:
             repeats=1,
         )
     with pytest.raises((LookupError, ValueError)) as from_script:
-        script("measure_memory").main(
+        helpers.script("measure_memory").main(
             ["--policy", misspelled, "--segments", "50", "--reps", "2"]
         )
 
@@ -385,7 +359,7 @@ def test_a_script_run_computes_at_the_width_its_configuration_names(
         f"this test needs a configuration naming the width the flag does not "
         f"default to; both are {asked_for}"
     )
-    module = script(name)
+    module = helpers.script(name)
     monkeypatch.setattr(config, "load_config", lambda *_args, **_kwargs: settings)
     with caplog.at_level("INFO"):
         module.main(arguments(tmp_path))

@@ -186,3 +186,24 @@ decided at compile time. Clippy caught it; nothing else would have.
 Where the requirement is real, state it as a compile-time assertion —
 `const _: () = assert!(...)` — so narrowing the field is a build error. Where it
 is not, delete it.
+
+## Snapshot a file before mutating it, because `git checkout` reverts to HEAD
+
+Watching a test fail against a planted defect means editing a file and putting
+it back. `git checkout <file>` puts back **the committed version**, not the
+version that was there a moment ago — so it silently discards every uncommitted
+change in that file. Here it threw away a review agent's prose edits, which were
+in the working tree and nowhere else, and it did it twice before the line
+numbers moving gave it away.
+
+Copy the file first and restore from the copy:
+
+```
+cp path/to/file.py "$SCRATCH/file.py.orig"
+# ... plant the defect, run the test, watch it fail ...
+cp "$SCRATCH/file.py.orig" path/to/file.py
+```
+
+The general form: a command whose *name* says "undo my change" usually means
+"return to some named state", and the named state is rarely the one you were
+standing in.

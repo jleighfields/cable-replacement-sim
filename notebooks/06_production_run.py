@@ -239,7 +239,7 @@ def _(mo):
 
 
 @app.cell
-def _(kernel, manifest, threads):
+def _(N_REPS, kernel, manifest, threads):
     for _field in (
         "implementation",
         "build_profile",
@@ -257,6 +257,10 @@ def _(kernel, manifest, threads):
     assert manifest["implementation"] == "kernel", manifest["implementation"]
     assert manifest["threads"] == threads, manifest["threads"]
     assert manifest["build_profile"] == kernel.BUILD_PROFILE, manifest["build_profile"]
+    # The replication count itself, which is what "the kernel takes the whole
+    # run in one chunk" means. Nothing above asks for it, so this is the only
+    # thing here that says the resolved default is the one the prose describes.
+    assert manifest["batch_size"] == N_REPS, manifest["batch_size"]
     return
 
 

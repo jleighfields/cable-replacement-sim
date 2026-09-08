@@ -25,6 +25,8 @@ from cablesim import (
     simulate,
 )
 
+from tests import helpers
+
 
 def small_config() -> config.Config:
     """A configuration small enough to run in a test, in seconds.
@@ -269,25 +271,66 @@ def test_each_implementation_is_batched_at_its_own_size_and_records_it(
     gigabytes. The reference and the kernel hold nothing shaped that way, and
     chunking costs the kernel the axis it parallelises over.
 
-    The manifest records what was resolved rather than that nothing was asked
-    for, because a saved run is read later by someone who needs to know what
-    produced it.
+    **Asserted on the calls rather than on the manifest**, because the manifest
+    records what was resolved and the chunking is done separately from it, so a
+    run can record one size and perform another. The manifest is checked too,
+    since it is what a saved run is read by later, but it is the weaker of the
+    two claims.
+
+    **The replication count has to exceed the bounded size or nothing here can
+    differ**: at six replications every implementation makes one call of six
+    whatever it resolved to, and the whole distinction this test exists for is
+    invisible. It is taken from the constant rather than written as a number so
+    that the two cannot drift apart.
     """
-    settings = small_config()
+    n_reps = run.BOUNDED_BATCH_SIZE + 2
+    settings = config.with_overrides(small_config(), {"simulation.n_reps": n_reps})
+    policy_count = len(settings.policies)
     resolved = {}
+    calls = {}
     for name in sorted(run.RUNNABLE):
-        directory = run.run(settings, tmp_path / name, implementation=name)
+        with helpers.recorded_batches(name) as recorded:
+            directory = run.run(settings, tmp_path / name, implementation=name)
         manifest = json.loads((directory / results.MANIFEST_NAME).read_text())
         resolved[name] = manifest["batch_size"]
+        calls[name] = recorded
+
+    assert calls["batched_numpy"] == [run.BOUNDED_BATCH_SIZE, 2] * policy_count, (
+        "the batched loop was not chunked at the size that bounds its memory"
+    )
+    for unbounded in ("kernel", "reference"):
+        assert calls[unbounded] == [n_reps] * policy_count, (
+            f"{unbounded} was chunked; it holds nothing that grows with the "
+            f"batch, and chunking costs the kernel the axis it spreads over"
+        )
+        assert resolved[unbounded] == n_reps
 
     assert resolved["batched_numpy"] == run.BOUNDED_BATCH_SIZE
-    assert resolved["kernel"] == settings.simulation.n_reps, (
-        "the kernel was chunked; it holds nothing that grows with the batch and "
-        "chunking costs it the axis it spreads over"
-    )
     assert len(set(resolved.values())) > 1, (
         "every implementation resolved to the same size, so this default is "
         "the single number the split exists to replace"
+    )
+
+
+def test_the_sweep_script_defaults_to_no_batch_size_of_its_own() -> None:
+    """The command line defers to the implementation rather than fixing a number.
+
+    A sweep is every budget level times every policy, so it is where the batch
+    size is worth the most and where a fixed one would cost the most. The
+    default is the whole point of the flag being optional: naming a size on the
+    command line is still honoured, and naming none has to reach ``run.run`` as
+    ``None`` so that each implementation resolves its own.
+
+    Asserted here because a script's argument defaults are reached by nothing
+    else in this suite — the sweep itself is minutes of work — and because
+    ``None`` is the value that carries the behaviour. A default of fifty would
+    run, produce correct numbers, and quietly chunk the kernel twenty times.
+    """
+    arguments = helpers.script("budget_sweep").parse_arguments(["--out", "."])
+
+    assert arguments.batch_size is None, (
+        "the sweep names a batch size, so every implementation gets that one "
+        "rather than the one it declared"
     )
 
 
@@ -324,6 +367,14 @@ def test_an_implementation_with_no_declared_batch_size_is_reported() -> None:
         "every runnable implementation needs a declared batch size, because a "
         "run that names none has to resolve to something"
     )
+    # The resolver's own refusal, which nothing reaches through ``run.run``:
+    # that path checks the name against ``RUNNABLE`` first, and the guard above
+    # is what makes the two sets agree. A direct caller is the only way here,
+    # and leaving it unexercised would leave a raise nobody has seen fire.
+    with pytest.raises(KeyError, match="batched_pandas"):
+        run.batch_size_for("batched_pandas", 10)
+    assert run.batch_size_for("kernel", 10) == 10
+    assert run.batch_size_for("batched_numpy", 10) == run.BOUNDED_BATCH_SIZE
 
 
 def test_a_precision_that_names_no_dtype_is_refused() -> None:

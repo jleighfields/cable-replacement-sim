@@ -48,10 +48,13 @@ BOUNDED_BATCH_SIZE = 50
 """Replications per call for an implementation that holds them all at once.
 
 The batched NumPy loop carries `(replications, segments)` arrays and enough of
-them that its footprint is fifteen to twenty times one such array: measured at
-12,000 segments it grows from 99 MB at this batch to 350 MB at 250, where a
-single array accounts for 5 MB and 24. That is what a batch bounds, and it is
-why this implementation has one at all.
+them that its footprint is twelve to twenty times one such array: measured at
+12,000 segments it grows from 99 MB above import at this batch to 350 MB at 250
+and 1,250 MB at 1,000, where a single array accounts for 4.8 MB, 24 and 96. That
+is what a batch bounds, and it is why this implementation has one at all. The
+figures come from ``scripts/measure_memory.py --implementation batched_numpy
+--segments 12000 --reps <batch>``, which runs one implementation per process
+because a peak belongs to the process.
 
 The value is not a tuned optimum. It is small enough that the memory stays a
 detail at the sizes this project runs and large enough that per-call overhead is
@@ -66,8 +69,29 @@ scratch sized by *segments*, so neither holds anything that grows with the batch
 except the results — 5 MB for a thousand replications, against the 250 KB a
 chunk of fifty would hold. Chunking them buys that difference and costs the axis
 the kernel parallelises over: fifty replications across forty-eight workers is
-one each, repeated, with a pool built per chunk. Measured through `run.run`, it
-is 1.76x at 12,000 segments and 1.52x at 50,000.
+one each, repeated, with a pool built per chunk.
+
+Measured through `run.run` on the kernel at 1,000 replications over five
+policies, release build, 48 workers: 5.54 s chunked at fifty against 3.34 s
+whole at 12,000 segments, over six runs each, and 24.85 s against 14.90 s at
+50,000, over twelve. That is **1.66x and 1.67x** — the same cost at both sizes.
+
+**Each figure needs its repeat count to mean anything, and the chunked one at
+50,000 needs the most**: it spans 23.1 s to 27.9 s across those twelve runs,
+while its unchunked denominator stays inside 14.7 to 16.0. A single run of that
+cell lands anywhere in a 20% band, which is wide enough to make the two sizes
+look as though they cost differently.
+
+The reference is indifferent, as its own loop predicts: 8.26 s and 230.8 MB
+chunked at fifty against 8.20 s and 230.6 MB whole, three runs each at 2,000
+segments and 200 replications on one thread — a difference smaller than the
+spread within either column.
+
+**The results array grows with the replication count and nothing caps it** —
+seven arrays of `(replications, years, classes)`, so 5 MB at a thousand
+replications and 500 MB at a hundred thousand. No run has been taken at that
+count, and a cap picked without one would be a number with no measurement behind
+it, so the growth is stated here rather than bounded.
 """
 
 BATCH_SIZES: dict[str, int | None] = {
