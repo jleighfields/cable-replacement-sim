@@ -186,3 +186,62 @@ decided at compile time. Clippy caught it; nothing else would have.
 Where the requirement is real, state it as a compile-time assertion —
 `const _: () = assert!(...)` — so narrowing the field is a build error. Where it
 is not, delete it.
+
+## Snapshot a file before mutating it, because `git checkout` reverts to HEAD
+
+Watching a test fail against a planted defect means editing a file and putting
+it back. `git checkout <file>` puts back **the committed version**, not the
+version that was there a moment ago — so it silently discards every uncommitted
+change in that file. Here it threw away a review agent's prose edits, which were
+in the working tree and nowhere else, and it did it twice before the line
+numbers moving gave it away.
+
+Copy the file first and restore from the copy:
+
+```
+cp path/to/file.py "$SCRATCH/file.py.orig"
+# ... plant the defect, run the test, watch it fail ...
+cp "$SCRATCH/file.py.orig" path/to/file.py
+```
+
+The general form: a command whose *name* says "undo my change" usually means
+"return to some named state", and the named state is rarely the one you were
+standing in.
+
+## A manifest records what was resolved, not what the run did
+
+A run resolves its batch size in one place and chunks the replications in
+another. Every assertion about batching read the manifest, so three separate
+defects passed the whole suite: declaring the scalar reference bounded, chunking
+at the bounded size whatever was resolved, and passing a fixed size at a driver
+script's call site while its flag still defaulted to deferring. In each the
+manifest was truthful about the request and silent about the work.
+
+The equivalence tests cannot help here. They pass *because* chunking changes no
+number, which is precisely the property that makes them blind to it.
+
+**Assert on the call, not on the record of it.** Wrap the callable the run will
+reach for, collect what each call was given, and compare that. Two further
+conditions, both of which caught something:
+
+- The input has to be able to tell the sizes apart. At six replications every
+  implementation makes one call of six whatever it declared, so the whole
+  distinction is invisible and the test passes for the wrong reason.
+- The wrapper must carry the wrapped function's identity — `functools.wraps` —
+  or it changes what it is watching. Here `run.run` reads the build profile from
+  the annual loop's `__module__`, so an unwrapped spy made every manifest record
+  no profile at all.
+
+## Repeating a measurement is not the same as retaking it
+
+*Report the mean of several runs, with the count beside it* was already written
+down here, and single-run figures still reached a plan, a docstring, `PLAN.md`
+and a pull-request body. The rule was known and not applied, so the failure is
+in when it fires, not in what it says.
+
+It fires when a number is first written down, not when someone asks. The cost of
+retaking is one command; the cost of not is that a table gets read, reasoned
+from and quoted elsewhere before anyone finds out which cells were noise. Here
+the chunked 50,000-segment cell varies 20% run to run, and the single-run
+reading of it made the cost look as though it fell with population size. It does
+not — it is the same at both sizes, and twelve runs are what says so.

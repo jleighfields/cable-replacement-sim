@@ -178,8 +178,9 @@ and the argument should not quietly disappear once someone has built it:
 - **It is a second numeric path through four implementations**, and the project
   has just finished retiring a fourth implementation on the grounds that
   reaching parity is not a reason to maintain one.
-- **The batch-size change is 1.5–1.8x on the whole production path** for a
-  signature change and no new failure modes, and it is not done yet.
+- **The batch-size change is about 1.67x on the whole production path** — 1.66x
+  at 12,000 segments and 1.67x at 50,000 — for a signature change and no new
+  failure modes, and it is not done yet.
 
 The honest ordering is: batch size first, then this only if `risk_ranked` stops
 dominating or a population arrives where memory binds.

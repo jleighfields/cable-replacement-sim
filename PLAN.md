@@ -1015,13 +1015,22 @@ avoids that, and passing an array is the simplest way to be indexed.
 
 **Three consequences of materializing the draws:**
 
-- **Replications are processed in chunks**, and the kernel is called once per
-  chunk rather than once per policy. The full array at 1000 replications,
-  12,000 segments and a 30-year horizon is 3.0 GB; batching 50 replications at
-  a time makes it 149 MB. At 40,000 segments those become 9.9 GB and 496 MB,
-  which is what sets the batch size's useful range. Twenty crossings per policy costs nothing — the
-  rule that matters is never calling back into Python *inside* the loop, and
-  that still holds.
+- **Replications may be processed in chunks, and whether they are depends on
+  the implementation.** The batched NumPy loop holds every replication of a
+  chunk in flight, so a chunk is what bounds its memory: measured, its footprint
+  is twelve to twenty times one `(replications, segments)` array, which at 1,000
+  replications over 100,000 segments is ten gigabytes and at a chunk of fifty is
+  836 MB. The kernel holds nothing shaped that way — its per-worker scratch is
+  sized by segments — so chunking saves it no memory at all: the chunked run
+  peaks *higher*, 431 MB against 386 at 12,000 segments, because twenty chunks
+  hold twenty parquet parts where one holds one. What chunking costs it is the
+  axis it parallelises over: measured through the run path, chunking costs the
+  kernel 1.66x at 12,000 segments and 1.67x at 50,000, means of six and twelve
+  runs. Each implementation therefore carries its own default rather than
+  sharing one.
+  Crossing the boundary per chunk costs nothing either way — the rule that
+  matters is never calling back into Python *inside* the loop, and that
+  still holds.
 - **The draws come from the bit generator's raw stream, not from a
   distribution method**, and the conversion is written down here:
 
@@ -1133,8 +1142,9 @@ simulation:
   # flight, and so trades memory against time, but every draw is a function of
   # the key and of a position carrying the replication's index in the whole
   # run, so the batch size changes no number. It is a driver-script argument,
-  # recorded in each run's manifest beside the thread count and the build
-  # profile.
+  # optional there because each implementation declares what it wants when
+  # nobody names one, and recorded in each run's manifest — as the size that
+  # was resolved, beside the thread count and the build profile.
 
 population:
   n_segments: 12_000
@@ -1551,7 +1561,8 @@ cache miss. Continuous integration went from 1m06s to 17m28s.
 ### 5.2 The call
 
 One call across the FFI boundary **per policy per chunk of replications**
-(2.11) — twenty per policy at the shipped replication count and a batch of 50.
+(2.11) — one per policy at the shipped replication count, since the kernel is
+not chunked by default.
 Arrays in,
 arrays out. **Never call back into Python inside the loop** — that is the rule
 that matters, and a handful of crossings per policy does not touch it.

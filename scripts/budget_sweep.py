@@ -74,8 +74,13 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=run.DEFAULT_BATCH_SIZE,
-        help="replications per call; changes timing and memory, not results",
+        default=None,
+        help=(
+            "replications per call; changes timing and memory, not results. "
+            "Without it each implementation uses its own, which is a bound for "
+            "the one that holds every replication at once and no bound for the "
+            "two that do not"
+        ),
     )
     return parser.parse_args(argv)
 

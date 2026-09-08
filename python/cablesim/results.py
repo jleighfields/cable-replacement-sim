@@ -103,9 +103,12 @@ class Manifest(pydantic.BaseModel):
         build_profile: The Rust build profile, where the kernel ran. A timing
             without one means nothing.
         threads: How many threads the run used.
-        batch_size: Replications per call. It changes no number — every
-            replication reads the same draws at any batch size — and it is
-            recorded because it is what a timing has to be read against.
+        batch_size: Replications per call, as the run resolved it rather
+            than as it was asked for — a caller may name nothing and let the
+            implementation choose, and "whatever the default was" cannot be
+            read a year later. It changes no number, since every replication
+            reads the same draws at any batch size, and it is recorded because
+            it is what a timing has to be read against.
         wall_seconds: How long the run took.
     """
 

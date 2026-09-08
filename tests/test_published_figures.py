@@ -3,8 +3,13 @@
 `docs/compiled-and-threaded-python.md` holds the measurements; `README.md`,
 `PLAN.md` and `deprecated/README.md` restate them in prose. That is a value
 written in four places, and the drift is silent: every copy stays well-formed
-markdown, nothing imports any of them, and the only reader who notices two
+prose, nothing imports any of them, and the only reader who notices two
 documents disagreeing is one who recomputes the ratio off the tables.
+
+**Tracked `.py` files are scanned too**, because a measurement also reaches a
+reader through a module docstring — what chunking costs the kernel is written
+in `cablesim/run.py` and again in `PLAN.md`, and a markdown-only scan would
+find one copy and report agreement.
 
 This asserts the copies agree, not what they say, so retaking a measurement
 needs no edit here.
@@ -32,7 +37,15 @@ def test_a_figure_quoted_in_several_documents_is_quoted_the_same_way(
         pattern: The spelling to look for, from ``helpers.REPEATED_FIGURES``.
     """
     quoted: dict[tuple[str, ...], list[str]] = {}
-    for path in helpers.tracked_documents():
+    # The suite's own modules are left out: ``helpers.py`` holds these
+    # patterns, and the label it names each one by matches the pattern itself,
+    # so scanning it reports a document disagreeing with a regular expression.
+    scanned = helpers.tracked_documents() + [
+        path
+        for path in helpers.tracked_documents(".py")
+        if path.parent.name != "tests"
+    ]
+    for path in scanned:
         for value in helpers.quoted_figures(
             path.read_text(encoding="utf-8"), pattern
         ):

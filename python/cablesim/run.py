@@ -44,8 +44,90 @@ from cablesim import config as config_module
 
 log = logging.getLogger(__name__)
 
-DEFAULT_BATCH_SIZE = 50
-"""Replications per call, which trades memory against time and nothing else."""
+BOUNDED_BATCH_SIZE = 50
+"""Replications per call for an implementation that holds them all at once.
+
+The batched NumPy loop carries `(replications, segments)` arrays and enough of
+them that its footprint is twelve to twenty times one such array: measured at
+12,000 segments it grows from 99 MB above import at this batch to 350 MB at 250
+and 1,250 MB at 1,000, where a single array accounts for 4.8 MB, 24 and 96. That
+is what a batch bounds, and it is why this implementation has one at all. The
+figures come from ``scripts/measure_memory.py --implementation batched_numpy
+--segments 12000 --reps <batch>``, which runs one implementation per process
+because a peak belongs to the process.
+
+The value is not a tuned optimum. It is small enough that the memory stays a
+detail at the sizes this project runs and large enough that per-call overhead is
+not the cost, and no measurement asks it to be more precise than that.
+"""
+
+UNBOUNDED_BATCH: int | None = None
+"""What an implementation that holds no such arrays is batched at: nothing.
+
+The reference runs one replication at a time and the kernel gives each worker
+scratch sized by *segments*, so neither holds a working set that grows with the
+batch. What does grow is the results and the rows built from them, and chunking
+those turns out to save nothing: measured, the chunked run peaks *higher* — 431
+MB against 386 at 12,000 segments, 652 against 626 at 50,000 — because twenty
+chunks hold twenty parquet parts where one holds one. So chunking these two buys
+no memory and costs the axis the kernel parallelises over: fifty replications
+across forty-eight workers is one each, repeated, with a pool built per chunk.
+
+Measured through `run.run` on the kernel at 1,000 replications over five
+policies, release build, 48 workers: 5.54 s chunked at fifty against 3.34 s
+whole at 12,000 segments, over six runs each, and 24.85 s against 14.90 s at
+50,000, over twelve. So **chunking costs the kernel 1.66x at 12,000 segments
+and 1.67x at 50,000** — the same cost at both.
+
+**Each figure needs its repeat count to mean anything, and the chunked one at
+50,000 needs the most**: it spans 23.1 s to 27.9 s across those twelve runs,
+while its unchunked denominator stays inside 14.7 to 16.0. A single run of that
+cell lands anywhere in a 20% band, which is wide enough to make the two sizes
+look as though they cost differently.
+
+The reference is close to indifferent, as its one-replication-at-a-time loop
+predicts, though less cleanly than a single measurement suggested. Two
+independent runs of three at 2,000 segments and 200 replications on one thread:
+8.26 s chunked against 8.20 s whole, and 8.23 s against 7.83 s. So the cost of
+chunking it is somewhere between under 1% and about 5% — in the second, every
+chunked run was slower than every whole one — against the 66% the kernel pays.
+Memory does not move at all, 230.8 MB against 230.6 MB. Which of the two gaps is
+right does not change what the number is used for: the reference needs no bound,
+and it loses little by not having one.
+
+**What a run holds grows with the replication count and nothing caps it.** The
+seven result arrays of `(replications, years, classes)` are the visible part —
+5 MB at a thousand replications — but they are not the figure to plan against:
+`results.rows_from_chunk` builds a frame from them and holds it while they are
+still live, and the peak carries both. Measured through `run` on the kernel
+over five policies, one process per point, above a 125 MB interpreter:
+220 MB at 1,000 replications, 867 MB at 10,000, 1,415 MB at 20,000 and 2,499 MB
+at 40,000. That is about 58 MB per thousand, some twelve times what the arrays
+alone account for, and it is close enough to linear over that range to expect
+several gigabytes at a hundred thousand rather than the 500 MB the arrays
+suggest. The count is what someone raises to narrow a confidence interval, so
+this is the growth that would be met first.
+
+It is stated rather than bounded because no run has been taken near the top of
+that range, and a cap chosen without one would be a number with no measurement
+behind it. The figures above are at 200 segments; the result arrays and the rows
+frame are shaped by replications, years and classes, so the population size
+moves them little.
+"""
+
+BATCH_SIZES: dict[str, int | None] = {
+    "reference": UNBOUNDED_BATCH,
+    "batched_numpy": BOUNDED_BATCH_SIZE,
+    "kernel": UNBOUNDED_BATCH,
+}
+"""What each implementation is batched at when a caller names no size.
+
+One number cannot serve these: the batched loop needs a bound and the other two
+are only slowed by one, so a default that suits either is wrong for the rest.
+Keyed by implementation for the reason `CONCURRENT` is — it is a property of the
+implementation, declared where the implementations are, and every name here has
+to be one `RUNNABLE` holds.
+"""
 
 BUDGET_GRID_LOW = 0.125
 """The lowest swept budget, as a fraction of the configured one."""
@@ -130,6 +212,59 @@ here must be one ``RUNNABLE`` holds, which
 """
 
 
+def batch_size_for(implementation: str, n_reps: int) -> int:
+    """How many replications one call of this implementation should take.
+
+    Args:
+        implementation: The name it is keyed into ``RUNNABLE`` under.
+        n_reps: Replications in the whole run, which is the answer for an
+            implementation that wants no bound.
+
+    Returns:
+        The batch size to chunk with.
+
+    Raises:
+        KeyError: If no implementation goes by that name.
+    """
+    if implementation not in BATCH_SIZES:
+        raise KeyError(
+            f"no batch size is declared for {implementation!r}; "
+            f"the implementations are {sorted(BATCH_SIZES)}"
+        )
+    bounded = BATCH_SIZES[implementation]
+    return n_reps if bounded is None else bounded
+
+
+def missing_names(names: Iterable[str], known: Iterable[str]) -> set[str]:
+    """Names among these that ``known`` does not cover.
+
+    Args:
+        names: The names to check.
+        known: The names that exist.
+
+    Returns:
+        Those that are not in ``known``.
+    """
+    return set(names) - set(known)
+
+
+def unbatched_implementations(names: Iterable[str]) -> set[str]:
+    """Names among these that no batch size is declared for.
+
+    A function rather than a check run once at import, for the reason
+    ``unknown_implementations`` is one: an import-time check cannot be watched
+    failing, because breaking it stops the suite at collection rather than
+    reddening a test.
+
+    Args:
+        names: Implementation names to check.
+
+    Returns:
+        Those that ``BATCH_SIZES`` does not cover.
+    """
+    return missing_names(names, BATCH_SIZES)
+
+
 def unthreadable_implementations(names: Iterable[str]) -> set[str]:
     """Names among these that no runnable implementation answers to.
 
@@ -144,8 +279,16 @@ def unthreadable_implementations(names: Iterable[str]) -> set[str]:
     Returns:
         Those that name nothing in ``RUNNABLE``.
     """
-    return set(names) - set(RUNNABLE)
+    return missing_names(names, RUNNABLE)
 
+
+UNBATCHED = unbatched_implementations(RUNNABLE)
+if UNBATCHED:
+    raise ValueError(
+        f"{sorted(UNBATCHED)} are runnable but no batch size is declared for "
+        f"them; every implementation needs one, because a run that names no "
+        f"size has to resolve to something"
+    )
 
 UNTHREADABLE = unthreadable_implementations(CONCURRENT)
 if UNTHREADABLE:
@@ -169,7 +312,7 @@ def unknown_implementations(names: Iterable[str]) -> set[str]:
     Returns:
         Those that are not in the closed set a manifest accepts.
     """
-    return set(names) - set(results.IMPLEMENTATIONS)
+    return missing_names(names, results.IMPLEMENTATIONS)
 
 
 UNRUNNABLE = unknown_implementations(RUNNABLE)
@@ -407,7 +550,7 @@ def run(
     settings: config_module.Config,
     root: pathlib.Path,
     implementation: str = "reference",
-    batch_size: int = DEFAULT_BATCH_SIZE,
+    batch_size: int | None = None,
     threads: int = 1,
     swept: dict[str, float] | None = None,
 ) -> pathlib.Path:
@@ -424,7 +567,12 @@ def run(
             from the same name — read from the compiled extension where the
             kernel ran, and absent for pure Python rather than invented, since
             a timing from the kernel without one means nothing.
-        batch_size: Replications per call.
+        batch_size: Replications per call, or None to let the implementation
+            decide. It is a memory bound for the one implementation that holds
+            every replication in flight and a cost to the two that do not, so
+            the default is theirs rather than a single number — ``BATCH_SIZES``
+            has what each resolves to and why. The manifest records the resolved
+            size, because "whatever the default was" cannot be read later.
         threads: Workers to spread each chunk's replications over, recorded in
             the manifest beside the implementation and the build profile. The
             implementations named in ``CONCURRENT`` can use more than one; the
@@ -454,6 +602,13 @@ def run(
     # implementation records its profile instead of silently recording none.
     build_profile = getattr(sys.modules[annual_loop.__module__], "BUILD_PROFILE", None)
     started = time.perf_counter()
+    # Resolved once, here, rather than defaulted in the signature: one number
+    # cannot serve implementations whose constraints point opposite ways, and
+    # what the manifest must record is the size that actually ran, not the
+    # absence of a request.
+    if batch_size is None:
+        batch_size = batch_size_for(implementation, settings.simulation.n_reps)
+
     run_id = results.new_run_id()
     segments_frame = population.generate(settings)
     class_names = [segment_class.name for segment_class in settings.population.classes]
