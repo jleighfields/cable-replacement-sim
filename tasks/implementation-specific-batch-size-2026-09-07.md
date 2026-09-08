@@ -95,20 +95,45 @@ table did not move" reads as an error otherwise.
 
 ## Steps
 
-- [ ] 1. `batch_size: int | None = None` on `run.run`, resolved per
+- [x] 1. `batch_size: int | None = None` on `run.run`, resolved per
       implementation beside `RUNNABLE`, with the manifest recording the resolved
-      value.
-- [ ] 2. `scripts/budget_sweep.py`'s `--batch-size` default follows, so the
+      value. `BATCH_SIZES` holds them and an import-time guard refuses a
+      runnable implementation that has none.
+- [x] 2. `scripts/budget_sweep.py`'s `--batch-size` default follows, so the
       command-line default is the implementation's rather than a fixed 50.
-- [ ] 3. Tests: that the resolved default differs by implementation and is
+- [x] 3. Tests: that the resolved default differs by implementation and is
       recorded in the manifest; that an explicit `batch_size` still overrides;
-      that a resolved default names only implementations `RUNNABLE` holds. The
-      equivalence tests above already cover the results, and should be watched
-      failing once against the new path rather than assumed to still apply.
-- [ ] 4. Drop `batch_size=N_REPS` from notebook 06 and rewrite the paragraph
-      that explains it.
-- [ ] 5. Re-measure time **and peak resident memory**, on a quiet machine, and
-      record before and after:
+      that a resolved default names only implementations `RUNNABLE` holds. All
+      three watched failing. The equivalence test was watched failing against
+      the new path too, by shifting the chunk boundaries, rather than assumed
+      to still apply.
+- [x] 4. Dropped `batch_size=N_REPS` from notebook 06; the paragraph now
+      explains what each implementation resolves to rather than why the
+      notebook overrode one.
+- [x] 5. Re-measured, time and peak resident memory. Through `run.run` on the
+      kernel at 1,000 replications, forty-eight threads, batch fifty against
+      the implementation's own:
+
+      | Segments | Batch 50 | Its own | | Peak, 50 | Peak, own |
+      |---|---|---|---|---|---|
+      | 12,000 | 5.39 s | 3.24 s | **1.66x** | 432.4 MB | 387.2 MB |
+      | 50,000 | 24.25 s | 14.73 s | **1.65x** | 653.1 MB | 626.8 MB |
+
+      Memory falls slightly rather than rising, which the estimate did not
+      predict: each chunk writes its own parquet part, so twenty chunks hold
+      twenty parts where one holds one, and that outweighs the 4.8 MB the
+      larger results array costs.
+
+      Notebook 06 gets the same speedup without asking for it — 3.53 s where it
+      needed `batch_size=N_REPS` by hand to reach 3.82 s before.
+
+      **The budget sweep is unchanged, 1.70 s against 1.68 s, and that is not a
+      disappointment but arithmetic**: it runs at the reduced 40 replications,
+      which is a single chunk at fifty and a single chunk at the kernel's own
+      size. The change can only pay where a run has more replications than the
+      bounded batch, which the sweep at its reduced defaults does not.
+
+      Original scope, for the record:
       - notebook 06 at 12,000 and at 50,000 segments;
       - a budget sweep;
       - a grid of batch size against implementation against population size,
@@ -121,28 +146,45 @@ table did not move" reads as an error otherwise.
       that ran three implementations in turn and cannot be split between them.
       A run that would exceed memory has to be run under a cap rather than left
       to swap, the way the draw-index test bounds a child's address space.
-- [ ] 6. Check `PLAN.md` for anything that describes batching as a single
-      default, and `README.md` for the same.
+- [x] 6. `PLAN.md` had two: a paragraph deriving the batch's useful range from
+      one number, and a claim of twenty boundary crossings per policy, which is
+      now one. `README.md` had none.
 - [ ] 7. Review passes.
 
 ## Open questions
 
-**Is the batched loop's memory where the arithmetic says?** The case against
-simply raising the default rests on an 800 MB array at 1,000 replications and
-100,000 segments, times eight or more arrays. If measured peak memory comes in
-far below that, the whole trade changes and a single large default may be right
-after all. This is the first thing step 5 should answer, because it decides
-whether the rest of the change is necessary.
+**Is the batched loop's memory where the arithmetic says?** **Answered first,
+and yes — slightly worse.** Measured with `scripts/measure_memory.py`, one
+implementation per process:
+
+| Segments | Batch | Peak | Above import | One array | Ratio |
+|---|---|---|---|---|---|
+| 12,000 | 50 | 224.8 MB | 98.6 | 4.8 | 20.5x |
+| 12,000 | 250 | 475.3 MB | 349.7 | 24.0 | 14.6x |
+| 12,000 | 1000 | 1,370.9 MB | 1,245.8 | 96.0 | 13.0x |
+| 100,000 | 50 | 835.8 MB | 710.0 | 40.0 | 17.8x |
+| 100,000 | 250 | 2,774.9 MB | 2,649.8 | 200.0 | 13.2x |
+| 100,000 | 1000 | 9,991.0 MB | 9,865.3 | 800.0 | 12.3x |
+
+The loop carries twelve to twenty times one `(replications, segments)` array,
+not the eight this plan estimated, so a single large default would peak at ten
+gigabytes on the largest run this project has done. The bound is necessary and
+the rest of the change follows.
 
 **Does `batched_numpy` want a fixed 50, or one that scales with the
-population?** Its constraint is `batch x segments`, so 50 is 5 MB per array at
-12,000 segments and 40 MB at 100,000. A fixed batch means the memory it was
-chosen to bound grows with the fleet anyway. Scaling it to hold megabytes rather
-than replications constant would be the honest form, and is more machinery than
-the problem may deserve.
+population?** **Fixed, for now, and the reason is stated rather than assumed.**
+The concern was real — a fixed batch lets the memory it bounds grow with the
+fleet, measured at 99 MB above import at 12,000 segments and 710 MB at 100,000,
+a sevenfold rise for a bound that did not move. But 710 MB is not a constraint
+on any machine this runs on, and a batch that scales inversely with the
+population is a second rule to keep in step with the first. Revisit if a
+population arrives where 710 MB matters; the measurement above is what to
+revisit it against.
 
 **Should the kernel resolve to the whole chunk, or to a large fixed number?**
-The whole chunk is what the measurement supports and holds 5 MB at 1,000
-replications. A study running 100,000 replications would hold 500 MB of results,
-which is fine, but the number grows without a stated bound and nobody has run
-one.
+**The whole chunk**, which is what the measurement supports: 5 MB of results at
+1,000 replications, and the peak went *down* rather than up, because twenty
+chunks each write a parquet part. The unbounded growth is real and is stated
+where the constant is declared — 100,000 replications would hold 500 MB — but
+nobody has run one, and a fixed cap chosen now would be a number with no
+measurement behind it.

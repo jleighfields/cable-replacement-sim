@@ -257,6 +257,75 @@ def test_the_escalation_series_compounds_in_double_and_narrows_once() -> None:
     )
 
 
+def test_each_implementation_is_batched_at_its_own_size_and_records_it(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A run that names no batch size gets the one its implementation wants.
+
+    One number cannot serve all three. The batched loop holds every replication
+    of a chunk in flight, so a chunk is what bounds its memory — measured, it
+    carries twelve to twenty times one `(replications, segments)` array, which
+    at a thousand replications over a hundred thousand segments is ten
+    gigabytes. The reference and the kernel hold nothing shaped that way, and
+    chunking costs the kernel the axis it parallelises over.
+
+    The manifest records what was resolved rather than that nothing was asked
+    for, because a saved run is read later by someone who needs to know what
+    produced it.
+    """
+    settings = small_config()
+    resolved = {}
+    for name in sorted(run.RUNNABLE):
+        directory = run.run(settings, tmp_path / name, implementation=name)
+        manifest = json.loads((directory / results.MANIFEST_NAME).read_text())
+        resolved[name] = manifest["batch_size"]
+
+    assert resolved["batched_numpy"] == run.BOUNDED_BATCH_SIZE
+    assert resolved["kernel"] == settings.simulation.n_reps, (
+        "the kernel was chunked; it holds nothing that grows with the batch and "
+        "chunking costs it the axis it spreads over"
+    )
+    assert len(set(resolved.values())) > 1, (
+        "every implementation resolved to the same size, so this default is "
+        "the single number the split exists to replace"
+    )
+
+
+def test_an_explicit_batch_size_still_overrides_the_implementation(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Naming a size is what a memory-constrained caller does, and it is honoured.
+
+    The per-implementation default is what happens when nobody chooses. A
+    caller who does — because the machine is small, or because they are
+    measuring the effect of the batch itself — has to be able to, and the
+    manifest has to say what they chose.
+    """
+    settings = small_config()
+
+    directory = run.run(settings, tmp_path, implementation="kernel", batch_size=2)
+
+    manifest = json.loads((directory / results.MANIFEST_NAME).read_text())
+    assert manifest["batch_size"] == 2, (
+        "an explicitly named batch size was replaced by the implementation's"
+    )
+
+
+def test_an_implementation_with_no_declared_batch_size_is_reported() -> None:
+    """The check behind the import-time guard, driven with a bad name.
+
+    The same shape as the two registry checks beside it, and for the same
+    reason: the invariant it guards cannot be asserted directly, because
+    breaking it stops the suite at collection rather than reddening anything.
+    """
+    assert run.unbatched_implementations(["batched_pandas"]) == {"batched_pandas"}
+    assert run.unbatched_implementations([]) == set()
+    assert set(run.BATCH_SIZES) == set(run.RUNNABLE), (
+        "every runnable implementation needs a declared batch size, because a "
+        "run that names none has to resolve to something"
+    )
+
+
 def test_a_precision_that_names_no_dtype_is_refused() -> None:
     """The two array builders refuse a width that does not exist.
 

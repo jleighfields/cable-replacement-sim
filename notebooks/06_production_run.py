@@ -168,18 +168,18 @@ def _(mo):
     Written into a temporary directory and read straight back, so running this
     notebook by hand or under the test suite leaves nothing behind.
 
-    **The whole run goes to the kernel in one chunk.** `batch_size` splits the
-    replications into separate calls, and it exists to bound memory: the batched
-    NumPy loop holds `(replications, segments)` arrays, so at 1,000 replications
-    one of them is 96 MB and a chunk of 50 makes it 4.8 MB. The kernel holds
-    nothing shaped that way — its per-worker scratch is per *segment*, and the
-    only thing that grows with replications is the results array, 5 MB for this
-    whole run against 0.25 MB for a chunk of 50.
+    **The whole run goes to the kernel in one chunk, and nothing here asks for
+    that.** `batch_size` splits the replications into separate calls and exists
+    to bound memory: the batched NumPy loop holds `(replications, segments)`
+    arrays and enough of them that its footprint is twelve to twenty times one
+    of them — ten gigabytes at a thousand replications over a hundred thousand
+    segments. The kernel holds nothing shaped that way; its per-worker scratch
+    is sized by *segments*, and only the results array grows with replications,
+    at 5 MB for this whole run.
 
-    So chunking buys the kernel about five megabytes and costs it the axis it
-    parallelises over: 50 replications across 48 workers is one each, twenty
-    times in sequence. Setting the batch to the replication count hands it the
-    whole run at once, which is what running this on the kernel is for.
+    So each implementation carries its own default: a bound for the one that
+    needs it, and none for the two that only lose the axis they parallelise
+    over. `run.BATCH_SIZES` has them.
     """
     )
     return
@@ -206,7 +206,6 @@ def _(
             pathlib.Path(_root),
             implementation="kernel",
             threads=threads,
-            batch_size=N_REPS,
         )
         saved = pl.read_parquet(_directory / results.RESULTS_NAME)
         manifest = json.loads(

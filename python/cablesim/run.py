@@ -44,8 +44,45 @@ from cablesim import config as config_module
 
 log = logging.getLogger(__name__)
 
-DEFAULT_BATCH_SIZE = 50
-"""Replications per call, which trades memory against time and nothing else."""
+BOUNDED_BATCH_SIZE = 50
+"""Replications per call for an implementation that holds them all at once.
+
+The batched NumPy loop carries `(replications, segments)` arrays and enough of
+them that its footprint is fifteen to twenty times one such array: measured at
+12,000 segments it grows from 99 MB at this batch to 350 MB at 250, where a
+single array accounts for 5 MB and 24. That is what a batch bounds, and it is
+why this implementation has one at all.
+
+The value is not a tuned optimum. It is small enough that the memory stays a
+detail at the sizes this project runs and large enough that per-call overhead is
+not the cost, and no measurement asks it to be more precise than that.
+"""
+
+UNBOUNDED_BATCH: int | None = None
+"""What an implementation that holds no such arrays is batched at: nothing.
+
+The reference runs one replication at a time and the kernel gives each worker
+scratch sized by *segments*, so neither holds anything that grows with the batch
+except the results — 5 MB for a thousand replications, against the 250 KB a
+chunk of fifty would hold. Chunking them buys that difference and costs the axis
+the kernel parallelises over: fifty replications across forty-eight workers is
+one each, repeated, with a pool built per chunk. Measured through `run.run`, it
+is 1.76x at 12,000 segments and 1.52x at 50,000.
+"""
+
+BATCH_SIZES: dict[str, int | None] = {
+    "reference": UNBOUNDED_BATCH,
+    "batched_numpy": BOUNDED_BATCH_SIZE,
+    "kernel": UNBOUNDED_BATCH,
+}
+"""What each implementation is batched at when a caller names no size.
+
+One number cannot serve these: the batched loop needs a bound and the other two
+are only slowed by one, so a default that suits either is wrong for the rest.
+Keyed by implementation for the reason `CONCURRENT` is — it is a property of the
+implementation, declared where the implementations are, and every name here has
+to be one `RUNNABLE` holds.
+"""
 
 BUDGET_GRID_LOW = 0.125
 """The lowest swept budget, as a fraction of the configured one."""
@@ -130,6 +167,46 @@ here must be one ``RUNNABLE`` holds, which
 """
 
 
+def batch_size_for(implementation: str, n_reps: int) -> int:
+    """How many replications one call of this implementation should take.
+
+    Args:
+        implementation: The name it is keyed into ``RUNNABLE`` under.
+        n_reps: Replications in the whole run, which is the answer for an
+            implementation that wants no bound.
+
+    Returns:
+        The batch size to chunk with.
+
+    Raises:
+        KeyError: If no implementation goes by that name.
+    """
+    if implementation not in BATCH_SIZES:
+        raise KeyError(
+            f"no batch size is declared for {implementation!r}; "
+            f"the implementations are {sorted(BATCH_SIZES)}"
+        )
+    bounded = BATCH_SIZES[implementation]
+    return n_reps if bounded is None else bounded
+
+
+def unbatched_implementations(names: Iterable[str]) -> set[str]:
+    """Names among these that no batch size is declared for.
+
+    A function rather than a check run once at import, for the reason
+    ``unknown_implementations`` is one: an import-time check cannot be watched
+    failing, because breaking it stops the suite at collection rather than
+    reddening a test.
+
+    Args:
+        names: Implementation names to check.
+
+    Returns:
+        Those that ``BATCH_SIZES`` does not cover.
+    """
+    return set(names) - set(BATCH_SIZES)
+
+
 def unthreadable_implementations(names: Iterable[str]) -> set[str]:
     """Names among these that no runnable implementation answers to.
 
@@ -146,6 +223,14 @@ def unthreadable_implementations(names: Iterable[str]) -> set[str]:
     """
     return set(names) - set(RUNNABLE)
 
+
+UNBATCHED = unbatched_implementations(RUNNABLE)
+if UNBATCHED:
+    raise ValueError(
+        f"{sorted(UNBATCHED)} are runnable but no batch size is declared for "
+        f"them; every implementation needs one, because a run that names no "
+        f"size has to resolve to something"
+    )
 
 UNTHREADABLE = unthreadable_implementations(CONCURRENT)
 if UNTHREADABLE:
@@ -407,7 +492,7 @@ def run(
     settings: config_module.Config,
     root: pathlib.Path,
     implementation: str = "reference",
-    batch_size: int = DEFAULT_BATCH_SIZE,
+    batch_size: int | None = None,
     threads: int = 1,
     swept: dict[str, float] | None = None,
 ) -> pathlib.Path:
@@ -424,7 +509,12 @@ def run(
             from the same name — read from the compiled extension where the
             kernel ran, and absent for pure Python rather than invented, since
             a timing from the kernel without one means nothing.
-        batch_size: Replications per call.
+        batch_size: Replications per call, or None to let the implementation
+            decide. It is a memory bound for the one implementation that holds
+            every replication in flight and a cost to the two that do not, so
+            the default is theirs rather than a single number — ``BATCH_SIZES``
+            has what each resolves to and why. The manifest records the resolved
+            size, because "whatever the default was" cannot be read later.
         threads: Workers to spread each chunk's replications over, recorded in
             the manifest beside the implementation and the build profile. The
             implementations named in ``CONCURRENT`` can use more than one; the
@@ -454,6 +544,13 @@ def run(
     # implementation records its profile instead of silently recording none.
     build_profile = getattr(sys.modules[annual_loop.__module__], "BUILD_PROFILE", None)
     started = time.perf_counter()
+    # Resolved once, here, rather than defaulted in the signature: one number
+    # cannot serve implementations whose constraints point opposite ways, and
+    # what the manifest must record is the size that actually ran, not the
+    # absence of a request.
+    if batch_size is None:
+        batch_size = batch_size_for(implementation, settings.simulation.n_reps)
+
     run_id = results.new_run_id()
     segments_frame = population.generate(settings)
     class_names = [segment_class.name for segment_class in settings.population.classes]
