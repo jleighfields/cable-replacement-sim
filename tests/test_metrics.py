@@ -34,6 +34,7 @@ def rows(**overrides: object) -> pl.LazyFrame:
         "planned_replacements": 3.0,
         "planned_spend": 4_500.0,
         "emergency_spend": 7_500.0,
+        "voll": 20_000.0,
     }
     row.update(overrides)
     return pl.LazyFrame([row])
@@ -123,6 +124,44 @@ def test_discounting_leaves_year_zero_alone_and_shrinks_later_years() -> None:
     )
 
 
+def test_lost_load_sits_beside_the_spend_rather_than_inside_it() -> None:
+    """``total_spend`` is the utility's outlay; ``failure_cost`` is the bill
+    a year of failures leaves with everyone who bears it.
+
+    The row spends 4,500 planned and 7,500 emergency and destroys 20,000 of
+    customer value. Folding lost load into ``total_spend`` would leave every
+    cost-per-customer-minute figure dividing by money nobody spent, and the
+    reliability-against-budget figures are drawn from that column.
+    """
+    result = metrics.indices_per_replication(rows(), TOTAL_CUSTOMERS).collect()
+
+    assert result["total_spend"].item() == pytest.approx(12_000.0)
+    assert result["voll"].item() == pytest.approx(20_000.0)
+    assert result["failure_cost"].item() == pytest.approx(27_500.0)
+
+
+def test_every_dollar_column_gets_a_present_value_twin() -> None:
+    """A dollar column without one is a quantity no present-value figure can
+    show, and nothing else reports its absence.
+
+    The names are written out rather than read off the frame: deriving them
+    from what ``discount`` produced would pass for any column set, including
+    one that had quietly lost a column at both ends.
+    """
+    result = metrics.discount(
+        metrics.indices_per_replication(rows(), TOTAL_CUSTOMERS), rate=0.06
+    ).collect()
+
+    for name in (
+        "planned_spend",
+        "emergency_spend",
+        "total_spend",
+        "voll",
+        "failure_cost",
+    ):
+        assert f"{name}_discounted" in result.columns, name
+
+
 def test_a_horizon_total_sums_each_replication_before_averaging() -> None:
     """The mean of a total is not the total of a mean once replications differ.
 
@@ -156,6 +195,8 @@ def test_a_horizon_total_sums_each_replication_before_averaging() -> None:
     ).collect()
 
     assert totals["planned_spend"].item() == pytest.approx(1_000.0)
+    # Lost load reaches the horizon totals too: 20,000 in each of three years.
+    assert totals["failure_cost"].item() == pytest.approx(60_000.0)
 
 
 def test_bands_summarize_across_replications_rather_than_collapsing_years() -> None:

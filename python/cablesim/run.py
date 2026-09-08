@@ -11,9 +11,10 @@ through one path rather than through two that could differ in how they are
 driven.
 
 Replications are processed in chunks because the result arrays grow with the
-replication count: seven of them at `(replications, years, classes)`, plus
-whatever the implementation holds in flight, which for the batched loops is a
-`(replications, segments)` working set. The chunk size changes no number, since
+replication count: one per field of `simulate.Results`, each at
+`(replications, years, classes)`, plus whatever the implementation holds in
+flight, which for the batched loops is a `(replications, segments)` working
+set. The chunk size changes no number, since
 every draw is a function of the key and of a position that carries the
 replication's index in the whole run, so it is an argument here and provenance
 in the manifest rather than a configured parameter.
@@ -96,10 +97,11 @@ right does not change what the number is used for: the reference needs no bound,
 and it loses little by not having one.
 
 **What a run holds grows with the replication count and nothing caps it.** The
-seven result arrays of `(replications, years, classes)` are the visible part —
-5 MB at a thousand replications — but they are not the figure to plan against:
-`results.rows_from_chunk` builds a frame from them and holds it while they are
-still live, and the peak carries both. Measured through `run` on the kernel
+result arrays of `(replications, years, classes)` are the visible part — one
+per field of `simulate.Results`, 5.8 MB together at a thousand replications —
+but they are not the figure to plan against: `results.rows_from_chunk` builds
+a frame from them and holds it while they are still live, and the peak carries
+both. Measured through `run` on the kernel
 over five policies, one process per point, above a 125 MB interpreter:
 220 MB at 1,000 replications, 867 MB at 10,000, 1,415 MB at 20,000 and 2,499 MB
 at 40,000. That is about 58 MB per thousand, some twelve times what the arrays

@@ -173,7 +173,7 @@ def _(mo):
         r"""
     ## 20 · One chunk, five ways
 
-    Every implementation takes the same arguments and returns the same seven
+    Every implementation takes the same arguments and returns the same
     arrays. Build one chunk's arguments and hand that one set of objects to
     each, so "the same draws" is true by construction rather than by
     coincidence — there is no random-number stream to reconcile across the two

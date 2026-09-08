@@ -217,7 +217,7 @@ def spread_over_threads(
             replication count.
 
     Returns:
-        The seven per-year, per-class arrays for the whole chunk.
+        The per-year, per-class arrays for the whole chunk.
     """
     n_reps = arguments["n_reps"]
     first_replication = arguments["first_replication"]
@@ -232,7 +232,7 @@ def spread_over_threads(
             stop: One past its last.
 
         Returns:
-            That block's seven arrays.
+            That block's arrays.
         """
         return run_chunk_numpy(
             **{
@@ -322,7 +322,7 @@ def run_chunk_numpy(
             each is run by ``spread_over_threads``.
 
     Returns:
-        The seven per-year, per-class arrays for this chunk.
+        The per-year, per-class arrays for this chunk.
 
     Raises:
         ValueError: Everything `simulate.check_arguments` refuses, which is
@@ -411,6 +411,12 @@ def run_chunk_numpy(
         )
         results.emergency_spend[:, year] += totals_by_class(
             failed_bins, n_reps, n_classes, failed_cost
+        )
+        results.voll[:, year] += totals_by_class(
+            failed_bins,
+            n_reps,
+            n_classes,
+            gathered(outage_cost_per_failure, failed_columns) * escalation,
         )
 
         replaced = failed.copy()

@@ -16,8 +16,8 @@ stream to share or an array to be handed. `random_draws` computes the identical
 values in NumPy for the implementations that stay in Python, and the two are
 held to agreeing bit for bit.
 
-The extension module returns seven arrays rather than a result object of its
-own. Rebuilding the reference's NamedTuple from them here is what keeps a
+The extension module returns a tuple of arrays rather than a result object of
+its own. Rebuilding the reference's NamedTuple from them here is what keeps a
 single result type in the package: anything that unpacks a result, reads
 `_fields`, or indexes it would otherwise work on one implementation and fail on
 the other.
@@ -140,7 +140,7 @@ def run_chunk(
             machine's count.
 
     Returns:
-        The seven per-year, per-class arrays for this chunk.
+        The per-year, per-class arrays for this chunk.
 
     Raises:
         ValueError: If the policy tag names no policy, if the population is

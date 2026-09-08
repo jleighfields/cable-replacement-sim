@@ -100,6 +100,104 @@ def test_forcing_the_scale_past_the_horizon_fails_nothing() -> None:
     assert not results.customer_minutes.any()
 
 
+def test_lost_load_totals_the_failures_at_the_year_s_prices() -> None:
+    """Customer value destroyed, per class, carrying the year's escalation.
+
+    Every segment fails every year, so each class total is that class's whole
+    share of the ``outage_cost_per_failure`` column — 1,000 and 2,000 in class
+    0, 3,000 and 4,000 in class 1 — and the only thing that varies between
+    years is the multiplier. Lost load escalates with construction cost so
+    that a dollar of customer value and a dollar of cable stay comparable
+    inside one year, which is the same reason the ranking score escalates the
+    same column.
+    """
+    results = simulate.run_chunk(
+        **inputs(
+            scale=np.full(N_SEGMENTS, helpers.FAILS_AT_ONCE),
+            replacement_scale=np.full(N_SEGMENTS, helpers.FAILS_AT_ONCE),
+            cost_escalation=np.array([1.0, 2.0, 4.0]),
+        )
+    )
+
+    assert results.voll[0].tolist() == [
+        [3_000.0, 7_000.0],
+        [6_000.0, 14_000.0],
+        [12_000.0, 28_000.0],
+    ]
+
+
+def test_only_the_segments_that_failed_lose_any_load() -> None:
+    """A segment that survives the year destroys none of its customers' value.
+
+    Segments 0 and 2 fail once and are replaced with cable that never fails;
+    1 and 3 never fail at all. So the totals are one segment's value per class
+    in year 0 and nothing afterwards. Totalling the whole column instead would
+    triple class 0 and more than double class 1, and would still rise and fall
+    with the failure rate — which is what makes this worth pinning rather than
+    reading off the sum.
+    """
+    results = simulate.run_chunk(
+        **inputs(
+            scale=np.array(
+                [
+                    helpers.FAILS_AT_ONCE,
+                    helpers.NEVER_FAILS,
+                    helpers.FAILS_AT_ONCE,
+                    helpers.NEVER_FAILS,
+                ]
+            ),
+            replacement_scale=np.full(N_SEGMENTS, helpers.NEVER_FAILS),
+        )
+    )
+
+    assert results.voll[0, 0].tolist() == [1_000.0, 3_000.0]
+    assert not results.voll[0, 1:].any()
+
+
+def test_lost_load_is_not_charged_to_the_budget() -> None:
+    """It is value customers lost, not money the utility spends.
+
+    Charging it would crowd out planned work, which is the reinforcing loop
+    that emergency *spend* is deliberately allowed to produce and lost load is
+    not: a utility whose customers suffer does not thereby have less capital.
+
+    The policy ranks on age, so the value of lost load reaches the funding
+    decision by no other route and the budget is the only thing scaling it
+    could move. The budget binds: 9,000 covers the two failures at 3,750 each
+    and leaves exactly one planned replacement affordable at 1,500. Charged
+    the 4,000 of lost load beside them, the year would fund nothing.
+    """
+    arguments = inputs(
+        policy=helpers.resolved("age_threshold", threshold_years=15),
+        emergency_charged_to_budget=True,
+        budget=np.full(N_YEARS, 9_000.0),
+        scale=np.array(
+            [
+                helpers.FAILS_AT_ONCE,
+                helpers.NEVER_FAILS,
+                helpers.FAILS_AT_ONCE,
+                helpers.NEVER_FAILS,
+            ]
+        ),
+        replacement_scale=np.full(N_SEGMENTS, helpers.NEVER_FAILS),
+    )
+    dearer = np.asarray(arguments["outage_cost_per_failure"]) * 1_000.0
+
+    modest = simulate.run_chunk(**arguments)
+    valuable = simulate.run_chunk(
+        **{**arguments, "outage_cost_per_failure": dearer}
+    )
+
+    assert modest.planned_replacements[0, 0].sum() == 1.0, (
+        "the budget must fund exactly one, or there is nothing to crowd out"
+    )
+    assert modest.voll.sum() < valuable.voll.sum(), "the two runs must differ"
+    assert np.array_equal(
+        modest.planned_replacements, valuable.planned_replacements
+    )
+    assert np.array_equal(modest.planned_spend, valuable.planned_spend)
+
+
 def test_the_initial_draw_is_conditional_on_the_age_already_survived() -> None:
     """Drawing unconditionally makes an old population behave as though new.
 

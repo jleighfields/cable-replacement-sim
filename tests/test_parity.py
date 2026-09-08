@@ -966,7 +966,7 @@ def test_a_year_that_overruns_its_budget_funds_nothing_and_carries_no_debt(
     Neither implementation floors that negative at zero. Nothing needs to:
     every planned cost is positive, so the fill stops at its first candidate,
     and no year's remainder carries to the next. Both must fund nothing, spend
-    nothing, and agree on all seven arrays.
+    nothing, and agree on every array.
     """
     n_years = deterministic_arguments["n_years"]
     arguments = helpers.at_call_width(

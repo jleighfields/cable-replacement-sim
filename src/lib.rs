@@ -7,7 +7,7 @@
 //! same module name on both sides: `weibull`, `policies`, `simulate`.
 //!
 //! This file is the boundary and nothing else. It checks what arrives, calls
-//! `simulate::run_chunk`, and hands back seven arrays; every decision the model
+//! `simulate::run_chunk`, and hands back its arrays; every decision the model
 //! makes is in the three modules below it.
 //!
 //! # Reading this beside the Python
@@ -175,10 +175,12 @@ fn as_result_array(
 ///
 /// # Returns
 ///
-/// Seven `(replications, years, classes)` arrays, in the field order of
-/// `cablesim.simulate.Results`: failures, customers interrupted, customer
-/// minutes, planned customer minutes, planned replacements, planned spend and
-/// emergency spend.
+/// `(replications, years, classes)` arrays, in the field order of
+/// `cablesim.simulate.Results` — which is the contract a caller unpacks by
+/// position, so the order is listed rather than left to be discovered:
+/// failures, customers interrupted, customer minutes, planned customer
+/// minutes, planned replacements, planned spend, emergency spend, and the
+/// value of lost load.
 ///
 /// # Errors
 ///
@@ -450,6 +452,7 @@ fn run_chunk_typed<'py, T: Element + Real>(
             as_result_array(py, results.planned_replacements, dimensions).into_any(),
             as_result_array(py, results.planned_spend, dimensions).into_any(),
             as_result_array(py, results.emergency_spend, dimensions).into_any(),
+            as_result_array(py, results.voll, dimensions).into_any(),
         ],
     )
 }

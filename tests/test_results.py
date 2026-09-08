@@ -102,6 +102,7 @@ def test_the_saved_schema_is_what_it_claims_to_be() -> None:
         "planned_replacements": pl.Float64,
         "planned_spend": pl.Float64,
         "emergency_spend": pl.Float64,
+        "voll": pl.Float64,
     }
 
 

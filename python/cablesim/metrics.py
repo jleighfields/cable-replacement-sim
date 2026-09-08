@@ -75,10 +75,10 @@ def indices_per_replication(
             the shape stays plausible, and the swept column disappears.
 
     Returns:
-        One row per policy, replication and year, carrying the seven saved
-        quantities summed over classes plus ``saifi``, ``saidi``, ``caidi``
-        and ``total_spend``. Customer minutes interrupted stays under its
-        saved name, ``customer_minutes``.
+        One row per policy, replication and year, carrying every saved
+        quantity summed over classes plus ``saifi``, ``saidi``, ``caidi``,
+        ``total_spend`` and ``failure_cost``. Customer minutes interrupted
+        stays under its saved name, ``customer_minutes``.
 
     Examples:
         The input is the saved frame, one row per class::
@@ -103,6 +103,7 @@ def indices_per_replication(
             "planned_replacements",
             "planned_spend",
             "emergency_spend",
+            "voll",
         ).sum()
     )
     return totals.with_columns(
@@ -111,6 +112,13 @@ def indices_per_replication(
         # No `cmi` column: customer minutes interrupted is `customer_minutes`
         # unchanged, and the module docstring says so once.
         total_spend=pl.col("planned_spend") + pl.col("emergency_spend"),
+        # What a year of failures costs, which is not what it costs the
+        # utility: the emergency bill is money spent and the value of lost
+        # load is value destroyed. They are added here because the frontier
+        # plots their sum against the planned spend that bought it down, and
+        # kept out of `total_spend` because that column is the utility's own
+        # outlay and the reliability-against-budget figures divide by it.
+        failure_cost=pl.col("emergency_spend") + pl.col("voll"),
     ).with_columns(
         # Average duration per customer interrupted. Undefined rather than zero
         # in a year nothing failed: dividing two zeros would report a
@@ -132,7 +140,8 @@ def discount(frame: pl.LazyFrame, rate: float) -> pl.LazyFrame:
     year-29 dollar the same as a year-0 one.
 
     Args:
-        frame: Rows carrying a ``year`` column and the spend columns.
+        frame: Rows carrying a ``year`` column and the dollar columns, as
+            ``indices_per_replication`` leaves them.
         rate: Annual discount rate, as a fraction.
 
     Returns:
@@ -142,7 +151,13 @@ def discount(frame: pl.LazyFrame, rate: float) -> pl.LazyFrame:
     return frame.with_columns(
         [
             (pl.col(name) * factor).alias(f"{name}_discounted")
-            for name in ("planned_spend", "emergency_spend", "total_spend")
+            for name in (
+                "planned_spend",
+                "emergency_spend",
+                "total_spend",
+                "voll",
+                "failure_cost",
+            )
         ]
     )
 
@@ -208,9 +223,13 @@ def horizon_totals(frame: pl.LazyFrame, by: tuple[str, ...] = ()) -> pl.LazyFram
             "planned_spend",
             "emergency_spend",
             "total_spend",
+            "voll",
+            "failure_cost",
             "planned_spend_discounted",
             "emergency_spend_discounted",
             "total_spend_discounted",
+            "voll_discounted",
+            "failure_cost_discounted",
         ).sum()
     )
     return (
