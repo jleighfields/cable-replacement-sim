@@ -304,6 +304,34 @@ NEVER_FAILS = 1e6
 """A scale that puts the first failure hundreds of thousands of years out."""
 
 
+def assert_at_width(arguments: dict[str, object], precision: str) -> None:
+    """Checks that every float array in a call carries the named width.
+
+    An argument builder that misses one produces a call at a width nobody asked
+    for, and nothing comparing implementations can see it because they all widen
+    together. Every builder that names a precision should end with this.
+
+    Args:
+        arguments: A call's arguments.
+        precision: The key of ``constants.PRECISIONS`` they should carry.
+
+    Raises:
+        AssertionError: If any float array is at another width.
+    """
+    wanted = constants.PRECISIONS[precision]
+    wrong = {
+        name: str(value.dtype)
+        for name, value in arguments.items()
+        if isinstance(value, np.ndarray)
+        and value.dtype.kind == "f"
+        and value.dtype != wanted
+    }
+    assert not wrong, (
+        f"the call was built for {precision} and carries {wrong}; a test "
+        f"parametrised on a width it does not produce pins nothing"
+    )
+
+
 def at_call_width(arguments: dict[str, object]) -> dict[str, object]:
     """Casts every float array in a call to the width its population carries.
 

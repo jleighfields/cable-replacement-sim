@@ -228,7 +228,12 @@ def test_the_alternating_scale_fails_the_half_it_names_at_both_widths(
     """
     arguments = helpers.alternating_lifetimes(deterministic_arguments)
     n_segments = np.size(arguments["age0"])
-    intended = n_segments // 2 * arguments["n_reps"]
+    # `arange(n) % 2 == 0` selects the ceiling of half, which differs from
+    # `n // 2` on an odd population; counted rather than divided so this does
+    # not become wrong the first time the fixture size changes.
+    intended = int(np.count_nonzero(np.arange(n_segments) % 2 == 0)) * (
+        arguments["n_reps"]
+    )
 
     failures = simulate.run_chunk(
         **arguments, policy=helpers.resolved("run_to_failure")
@@ -324,11 +329,19 @@ def one_year_at_single_precision(
 ) -> dict[str, object]:
     """One year of the shipped population at single precision, on a boundary.
 
-    Both callers need the *shipped* twelve thousand segments rather than a
-    fixture's few hundred: what they pin is a last-bit difference deciding
-    which candidate the budget reaches last, and a small population does not
-    put enough candidates near the cut for one to fall the other side of it.
-    A single replication over a single year keeps that affordable.
+    **The multiplier and budget each caller passes were found by search against
+    the population the shipped seed, size and cost parameters generate**, so
+    this is a statement about that exact population and not about its size.
+    Measured: at 12,001 segments, at 11,000, and at one step of the seed, the
+    constants stop straddling their boundary and the callers pin nothing. Each
+    asserts the funded count it was built on, so a change to any of those
+    reports rather than passing quietly, and the fix is to search again.
+
+    A fixture's few hundred segments will not do: what these pin is a last-bit
+    difference deciding which candidate the budget reaches last, and a small
+    population does not put enough candidates near the cut for one to fall the
+    other side. One replication over one year keeps the shipped size
+    affordable.
 
     Args:
         multiplier: What an emergency replacement costs, relative to planned.
@@ -347,8 +360,10 @@ def one_year_at_single_precision(
             )
         }
     )
-    return {
-        **run.segment_arrays(population.generate(settings), "f32"),
+    built = {
+        **run.segment_arrays(
+            population.generate(settings), settings.simulation.precision
+        ),
         "draw_key": random_draws.draw_key(settings.simulation.seed),
         "first_replication": 0,
         "n_reps": 1,
@@ -360,6 +375,11 @@ def one_year_at_single_precision(
         "n_classes": len(settings.population.classes),
         "n_years": 1,
     }
+    # The fourth argument builder in this suite, and the one the parity
+    # fixtures' own assertion does not cover. Building at the wrong width would
+    # leave both callers passing and pinning nothing.
+    helpers.assert_at_width(built, settings.simulation.precision)
+    return built
 
 
 # Every segment a candidate and the raw score, so the ranking is the premium
@@ -372,9 +392,9 @@ UNFILTERED_RISK = policies.Resolved(
 )
 
 
-def test_the_emergency_premium_is_narrowed_where_the_reference_narrows_it() -> (
-    None
-):
+def test_the_emergency_premium_is_narrowed_where_the_reference_narrows_it(
+    implementation: run.Implementation,
+) -> None:
     """Where a configured double meets the working width decides who is funded.
 
     The risk-ranked score reads ``planned * (emergency_multiplier - 1)``. The
@@ -392,16 +412,21 @@ def test_the_emergency_premium_is_narrowed_where_the_reference_narrows_it() -> (
     arguments = one_year_at_single_precision(
         multiplier=2.942645377983026, budget=41938160.0, charged=False
     )
+    reference = simulate.run_chunk(**arguments, policy=UNFILTERED_RISK)
 
+    assert reference.planned_replacements.sum() == 181, (
+        "the budget no longer sits between the two cut points, so this test "
+        "pins nothing whatever it asserts next; the multiplier and budget were "
+        "searched against a particular population and need searching again"
+    )
     assert_identical(
-        simulate.run_chunk(**arguments, policy=UNFILTERED_RISK),
-        kernel.run_chunk(**arguments, policy=UNFILTERED_RISK, threads=1),
+        reference, implementation(**arguments, policy=UNFILTERED_RISK)
     )
 
 
-def test_the_emergency_bill_totals_at_the_width_the_budget_compares_at() -> (
-    None
-):
+def test_the_emergency_bill_totals_at_the_width_the_budget_compares_at(
+    implementation: run.Implementation,
+) -> None:
     """The year's emergency total is a running sum at the working width.
 
     It is subtracted from the budget that the greedy fill then compares a
@@ -417,10 +442,15 @@ def test_the_emergency_bill_totals_at_the_width_the_budget_compares_at() -> (
     arguments = one_year_at_single_precision(
         multiplier=2.5, budget=80962232.0, charged=True
     )
+    reference = simulate.run_chunk(**arguments, policy=UNFILTERED_RISK)
 
+    assert reference.planned_replacements.sum() == 1, (
+        "the budget no longer sits between the two totals, so this test pins "
+        "nothing whatever it asserts next; it was searched against a "
+        "particular population and needs searching again"
+    )
     assert_identical(
-        simulate.run_chunk(**arguments, policy=UNFILTERED_RISK),
-        kernel.run_chunk(**arguments, policy=UNFILTERED_RISK, threads=1),
+        reference, implementation(**arguments, policy=UNFILTERED_RISK)
     )
 
 

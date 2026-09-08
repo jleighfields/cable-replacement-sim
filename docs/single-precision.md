@@ -7,13 +7,23 @@ about 126 MB of interpreter and imported libraries before any array exists —
 the same in every row, so the difference between two rows is the model's and
 the ratio between them is not.
 
-The timings come from `scripts/run_benchmarks.py`, which takes `--precision`
-and `--segments` and records both in its provenance. The memory columns come
-from `scripts/measure_memory.py`, which measures one implementation per process
-because a peak is a property of the process and a program running three of them
-cannot say which needed it. Every configuration reproduced the scalar reference **exactly,
-in every cell of every array, at its own width** — the parity suite runs at both
-precisions with no tolerance either way.
+The timings come from `scripts/run_benchmarks.py`, which takes `--precision`,
+`--segments` and `--policy` and records all three in its provenance. The memory
+columns come from `scripts/measure_memory.py`, which measures one
+implementation per process because a peak is a property of the process and a
+program running three of them cannot say which needed it.
+
+**Seconds are per replication and memory is not**, so the two columns are read
+differently. A peak grows with how many replications are in flight — the same
+kernel row is 383 MB at 24 and 567 MB at 48 — so every memory figure here is at
+**24 replications**. It is stated because it is not a rate, and because these
+columns previously mixed counts across rows of one table, which compares
+nothing. The memory column is filled for one policy per size: it moves with the
+population and the replication count and barely with the policy.
+
+Every configuration reproduced the scalar reference **exactly, in every cell of
+every array, at its own width** — the parity suite runs at both precisions with
+no tolerance either way.
 
 The two precisions give different answers. That is the choice, not a defect: at
 12,000 segments the difference shows only in the dollar columns, at about 1e-7
@@ -38,15 +48,18 @@ That binding is gone, because the question it answered is now answered
 continuously and by something stronger: **the parity suite runs at both widths**,
 comparing NumPy against the crate through the whole annual loop rather than
 three functions in isolation, at no tolerance. Perturbing the crate's
-single-precision narrowing reddens fifty of its cases.
+single-precision narrowing — perturbing `Real::from_double` for `f32` by one
+part in a million — reddens fifty-two of its cases.
 
 **They agree because there is one implementation and not two.** NumPy's
 single-precision `expm1`, `log1p` and `pow` are bit-identical to this platform's
 `expm1f`, `log1pf` and `powf` — 20,000 of 20,000 each — which are the routines
 the crate calls. They are *not* a double computation rounded once: that
 explanation matches NumPy for 17,936 of 20,000 `expm1` inputs drawn uniformly on
-[-3, 3] and 18,522 of 20,000 `log1p` inputs on [0.01, 0.99), so it is ruled out
-rather than merely unnecessary.
+[-3, 3], 18,522 of 20,000 `log1p` inputs on -[0.01, 0.99), and 19,985 of 20,000
+`pow` inputs on [0.1, 50) raised to 6.5, so it is ruled out rather than merely
+unnecessary. The margin is thinnest for `pow` — fifteen inputs in twenty
+thousand — which is what its negative assertion turns on.
 
 **This is a property of the platform's libm, not of the two languages**, and it
 is the assumption the single-precision mode rests on. A build against a
@@ -61,10 +74,10 @@ is what would notice.
 
 | | seconds, f64 | seconds, f32 | | peak MB, f64 | peak MB, f32 | saved |
 |---|---|---|---|---|---|---|
-| Kernel, 48 threads, `age_threshold` | 0.000239 | 0.000264 | **0.90x** | 176.6 | 160.9 | 15.7 |
-| Kernel, 48 threads, `risk_ranked` | 0.001337 | 0.001339 | 1.00x | 188.8 | 172.8 | 16.0 |
-| Batched NumPy, `age_threshold` | 0.03708 | 0.03630 | 1.02x | 214.1 | 196.2 | 17.9 |
-| Batched NumPy, `risk_ranked` | 0.03927 | 0.03861 | 1.02x | 221.8 | 201.2 | 20.6 |
+| Kernel, 48 threads, `age_threshold` | 0.000239 | 0.000264 | **0.90x** | | | |
+| Kernel, 48 threads, `risk_ranked` | 0.001337 | 0.001339 | 1.00x | 168.7 | 159.3 | 9.4 |
+| Batched NumPy, `age_threshold` | 0.03708 | 0.03630 | 1.02x | | | |
+| Batched NumPy, `risk_ranked` | 0.03927 | 0.03861 | 1.02x | 184.3 | 173.9 | 10.4 |
 
 **No speed at all, and slightly slower in one cell.**
 
@@ -72,10 +85,10 @@ is what would notice.
 
 | | seconds, f64 | seconds, f32 | | peak MB, f64 | peak MB, f32 | saved |
 |---|---|---|---|---|---|---|
-| Kernel, 48 threads, `age_threshold` | 0.003014 | 0.001242 | **2.43x** | 331.5 | 264.6 | 66.9 |
-| Kernel, 48 threads, `risk_ranked` | 0.014016 | 0.008796 | **1.59x** | 383.8 | 315.5 | 68.3 |
-| Batched NumPy, `risk_ranked` | 0.42947 | 0.36766 | 1.17x | 507.5 | 403.7 | 103.8 |
-| Scalar reference, `risk_ranked` | 0.40756 | 0.34929 | 1.17x | 259.7 | 228.5 | 31.2 |
+| Kernel, 48 threads, `age_threshold` | 0.003014 | 0.001242 | **2.43x** | | | |
+| Kernel, 48 threads, `risk_ranked` | 0.014016 | 0.008796 | **1.59x** | 383.2 | 316.7 | 66.5 |
+| Batched NumPy, `risk_ranked` | 0.42947 | 0.36766 | 1.17x | 509.5 | 405.4 | 104.1 |
+| Scalar reference, `risk_ranked` | 0.40756 | 0.34929 | 1.17x | 258.5 | 228.8 | 29.7 |
 
 ## What that means
 
@@ -102,9 +115,10 @@ everything gained here is bandwidth and cache.
 ## Where it is worth using
 
 **At 100,000 segments and above, on the kernel.** That is where it is 1.6x to
-2.4x, and where the 67 MB it saves starts to be worth having.
+2.4x, and where the 67 MB it saves at 24 replications starts to be worth
+having — a figure that itself grows with the replication count.
 
-**Not at the shipped 12,000.** It is a wash on time, and the 16 MB it saves is
+**Not at the shipped 12,000.** It is a wash on time, and the 9 MB it saves is
 not a constraint on a machine with 251 GB.
 
 ## Two limits worth knowing

@@ -123,6 +123,12 @@ def _(config, np, policies, segments, settings):
 
     from cablesim import weibull
 
+    # These cells score the population at double whatever `simulation.precision`
+    # says, because they illustrate what the ranking does rather than reproduce
+    # what a run computed — nothing below is compared against the saved rows.
+    # The budget line further down is compared, and does follow the run's width.
+    # Measured on the shipped configuration the two agree on which segments are
+    # funded and differ by cents on the spend.
     failure_probability = weibull.conditional_failure_probability(
         segments["age"].to_numpy().astype(float),
         segments["shape"].to_numpy(),

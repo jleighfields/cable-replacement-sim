@@ -33,7 +33,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from cablesim import policies, random_draws, weibull
+from cablesim import constants, policies, random_draws, weibull
 
 SEGMENT_ARGUMENTS: tuple[str, ...] = (
     "length_ft",
@@ -212,6 +212,18 @@ def check_arguments(arguments: dict[str, object], concurrent: bool = False) -> i
         if getattr(arguments[name], "dtype", None) is not None
         and arguments[name].dtype.kind == "f"
     }
+    known = {np.dtype(floating) for floating in constants.PRECISIONS.values()}
+    unknown = {
+        name: str(kind) for name, kind in widths.items() if kind not in known
+    }
+    if unknown:
+        # Uniform is not the same as known: an all-`float16` call is one width
+        # and the binding still refuses it at extraction, which is the
+        # asymmetry this function exists to prevent.
+        raise TypeError(
+            f"this call carries a floating width no run computes at: {unknown}. "
+            f"The widths are {sorted(constants.PRECISIONS)}"
+        )
     if len(set(widths.values())) > 1:
         counted = collections.Counter(widths.values())
         common, _ = counted.most_common(1)[0]

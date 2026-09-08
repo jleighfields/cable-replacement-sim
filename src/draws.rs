@@ -374,6 +374,7 @@ pub fn fill_run<T: crate::weibull::Real>(first_index: u64, key: [u64; 2], into: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::weibull::Real;
 
     /// The first eight raw words NumPy produces for `key=[1, 0]`, counter zero.
     ///
@@ -468,10 +469,24 @@ mod tests {
         let key = [0xDEAD_BEEF, 0x0BAD_C0DE];
         for first in [0u64, 1, 2, 3, 4, 7, 4096, 4099] {
             for length in [0usize, 1, 3, 4, 5, 9, 33] {
-                let mut run = vec![0.0; length];
+                let mut run = vec![0.0f64; length];
                 fill_run(first, key, &mut run);
                 for (offset, drawn) in run.iter().enumerate() {
                     assert_eq!(*drawn, uniform_at(first + offset as u64, key));
+                }
+
+                // The single-precision instantiation is a different generated
+                // function, and it is the one a run at that width calls. The
+                // draw is produced in double and narrowed on the way into the
+                // slice, so what it must equal is the narrowed double rather
+                // than anything computed at the narrower width.
+                let mut narrow = vec![0.0f32; length];
+                fill_run(first, key, &mut narrow);
+                for (offset, drawn) in narrow.iter().enumerate() {
+                    assert_eq!(
+                        *drawn,
+                        f32::from_double(uniform_at(first + offset as u64, key))
+                    );
                 }
             }
         }
