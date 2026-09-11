@@ -973,6 +973,17 @@ def _(mo):
     **Two covariates, never one composite.** Conductor count enters exactly and
     length enters raised to `beta`, so a single `log(n * L^beta)` column would
     force one coefficient onto two effects and recover neither.
+
+    **What is being fitted here, and what it is not.** This is the record
+    table — a synthetic failure *history*, one row per installation episode,
+    generated from the shipped configuration and sized by how many observed
+    failures a fit needs rather than by how large a system is worth simulating.
+    It is not the population the annual loop runs on: that is built by
+    `population.generate`, one row per segment, and nothing below reaches it.
+    The two are drawn from the same technologies, vintages and install-year
+    distribution, so what this section finds about identifying a technology
+    carries across — but they are two datasets for two jobs, and no fitted
+    number here is fed back into a simulation anywhere.
     """
     )
     return
@@ -980,9 +991,9 @@ def _(mo):
 
 @app.cell
 def _(pl, records, settings):
-    # The whole fleet, rather than the single-technology slice the sections
-    # above use: this is the first place in the notebook where a population has
-    # a technology mix to tell apart.
+    # The whole configured mix, rather than the single-technology slice the
+    # sections above use: this is the first place in the notebook where the
+    # table has more than one technology to tell apart.
     fleet = records.episode_table(settings)
     fleet_end, fleet_entry, fleet_observed = records.lifetimes(
         fleet, settings.records.study_end
@@ -1315,7 +1326,7 @@ def _(by_vintage, exposure, mo, settings, varying_shape):
     _failures = dict(exposure.select("technology", "failures").iter_rows())
     mo.md(
         f"""
-    ### What this fleet can and cannot identify
+    ### What this history can and cannot identify
 
     **The geometry coefficients come back.** Both cover the closed forms the
     effective-scale reduction predicts, which is the check this section exists
@@ -1328,17 +1339,17 @@ def _(by_vintage, exposure, mo, settings, varying_shape):
     {max(_shapes) - min(_shapes):.1f} between the {len(_shapes)} configured
     technology shapes — so even the best-identified technology here has an
     interval wider than the differences the model is trying to resolve.
-    Recovering the reference is evidence the fit works, not evidence this fleet
-    can tell the technologies apart.
+    Recovering the reference is evidence the fit works, not evidence this
+    history can tell the technologies apart.
 
     **The newest technology does not.** Its shape interval admits a shape well
     below the reference's and well above it, so the fit covering the configured
     value is not evidence of anything — an interval that admits everything
     covers the truth by construction. `{_newest.name}` is the most numerous
-    technology in the fleet and drew {_failures[_newest.name]} failures.
+    technology in the table and drew {_failures[_newest.name]} failures.
 
     **Sample size does move it, and not far enough to matter.** Failures scale
-    with the fleet, so the interval narrows — measured, its width goes 1.11 at
+    with the record count, so the interval narrows — measured, its width goes 1.11 at
     the shipped 20,000 segments to 0.39 at 80,000 and 0.12 at a million, which
     is the `1/sqrt(failures)` the counts predict and no faster. Reaching the
     several hundred failures a shape estimate wants would take a fleet no
@@ -1350,9 +1361,9 @@ def _(by_vintage, exposure, mo, settings, varying_shape):
 
     The recovery ladder under `tests/` fits this same regression on a fixture
     that gives every technology equal exposure, and recovers all of it. That is
-    the estimator being correct. This is the fleet being uninformative, and the
-    two are different findings — which is why the ladder is not the place this
-    question gets answered.
+    the estimator being correct. This is a realistic history being
+    uninformative, and the two are different findings — which is why the ladder
+    is not the place this question gets answered.
 
     Two things to know before reseeding this notebook. The record table is
     generated from the {len(_shapes)} **technology** shapes alone — the

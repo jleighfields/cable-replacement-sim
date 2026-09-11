@@ -31,7 +31,8 @@ there, and copying it into a notebook would add a slow duplicate of a fast
 test.
 
 **The demonstration that does not exist anywhere is what the regression does on
-the fleet this project ships**, where exposure is not equal because technology
+a record table generated from the shipped
+configuration**, where exposure is not equal because technology
 follows install year. The standing plan's open question about identifying
 the newest technology records that
 and says the ladder "sidesteps it with a fixture that gives every technology

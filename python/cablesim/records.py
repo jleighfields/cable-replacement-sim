@@ -442,13 +442,23 @@ def technology_indicators(
 
     Few failures is the same problem short of the boundary rather than a
     different one, and it is not caught here because no threshold separates the
-    two. It is worth knowing what it looks like. At the shipped
-    `records.n_segments` of 20,000 the table holds about 21,400 rows, of which
-    the newest technology contributes roughly 12,900 and between one and five
-    observed failures; over eight consecutive seeds its fitted coefficient ran
-    from 0.39 to 0.70 about a mean of 0.54, and every individual run returned a
-    finite, ordinary-looking number. Count the observed failures per technology
-    before believing a coefficient::
+    two. It is worth knowing what it looks like.
+
+    At the shipped ``records.n_segments`` the newest technology contributes
+    over half the table's rows and a single-digit number of its observed
+    failures — technology follows install year, so the newest cable is also the
+    youngest and has had the least time to fail. Measured over twenty
+    consecutive seeds it drew between none and seven, averaging under three,
+    and **the none is not hypothetical**: one of those twenty raised the
+    refusal above. On the other nineteen the fit returned a finite,
+    ordinary-looking coefficient every time, ranging over roughly 0.27 to 0.68
+    about a configured truth of 0.26 — a mean near twice the value being
+    estimated. A number in that range looks like an estimate and is not one.
+
+    Those figures move with the seed, the study window and the population size,
+    so read them as the shape of the problem rather than as bounds. What does
+    not move is the ordering: count the observed failures per technology before
+    believing a coefficient::
 
         table.group_by("technology").agg(
             pl.col("failure_year").is_not_null().sum().alias("failures")
