@@ -283,3 +283,93 @@ def test_the_forced_scale_stays_inside_single_precision() -> None:
         f"{np.isnan(overflowed).mean():.0%} of the fleet at NaN; the docstring "
         f"says most of it, which is the reason it gives for not lowering this"
     )
+
+
+def test_the_survivor_is_one_over_e_at_the_scale_whatever_the_shape() -> None:
+    """The definition of the Weibull scale, and it pins the parameterization.
+
+    ``S(scale) = exp(-1)`` for every shape is what makes the scale the
+    characteristic life rather than the mean or the median. A transposed
+    parameterization — the other convention's ``(mu, sigma)``, or scale and
+    shape swapped — does not have this property, which is the transposition
+    the recovery ladder exists to catch and this catches in one line.
+    """
+    scale = np.float64(50.0)
+    for shape in (np.float64(1.0), np.float64(2.4), np.float64(6.2)):
+        assert weibull.survival(scale, shape, scale) == pytest.approx(np.exp(-1.0))
+
+    assert weibull.survival(np.float64(0.0), np.float64(6.2), scale) == 1.0
+
+
+def test_the_survivor_and_the_annual_probability_are_the_same_model() -> None:
+    """Two functions over one hazard, and where they stop agreeing is the point.
+
+    ``conditional_failure_probability`` is ``1 - S(t+1)/S(t)`` by definition,
+    and it is computed a different way — a difference of cumulative hazards
+    through ``expm1`` rather than a ratio of two survivors. Agreeing across the
+    ages the model reaches is what says they are one model and not two, and it
+    would catch a shape and scale swapped in either.
+
+    **They agree absolutely and not relatively, and that is the reason for the
+    ``expm1`` form.** Forming ``1 - S(t+1)/S(t)`` subtracts two numbers that
+    are both within an ulp of 1 at young ages, so the result keeps almost no
+    significant figures: at age 0 the annual probability is 2.9e-11 and the two
+    routes differ by 1.6e-6 of it, while differing by 1.2e-16 in absolute
+    terms. By age 5, where the probability has passed 1e-6, the relative
+    difference is 3.8e-11 and falls from there.
+
+    So the assertion is absolute across the whole range and relative only where
+    cancellation is not doing the damage. A test written the other way round
+    fails, and what it would be reporting is the naive formula's arithmetic
+    rather than a disagreement about the model.
+    """
+    ages = np.linspace(0.0, 90.0, 91)
+    shape, scale = np.float64(6.2), np.float64(50.0)
+
+    annual = weibull.conditional_failure_probability(ages, shape, scale)
+    through_survivor = 1.0 - (
+        weibull.survival(ages + 1.0, shape, scale)
+        / weibull.survival(ages, shape, scale)
+    )
+
+    np.testing.assert_allclose(annual, through_survivor, rtol=0.0, atol=1e-15)
+
+    worth_reading = annual > 1e-6
+    assert worth_reading.any(), "no age carries a probability big enough to compare"
+    np.testing.assert_allclose(
+        annual[worth_reading], through_survivor[worth_reading], rtol=1e-9
+    )
+
+
+def test_the_annual_probability_keeps_its_figures_at_a_young_age() -> None:
+    """What the ``expm1`` form buys, pinned rather than asserted in prose.
+
+    At a young age the year's hazard is tiny — 2.93e-11 for the shipped
+    technology at age zero — and there the annual probability is that hazard to
+    every figure a double carries, because the next term of the series is
+    4e-22. Computing it as ``1 - exp(-h)`` subtracts two numbers within an ulp
+    of each other and keeps about five significant figures; ``-expm1(-h)``
+    keeps all of them.
+
+    The sibling test above cannot catch this. It compares the annual
+    probability against a ratio of survivors, and that ratio suffers the same
+    cancellation — so replacing ``expm1`` with the naive form moves both sides
+    together and they agree *better*. Measured: the naive form lands 1.6e-6
+    away in relative terms, the ``expm1`` form 1.5e-11.
+    """
+    shape, scale = np.float64(6.2), np.float64(50.0)
+    hazard = (1.0 / scale) ** shape
+
+    annual = weibull.conditional_failure_probability(
+        np.float64(0.0), shape, scale
+    )
+
+    # `abs=0` is load-bearing. `pytest.approx` passes when *either* tolerance
+    # is met and its default absolute one is 1e-12 — a hundredfold larger than
+    # the quantity being compared here, so a relative tolerance alone would
+    # accept any answer at all and this test would pin nothing.
+    assert annual == pytest.approx(hazard, rel=1e-9, abs=0.0), (
+        "the annual probability at age zero has lost significant figures to "
+        "cancellation; at a hazard this small it is the hazard itself, and a "
+        "subtraction of two near-equal numbers is what throws that away"
+    )

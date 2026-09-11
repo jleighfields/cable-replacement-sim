@@ -208,7 +208,7 @@ def _(mo):
 
 
 @app.cell
-def _(np, truth_scale, truth_shape):
+def _(np, truth_scale, truth_shape, weibull):
     import matplotlib.pyplot as plt
 
     _entry, _exit = 20.0, 45.0
@@ -238,9 +238,11 @@ def _(np, truth_scale, truth_shape):
     )
     _axes[0].legend(fontsize=7, loc="upper left")
 
-    _survival = np.exp(-((_age / truth_scale) ** truth_shape))
+    _survival = weibull.survival(_age, truth_shape, truth_scale)
+    # Conditioning on having reached the entry age is a ratio of two
+    # survivors, which is what left truncation means.
     _conditional = np.clip(
-        _survival / np.exp(-((_entry / truth_scale) ** truth_shape)), 0, 1
+        _survival / weibull.survival(_entry, truth_shape, truth_scale), 0, 1
     )
     _axes[1].plot(_age, _survival, label="S(t) — as installed")
     _axes[1].plot(
@@ -821,11 +823,13 @@ def _(mo):
 
 
 @app.cell
-def _(correct, no_censoring, no_truncation, np, plt, truth_scale, truth_shape):
+def _(
+    correct, no_censoring, no_truncation, np, plt, truth_scale, truth_shape, weibull
+):
     _age = np.linspace(0.0, 80.0, 400)
 
     def survival(shape: float, scale: float) -> np.ndarray:
-        """Weibull survival at each age in the plotted range.
+        """The package's survivor over the plotted range, as a curve.
 
         Args:
             shape: Weibull shape.
@@ -834,7 +838,7 @@ def _(correct, no_censoring, no_truncation, np, plt, truth_scale, truth_shape):
         Returns:
             The share still in service at each age.
         """
-        return np.exp(-((_age / scale) ** shape))
+        return weibull.survival(_age, shape, scale)
 
     _figure, _axis = plt.subplots(figsize=(6.5, 3.8))
     _axis.plot(

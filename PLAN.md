@@ -504,6 +504,31 @@ below records what it found.
 hazards and nonparametric estimators — so it is not an alternative here. It is
 worth naming because it is the first place most people look.
 
+**The record table is generated from technology parameters alone, and the
+per-class shape override is deliberately not applied to it.** The population
+generator does apply it — a class may name a `weibull_shape` that replaces its
+technology's, because conductor size is an axis technology does not capture
+(2.2) — so the two synthetic datasets differ on that axis and a reader meeting
+it for the first time will take it for a defect. It is not.
+
+The regression above has no class term. Class is drawn independently of
+technology, so a class-varying shape in the record table would enter the
+likelihood as heterogeneity nothing in the design matrix can absorb, and the
+fit would answer with a compromise — the same failure this section describes
+for a common-shape fit where shape varies by technology, arriving through the
+generator instead of through the specification. The rungs that fit technology
+scale and technology shape would inherit it, and the symptom would be a
+tolerance problem rather than a misspecification.
+
+Making the record table carry it is therefore not a change to the generator. It
+means adding class indicators to the ancillary design and a rung that fits
+them, which extends what this section specifies rather than implementing it.
+Nothing consumes the fit — the population is generated from configured
+parameters and no fitted number is fed back into it — so the divergence changes
+no result the project produces. **What it costs is narrower and worth stating:
+the simulation models a shape axis the fitted model cannot express, and that
+becomes a real problem the day anyone calibrates the simulation from a fit.**
+
 This whole stage **stays in Python.** It is a one-time fit over a modest table
 and porting it to Rust buys nothing.
 
@@ -3026,6 +3051,7 @@ the argument belongs beside the model it constrains.
 | Shiny deployment target | Posit Connect | Section 9 |
 | Wheel delivery | vendored into the deploy bundle | Section 9 |
 | The install-volume curve | explicit breakpoints, interpolated and normalized, replacing a named curve with no definition | Section 3 |
+| The per-class shape override in the record table | not applied; the fitted model has no class term | 2.4 |
 
 ### 13.2 Still open
 
