@@ -341,6 +341,16 @@ class RecordsConfig(pydantic.BaseModel):
 class FailureConfig(pydantic.BaseModel):
     """How conductor failures within a segment relate to one another.
 
+    **One field with one accepted value, kept deliberately.** No modeling code
+    reads it, and ``Config`` forbids extra keys, so deleting this class would
+    still refuse a configuration asking for a dependence model — which makes it
+    look like a knob earning nothing. What would go is the message. Today a
+    file naming ``shared_frailty`` is told ``Input should be 'iid'``, which
+    names the one model implemented; without this class it is told ``Extra
+    inputs are not permitted`` against the ``failure`` block, which reads as a
+    misspelled key rather than as a model that does not exist yet. The field is
+    the difference between refusing and explaining.
+
     Attributes:
         conductor_dependence: ``iid`` treats conductors as independent. A
             shared-frailty model is a documented extension and is not

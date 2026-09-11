@@ -128,10 +128,23 @@ def draw_segment_setup(
     source = random_draws.spawn_sources(config.simulation.seed + seed_offset).records
     setup = random_draws.uniforms(source, 4 * total).reshape(4, total)
 
-    # By default the record table mirrors the population: a class is drawn from
-    # its share and supplies both the length distribution and the conductor
-    # count, so the mix being fitted is the mix that exists. Either can be
-    # overridden to hold it fixed, which is what isolates the early rungs.
+    # By default the record table follows the population's geometry: a class is
+    # drawn from its share and supplies both the length distribution and the
+    # conductor count, so the mix being fitted is the mix that exists. Either
+    # can be overridden to hold it fixed, which is what isolates the early
+    # rungs.
+    #
+    # **The class's Weibull shape override is deliberately not followed**, and
+    # this is the one axis where the two datasets differ. A class may name a
+    # shape that replaces its technology's, and `population.generate` applies
+    # it; applying it here would put a class-varying shape into the table while
+    # the design matrix the fit uses carries technology indicators and no class
+    # term. Class is drawn independently of technology, so the difference would
+    # arrive as heterogeneity nothing can absorb and the fit would answer with
+    # a compromise — biased, and presenting as a tolerance problem rather than
+    # as the misspecification it is. Carrying it means adding class to the
+    # ancillary design as well, which is a change to the model rather than to
+    # this generator.
     class_index = population.draw_categories(
         setup[3], np.array([c.share for c in settings.classes])
     )

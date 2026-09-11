@@ -169,12 +169,12 @@ def _(mo):
 
 
 @app.cell
-def _(k, lam, minima, n, np, reduced_conductors):
+def _(k, lam, minima, n, np, reduced_conductors, weibull):
     import matplotlib.pyplot as plt
 
     _t = np.linspace(1.0, 3.0 * lam, 400)
-    _single = np.exp(-((_t / lam) ** k))
-    _segment = np.exp(-((_t / float(reduced_conductors)) ** k))
+    _single = weibull.survival(_t, k, lam)
+    _segment = weibull.survival(_t, k, float(reduced_conductors))
 
     _figure, _axes = plt.subplots(1, 2, figsize=(11, 3.6))
 
@@ -207,12 +207,15 @@ def _(k, lam, minima, n, np, reduced_conductors):
 
 
 @app.cell
-def _(k, lam, n, np, reduced_conductors):
+def _(k, lam, n, np, reduced_conductors, weibull):
     # The two lines are parallel to floating-point tolerance, which is the
     # claim "shape is unchanged" made numerically.
     _t = np.array([10.0, 40.0])
+
     def _slope(scale):
-        _y = np.log(-np.log(np.exp(-((_t / scale) ** k))))
+        # The Weibull plot's transform: log(-log S) against log t is a straight
+        # line whose slope is the shape, whatever the scale.
+        _y = np.log(-np.log(weibull.survival(_t, k, scale)))
         return (_y[1] - _y[0]) / (np.log(_t[1]) - np.log(_t[0]))
 
     assert np.isclose(_slope(lam), k)

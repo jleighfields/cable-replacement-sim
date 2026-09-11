@@ -76,6 +76,36 @@ def effective_scale(
     return scale * hazard_multiplier ** (-1.0 / shape)
 
 
+def survival(age: np.ndarray, shape: np.ndarray, scale: np.ndarray) -> np.ndarray:
+    """Probability of surviving to ``age``::
+
+        S(t) = exp(-(t/scale)**k)
+
+    The simulation does not call this — it draws lifetimes and compares them
+    against year boundaries, which needs no survivor — so this exists for the
+    notebooks, which draw the curve the model implies and lay a fitted one over
+    it. It is here rather than there because it is the model rather than a
+    picture of it, and three notebook cells were writing it out separately.
+
+    Not to be confused with ``conditional_failure_probability``, which is the
+    chance of failing within one year given survival to ``age``. That is a
+    difference of two cumulative hazards; this is one survivor.
+
+    Conditioning on having reached some entry age is a ratio of two of these,
+    ``survival(t, ...) / survival(entry, ...)``, which is what left truncation
+    means and what the censored likelihood corrects for.
+
+    Args:
+        age: Age to survive to, in years. Zero returns 1.
+        shape: Weibull shape parameter.
+        scale: Effective Weibull scale, in years.
+
+    Returns:
+        The survivor function, on [0, 1], falling monotonically with age.
+    """
+    return np.exp(-((age / scale) ** shape))
+
+
 def conditional_failure_probability(
     age: np.ndarray, shape: np.ndarray, scale: np.ndarray
 ) -> np.ndarray:
